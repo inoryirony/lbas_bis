@@ -27,6 +27,9 @@
     "icon": "fa/plane",
     "priority": 52
   },
+  "dependencies": {
+    "react": "18.3.1"
+  },
   "devDependencies": {
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"
