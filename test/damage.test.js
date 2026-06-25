@@ -34,6 +34,23 @@ describe('LBAS damage estimates', () => {
 
     expect(power).toBe(168);
   });
+
+  test('uses the stronger anti-ship stat when torpedo and bombing differ', () => {
+    const torpedoStrong = calculatePlaneDamagePower(plane('torpedo-strong', {
+      role: 'attacker',
+      isLandBased: true,
+      torpedo: 14,
+      bombing: 10,
+    }));
+    const bombingStrong = calculatePlaneDamagePower(plane('bombing-strong', {
+      role: 'attacker',
+      isLandBased: true,
+      torpedo: 10,
+      bombing: 14,
+    }));
+
+    expect(bombingStrong).toBe(torpedoStrong);
+  });
 });
 
 function plane(instanceId, overrides = {}) {

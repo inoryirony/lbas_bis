@@ -37,7 +37,7 @@ function calculateBaseDamagePower(loadout, options = {}) {
 }
 
 function antiShipAttackStat(plane) {
-  return Number(plane.torpedo) || Number(plane.bombing) || 0;
+  return Math.max(Number(plane.torpedo) || 0, Number(plane.bombing) || 0);
 }
 
 function landBasedReconDamageModifier(loadout) {

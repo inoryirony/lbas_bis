@@ -26,5 +26,10 @@
   "role_fighter": "制空",
   "role_attacker": "攻擊",
   "role_recon": "偵察/延程",
-  "role_unknown": "其他"
+  "role_unknown": "其他",
+  "theoreticalPlanes": "理論候選",
+  "minimumProficiency": "最低熟練度",
+  "missingEquipment": "缺少裝備",
+  "missing": "未持有",
+  "role_seaplaneBomber": "水爆"
 }

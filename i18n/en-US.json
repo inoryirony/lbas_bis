@@ -9,6 +9,7 @@
   "waveTarget": "Base {{base}} wave {{wave}}",
   "optimize": "Optimize",
   "availablePlanes": "Available planes",
+  "theoreticalPlanes": "Theoretical candidates",
   "noResult": "No result yet",
   "noPoiState": "Poi data is not available yet. Retry after game data is loaded.",
   "noCandidateRadius": "No candidate loadout can reach radius {{radius}}.",
@@ -16,6 +17,9 @@
   "attack": "Attack",
   "damagePower": "Damage power",
   "worstMargin": "Worst margin",
+  "minimumProficiency": "Minimum proficiency",
+  "missingEquipment": "Missing equipment",
+  "missing": "Missing",
   "base": "Base {{index}}",
   "airPower": "Air",
   "radius": "Radius",
@@ -26,5 +30,6 @@
   "role_fighter": "Air",
   "role_attacker": "Attack",
   "role_recon": "Recon/range",
+  "role_seaplaneBomber": "Seaplane bomber",
   "role_unknown": "Other"
 }

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import poiData from '../src/poi-data.js';
 
-const { extractOwnedPlanes } = poiData;
+const { extractOptimizationPlanes, extractOwnedPlanes } = poiData;
 
 describe('Poi data adapter', () => {
   test('maps Poi master and owned equipment data into optimizer plane instances', () => {
@@ -141,5 +141,44 @@ describe('Poi data adapter', () => {
     });
 
     expect(planes).toEqual([]);
+  });
+
+  test('adds theoretical missing copies from master equipment for optimizer plans', () => {
+    const planes = extractOptimizationPlanes({
+      const: {
+        $equips: {
+          187: {
+            api_id: 187,
+            api_name: 'Ginga',
+            api_type: [21, 38, 47, 37, 4],
+            api_tyku: 3,
+            api_houk: 0,
+            api_bakk: 0,
+            api_distance: 9,
+            api_raig: 14,
+            api_baku: 14,
+          },
+        },
+      },
+      info: {
+        equips: {
+          1002: {
+            api_id: 1002,
+            api_slotitem_id: 187,
+            api_level: 0,
+            api_alv: 2,
+          },
+        },
+      },
+    }, { maxCopiesPerMaster: 4 });
+
+    expect(planes).toHaveLength(4);
+    expect(planes.filter((plane) => plane.masterId === 187 && plane.available)).toHaveLength(1);
+    expect(planes.filter((plane) => plane.masterId === 187 && plane.missing)).toHaveLength(3);
+    expect(planes.find((plane) => plane.missing)).toEqual(expect.objectContaining({
+      available: false,
+      proficiency: 7,
+      instanceId: 'missing-187-1',
+    }));
   });
 });

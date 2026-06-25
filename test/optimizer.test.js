@@ -148,6 +148,80 @@ describe('LBAS optimizer MVP', () => {
     ]);
   });
 
+  test('keeps short-range combat planes that can be extended by land recon', () => {
+    const result = optimizeLoadouts({
+      equipment: [
+        plane('fighter-1', { antiAir: 12, radius: 4, role: 'fighter', proficiency: 7, isLandBased: true }),
+        plane('fighter-2', { antiAir: 12, radius: 4, role: 'fighter', proficiency: 7, isLandBased: true }),
+        plane('fighter-3', { antiAir: 12, radius: 4, role: 'fighter', proficiency: 7, isLandBased: true }),
+        plane('recon', { masterId: 311, antiAir: 3, radius: 8, role: 'recon', isLandBased: true }),
+      ],
+      baseCount: 1,
+      targetRadius: 6,
+      enemyAir: 72,
+      targetStates: ['parity', 'parity'],
+      maxResults: 1,
+    });
+
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0].bases[0].radius).toBe(6);
+  });
+
+  test('includes theoretical missing equipment in valid plans', () => {
+    const result = optimizeLoadouts({
+      equipment: [
+        plane('owned-fighter', { masterId: 225, antiAir: 11, intercept: 5, radius: 7, role: 'fighter', proficiency: 7, isLandBased: true }),
+        plane('missing-attacker-1', {
+          masterId: 187,
+          antiAir: 3,
+          radius: 9,
+          role: 'attacker',
+          torpedo: 14,
+          bombing: 14,
+          proficiency: 7,
+          isLandBased: true,
+          available: false,
+          missing: true,
+        }),
+        plane('missing-attacker-2', {
+          masterId: 187,
+          antiAir: 3,
+          radius: 9,
+          role: 'attacker',
+          torpedo: 14,
+          bombing: 14,
+          proficiency: 7,
+          isLandBased: true,
+          available: false,
+          missing: true,
+        }),
+        plane('missing-attacker-3', {
+          masterId: 187,
+          antiAir: 3,
+          radius: 9,
+          role: 'attacker',
+          torpedo: 14,
+          bombing: 14,
+          proficiency: 7,
+          isLandBased: true,
+          available: false,
+          missing: true,
+        }),
+      ],
+      baseCount: 1,
+      targetRadius: 7,
+      enemyAir: 72,
+      targetStates: ['parity', 'parity'],
+      maxResults: 1,
+    });
+
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0].missingEquipment).toEqual([
+      { masterId: 187, name: 'missing-attacker-1', count: 3 },
+    ]);
+    expect(result.results[0].bases[0].minimumProficiency).toBeGreaterThanOrEqual(0);
+  });
+
   test('treats each base as two waves and records six waves for three bases', () => {
     const result = optimizeLoadouts({
       equipment: [

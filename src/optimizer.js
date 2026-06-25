@@ -93,8 +93,12 @@ function selectCandidatePool(equipment, targetRadius) {
     }
     unique.set(plane.instanceId, plane);
   }
-  return [...unique.values()]
-    .filter((plane) => canContributeToTargetRadius(plane, targetRadius))
+  const values = [...unique.values()];
+  const maxExtenderRadius = values
+    .filter((plane) => plane.role === 'recon')
+    .reduce((best, plane) => Math.max(best, Number(plane.radius) || 0), 0);
+  return values
+    .filter((plane) => canContributeToTargetRadiusWithExtenders(plane, targetRadius, maxExtenderRadius))
     .sort((left, right) => equipmentSortScore(right, targetRadius) - equipmentSortScore(left, targetRadius))
     .slice(0, 72);
 }
@@ -176,15 +180,24 @@ function summarizePlan(bases, enemyAir, waveTargets) {
       ...candidate,
       targetState,
       marginToTarget: candidate.airPower - requiredAirForTarget(enemyAir, targetState),
+      minimumProficiency: minimumProficiencyForTarget(candidate.loadout, enemyAir, targetState),
+      missingEquipment: summarizeMissingEquipment(candidate.loadout),
     };
   });
   const fulfilled = baseSummaries.every(
     (base) => base.state.rank >= (AIR_STATES[base.targetState]?.rank ?? AIR_STATES.parity.rank),
   );
+  const minimumProficiencyValues = baseSummaries
+    .map((base) => base.minimumProficiency)
+    .filter((value) => value != null);
   return {
     fulfilled,
     bases: baseSummaries,
     waves: buildWaveSummaries(baseSummaries, enemyAir, waveTargets),
+    missingEquipment: summarizeMissingEquipment(baseSummaries.flatMap((base) => base.loadout)),
+    minimumProficiency: minimumProficiencyValues.length
+      ? Math.max(...minimumProficiencyValues)
+      : null,
     totalAirPower: baseSummaries.reduce((total, base) => total + base.airPower, 0),
     totalAttackScore: baseSummaries.reduce((total, base) => total + base.attackScore, 0),
     totalDamagePower: baseSummaries.reduce((total, base) => total + base.damagePower, 0),
@@ -245,6 +258,21 @@ function canContributeToTargetRadius(plane, targetRadius) {
   return plane.role === 'recon' && radius >= Math.max(1, targetRadius - 3);
 }
 
+function canContributeToTargetRadiusWithExtenders(plane, targetRadius, maxExtenderRadius) {
+  const radius = Number(plane.radius) || 0;
+  if (canContributeToTargetRadius(plane, targetRadius)) {
+    return true;
+  }
+  if (radius <= 0 || plane.role === 'recon') {
+    return false;
+  }
+  if (maxExtenderRadius <= radius) {
+    return false;
+  }
+  const extension = Math.min(3, Math.max(0, Math.round(Math.sqrt(maxExtenderRadius - radius))));
+  return radius + extension >= targetRadius;
+}
+
 function equipmentSortScore(plane, targetRadius) {
   const reachesTarget = (Number(plane.radius) || 0) >= targetRadius;
   return (
@@ -272,6 +300,36 @@ function normalizeWaveTargets(targetStates, baseCount) {
     .filter((state) => AIR_STATES[state]);
   const fallback = states[0] || 'parity';
   return Array.from({ length: baseCount * WAVES_PER_BASE }, (_, index) => states[index] || fallback);
+}
+
+function minimumProficiencyForTarget(loadout, enemyAir, targetState) {
+  const requiredRank = AIR_STATES[targetState]?.rank ?? AIR_STATES.parity.rank;
+  for (let level = 0; level <= 7; level += 1) {
+    const adjustedLoadout = loadout.map((plane) => ({ ...plane, proficiency: level }));
+    const airPower = calculateBaseAirPower(adjustedLoadout);
+    if (airStateFor(airPower, enemyAir).rank >= requiredRank) {
+      return level;
+    }
+  }
+  return null;
+}
+
+function summarizeMissingEquipment(loadout) {
+  const missing = new Map();
+  for (const plane of loadout) {
+    if (!plane.missing && plane.available !== false) {
+      continue;
+    }
+    const key = plane.masterId;
+    const current = missing.get(key) || {
+      masterId: plane.masterId,
+      name: plane.name,
+      count: 0,
+    };
+    current.count += 1;
+    missing.set(key, current);
+  }
+  return [...missing.values()].sort((left, right) => left.masterId - right.masterId);
 }
 
 function targetStateForBase(waveTargets, baseIndex) {

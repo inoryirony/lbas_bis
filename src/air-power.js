@@ -10,12 +10,14 @@ const AIR_STATES = {
 
 const FIGHTER_PROFICIENCY_BONUS = [0, 0, 2, 5, 9, 14, 14, 22];
 const SEAPLANE_BOMBER_PROFICIENCY_BONUS = [0, 0, 1, 1, 1, 3, 3, 6];
-const ATTACKER_PROFICIENCY_BONUS = [0, 0, 1, 1, 1, 3, 3, 3];
+const INTERNAL_PROFICIENCY_BONUS = [0, 1, 2.5, 4, 5.5, 7, 8.5, 12];
 const RECON_COEFFICIENTS = new Map([
   [311, 1.15],
   [312, 1.18],
 ]);
 const EXTENDER_MASTER_IDS = new Set([138, 178, 311, 312]);
+const DEFAULT_LBAS_SLOT_SIZE = 18;
+const RECON_SLOT_SIZE = 4;
 
 function airStateFor(airPower, enemyAir) {
   const enemy = Math.max(0, Number(enemyAir) || 0);
@@ -77,18 +79,18 @@ function requiredAirForState(enemyAir, stateKey) {
   }
 }
 
-function calculateSlotAirPower(plane, slotSize = 18) {
-  const size = Math.max(0, Number(plane.slotSize ?? slotSize) || 0);
+function calculateSlotAirPower(plane, slotSize) {
+  const size = Math.max(0, Number(plane.slotSize ?? slotSize ?? defaultSlotSizeForPlane(plane)) || 0);
   const antiAir = Math.max(0, Number(plane.antiAir) || 0);
   const intercept = Math.max(0, Number(plane.intercept) || 0);
   const sortieAntiAir = antiAir + intercept * 1.5;
   const improvedAntiAir = sortieAntiAir + improvementBonus(plane);
-  const proficiencyBonus = visibleProficiencyBonus(plane);
+  const proficiencyBonus = proficiencyBonusForPlane(plane);
 
   return Math.floor(improvedAntiAir * Math.sqrt(size) + proficiencyBonus);
 }
 
-function calculateBaseAirPower(loadout, slotSize = 18) {
+function calculateBaseAirPower(loadout, slotSize) {
   const rawAirPower = loadout.reduce(
     (total, plane) => total + calculateSlotAirPower(plane, slotSize),
     0,
@@ -132,19 +134,17 @@ function improvementBonus(plane) {
   return 0;
 }
 
-function visibleProficiencyBonus(plane) {
+function proficiencyBonusForPlane(plane) {
   const level = Math.max(0, Math.min(7, Number(plane.proficiency) || 0));
+  const internalBonus = Math.sqrt(INTERNAL_PROFICIENCY_BONUS[level]);
+  let visibleBonus = 0;
 
   if (isFighterLike(plane)) {
-    return FIGHTER_PROFICIENCY_BONUS[level];
+    visibleBonus = FIGHTER_PROFICIENCY_BONUS[level];
+  } else if (plane.role === 'seaplaneBomber') {
+    visibleBonus = SEAPLANE_BOMBER_PROFICIENCY_BONUS[level];
   }
-  if (plane.role === 'seaplaneBomber') {
-    return SEAPLANE_BOMBER_PROFICIENCY_BONUS[level];
-  }
-  if (plane.role === 'attacker' || plane.role === 'bomber') {
-    return ATTACKER_PROFICIENCY_BONUS[level];
-  }
-  return 0;
+  return visibleBonus + internalBonus;
 }
 
 function landReconCoefficient(loadout) {
@@ -167,12 +167,17 @@ function isRangeExtender(plane) {
   return plane.role === 'recon' || plane.role === 'extender' || EXTENDER_MASTER_IDS.has(plane.masterId);
 }
 
+function defaultSlotSizeForPlane(plane) {
+  return isRangeExtender(plane) ? RECON_SLOT_SIZE : DEFAULT_LBAS_SLOT_SIZE;
+}
+
 module.exports = {
   AIR_STATES,
   airStateFor,
   calculateBaseAirPower,
   calculateEffectiveRadius,
   calculateSlotAirPower,
+  defaultSlotSizeForPlane,
   isRangeExtender,
   requiredAirForState,
 };

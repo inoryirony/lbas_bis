@@ -2,7 +2,7 @@
 
 const React = require('react');
 const { optimizeLoadouts } = require('./src/optimizer');
-const { extractOwnedPlanes } = require('./src/poi-data');
+const { extractOptimizationPlanes, extractOwnedPlanes } = require('./src/poi-data');
 
 const h = React.createElement;
 const PLUGIN_ID = 'lbas_bis';
@@ -37,6 +37,14 @@ const FALLBACK_ZH_CN = {
   role_unknown: '其他',
 };
 
+Object.assign(FALLBACK_ZH_CN, {
+  theoreticalPlanes: '理论候选',
+  minimumProficiency: '最低熟练度',
+  missingEquipment: '缺少装备',
+  missing: '未持有',
+  role_seaplaneBomber: '水爆',
+});
+
 class LbasOptimizerPanel extends React.Component {
   constructor(props) {
     super(props);
@@ -46,6 +54,7 @@ class LbasOptimizerPanel extends React.Component {
       targetRadius: 7,
       targetStates: ['parity', 'parity'],
       equipmentCount: 0,
+      theoreticalCount: 0,
       messages: [],
       results: [],
     };
@@ -59,11 +68,15 @@ class LbasOptimizerPanel extends React.Component {
         messages: [t('noPoiState')],
         results: [],
         equipmentCount: 0,
+        theoreticalCount: 0,
       });
       return;
     }
 
-    const equipment = extractOwnedPlanes(poiState);
+    const ownedEquipment = extractOwnedPlanes(poiState);
+    const equipment = extractOptimizationPlanes(poiState, {
+      maxCopiesPerMaster: Number(this.state.baseCount) * 4,
+    });
     const result = optimizeLoadouts({
       equipment,
       baseCount: Number(this.state.baseCount),
@@ -74,7 +87,8 @@ class LbasOptimizerPanel extends React.Component {
     });
 
     this.setState({
-      equipmentCount: equipment.length,
+      equipmentCount: ownedEquipment.length,
+      theoreticalCount: equipment.length,
       messages: localizeMessages(result.messages, t),
       results: result.results,
     });
@@ -118,7 +132,11 @@ class LbasOptimizerPanel extends React.Component {
           t('optimize'),
         ),
       ),
-      h('div', { style: styles.meta }, `${t('availablePlanes')}: ${this.state.equipmentCount}`),
+      h(
+        'div',
+        { style: styles.meta },
+        `${t('availablePlanes')}: ${this.state.equipmentCount} / ${t('theoreticalPlanes')}: ${this.state.theoreticalCount}`,
+      ),
       this.renderMessages(),
       this.renderResults(t),
     );
@@ -190,11 +208,22 @@ class LbasOptimizerPanel extends React.Component {
             { style: styles.planTitle },
             `${t('plan')} ${planIndex + 1} · ${t('damagePower')} ${plan.totalDamagePower} · ${t('worstMargin')} ${plan.worstMargin}`,
           ),
+          this.renderPlanSummary(plan, t),
           this.renderWaves(plan.waves, t),
           ...plan.bases.map((base, baseIndex) => this.renderBase(base, baseIndex, t)),
         ),
       ),
     );
+  }
+
+  renderPlanSummary(plan, t) {
+    const parts = [
+      `${t('minimumProficiency')}: ${formatProficiency(plan.minimumProficiency)}`,
+    ];
+    if (plan.missingEquipment && plan.missingEquipment.length) {
+      parts.push(`${t('missingEquipment')}: ${plan.missingEquipment.map((item) => `${item.name} x${item.count}`).join(', ')}`);
+    }
+    return h('div', { style: styles.planSummary }, parts.join(' / '));
   }
 
   renderWaves(waves, t) {
@@ -226,7 +255,7 @@ class LbasOptimizerPanel extends React.Component {
         base.loadout.map((item) =>
           h(
             'li',
-            { key: item.instanceId },
+            { key: item.instanceId, style: item.available === false ? styles.missingItem : null },
             `${item.name} #${item.instanceId} · ${t('airPower')} ${item.antiAir} · ${t('radius')} ${item.radius} · ${t(`role_${item.role}`)}`,
           ),
         ),
@@ -284,6 +313,13 @@ function format(template, values) {
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function formatProficiency(level) {
+  if (level == null) {
+    return '-';
+  }
+  return ['-', '|', '||', '|||', '/', '//', '///', '>>'][level] || String(level);
 }
 
 const styles = {
@@ -350,6 +386,11 @@ const styles = {
     fontSize: 14,
     margin: '0 0 8px',
   },
+  planSummary: {
+    color: '#8a6d3b',
+    fontSize: 12,
+    marginBottom: 8,
+  },
   waves: {
     display: 'flex',
     flexWrap: 'wrap',
@@ -377,9 +418,14 @@ const styles = {
     margin: 0,
     paddingLeft: 18,
   },
+  missingItem: {
+    color: '#777',
+    opacity: 0.55,
+  },
 };
 
 module.exports = {
+  formatProficiency,
   reactClass: LbasOptimizerPanel,
   parseTargetStates,
   normalizeTargetStates,

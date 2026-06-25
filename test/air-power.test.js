@@ -27,10 +27,10 @@ describe('LBAS air power formulas', () => {
       slotSize: 18,
     });
 
-    expect(airPowerValue).toBe(103);
+    expect(airPowerValue).toBe(107);
   });
 
-  test('counts visible proficiency bonus for land-based attackers', () => {
+  test('counts max internal proficiency bonus for land-based attackers', () => {
     const ginga = {
       antiAir: 3,
       intercept: 0,
@@ -40,9 +40,23 @@ describe('LBAS air power formulas', () => {
       slotSize: 18,
     };
 
-    expect(calculateSlotAirPower(ginga)).toBe(15);
-    expect(calculateBaseAirPower([ginga, ginga, ginga, ginga])).toBe(60);
+    expect(calculateSlotAirPower(ginga)).toBe(16);
+    expect(calculateBaseAirPower([ginga, ginga, ginga, ginga])).toBe(64);
     expect(airStateFor(calculateBaseAirPower([ginga, ginga, ginga, ginga]), 72).key).toBe('parity');
+  });
+
+  test('uses four planes for land recon slots when calculating air power', () => {
+    const recon = {
+      masterId: 311,
+      antiAir: 3,
+      intercept: 0,
+      improvement: 0,
+      proficiency: 0,
+      role: 'recon',
+    };
+
+    expect(calculateSlotAirPower(recon)).toBe(6);
+    expect(calculateBaseAirPower([recon])).toBe(6);
   });
 
   test('applies land recon coefficient and range extension to a base loadout', () => {
@@ -59,7 +73,7 @@ describe('LBAS air power formulas', () => {
     ];
 
     expect(calculateEffectiveRadius(loadout)).toBe(6);
-    expect(calculateBaseAirPower(loadout)).toBe(124);
+    expect(calculateBaseAirPower(loadout)).toBe(117);
   });
 });
 

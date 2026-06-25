@@ -11,6 +11,7 @@ const AIRCRAFT_EQUIP_TYPES = new Set([
 const FIGHTER_EQUIP_TYPES = new Set([6, 45, 48]);
 const ATTACKER_EQUIP_TYPES = new Set([7, 8, 11, 47, 53, 57, 58, 59]);
 const RECON_EQUIP_TYPES = new Set([9, 10, 41, 49]);
+const SEAPLANE_BOMBER_EQUIP_TYPES = new Set([11]);
 
 function extractOwnedPlanes(poiState) {
   const masterById = getMasterEquipment(poiState);
@@ -19,6 +20,49 @@ function extractOwnedPlanes(poiState) {
   return ownedEquips
     .map((equip) => toPlaneInstance(equip, masterById[equip.api_slotitem_id]))
     .filter(Boolean);
+}
+
+function extractOptimizationPlanes(poiState, options = {}) {
+  const maxCopiesPerMaster = Math.max(1, Number(options.maxCopiesPerMaster) || 4);
+  const missingProficiency = Math.max(0, Math.min(7, Number(options.missingProficiency ?? 7) || 0));
+  const masterById = getMasterEquipment(poiState);
+  const ownedPlanes = extractOwnedPlanes(poiState).map((plane) => ({
+    ...plane,
+    available: true,
+    missing: false,
+  }));
+  const ownedCounts = new Map();
+
+  for (const plane of ownedPlanes) {
+    ownedCounts.set(plane.masterId, (ownedCounts.get(plane.masterId) || 0) + 1);
+  }
+
+  const theoreticalPlanes = Object.values(masterById)
+    .filter(isLbasCandidateMaster)
+    .flatMap((master) => {
+      const masterId = Number(master.api_id) || 0;
+      const ownedCount = ownedCounts.get(masterId) || 0;
+      const missingCount = Math.max(0, maxCopiesPerMaster - ownedCount);
+      return Array.from({ length: missingCount }, (_, index) =>
+        toPlaneInstance(
+          {
+            api_id: `missing-${masterId}-${index + 1}`,
+            api_slotitem_id: masterId,
+            api_level: 0,
+            api_alv: missingProficiency,
+          },
+          master,
+          {
+            available: false,
+            missing: true,
+            copyIndex: index + 1,
+          },
+        ),
+      );
+    })
+    .filter(Boolean);
+
+  return [...ownedPlanes, ...theoreticalPlanes];
 }
 
 function getMasterEquipment(poiState) {
@@ -34,7 +78,7 @@ function getMasterEquipment(poiState) {
   return items;
 }
 
-function toPlaneInstance(equip, master) {
+function toPlaneInstance(equip, master, overrides = {}) {
   if (!equip || !master || !isLbasCandidateMaster(master)) {
     return null;
   }
@@ -57,6 +101,9 @@ function toPlaneInstance(equip, master) {
     isLandBased: isLandBasedMaster(master),
     torpedo,
     bombing,
+    available: true,
+    missing: false,
+    ...overrides,
   };
 }
 
@@ -74,6 +121,9 @@ function classifyRole(master, stats) {
   const equipType = getEquipType(master);
   if (RECON_MASTER_IDS.has(masterId) || RECON_EQUIP_TYPES.has(equipType)) {
     return 'recon';
+  }
+  if (SEAPLANE_BOMBER_EQUIP_TYPES.has(equipType)) {
+    return 'seaplaneBomber';
   }
   if (ATTACKER_EQUIP_TYPES.has(equipType) || stats.torpedo > 0 || stats.bombing > 0) {
     return 'attacker';
@@ -93,5 +143,6 @@ function isLandBasedMaster(master) {
 }
 
 module.exports = {
+  extractOptimizationPlanes,
   extractOwnedPlanes,
 };
