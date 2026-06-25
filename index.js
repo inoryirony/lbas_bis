@@ -13,6 +13,7 @@ const FALLBACK_ZH_CN = {
   enemyAir: '敌制空',
   baseCount: '基地队数',
   targetState: '目标状态',
+  waveTarget: '第 {{base}} 队第 {{wave}} 波',
   optimize: '计算配装',
   availablePlanes: '可用飞机',
   noResult: '暂无结果',
@@ -20,8 +21,10 @@ const FALLBACK_ZH_CN = {
   noCandidateRadius: '没有可达半径 {{radius}} 的候选配装。',
   plan: '方案',
   attack: '攻击',
+  damagePower: '伤害基准',
   worstMargin: '最小余量',
   base: '第 {{index}} 队',
+  wave: '第 {{index}} 波',
   airPower: '制空',
   radius: '半径',
   denial: '劣势',
@@ -41,7 +44,7 @@ class LbasOptimizerPanel extends React.Component {
       baseCount: 1,
       enemyAir: 72,
       targetRadius: 7,
-      targetStates: ['parity'],
+      targetStates: ['parity', 'parity'],
       equipmentCount: 0,
       messages: [],
       results: [],
@@ -142,7 +145,7 @@ class LbasOptimizerPanel extends React.Component {
       h(
         'label',
         { key: `target-state-${index}`, style: styles.field },
-        h('span', null, `${t('targetState')} ${index + 1}`),
+        h('span', null, format(t('waveTarget'), { base: Math.floor(index / 2) + 1, wave: (index % 2) + 1 })),
         h(
           'select',
           {
@@ -185,9 +188,24 @@ class LbasOptimizerPanel extends React.Component {
           h(
             'h3',
             { style: styles.planTitle },
-            `${t('plan')} ${planIndex + 1} · ${t('attack')} ${plan.totalAttackScore} · ${t('worstMargin')} ${plan.worstMargin}`,
+            `${t('plan')} ${planIndex + 1} · ${t('damagePower')} ${plan.totalDamagePower} · ${t('worstMargin')} ${plan.worstMargin}`,
           ),
+          this.renderWaves(plan.waves, t),
           ...plan.bases.map((base, baseIndex) => this.renderBase(base, baseIndex, t)),
+        ),
+      ),
+    );
+  }
+
+  renderWaves(waves, t) {
+    return h(
+      'div',
+      { style: styles.waves },
+      waves.map((wave) =>
+        h(
+          'span',
+          { key: wave.waveIndex, style: styles.wave },
+          `${format(t('wave'), { index: wave.waveIndex + 1 })}: ${t(wave.state.key)} / ${t('targetState')} ${t(wave.targetState)} / ${t('airPower')} ${wave.airPower}`,
         ),
       ),
     );
@@ -200,7 +218,7 @@ class LbasOptimizerPanel extends React.Component {
       h(
         'div',
         { style: styles.baseSummary },
-        `${format(t('base'), { index: baseIndex + 1 })}: ${t('airPower')} ${base.airPower}, ${t(base.state.key)}, ${t('radius')} ${base.radius}`,
+        `${format(t('base'), { index: baseIndex + 1 })}: ${t('airPower')} ${base.airPower}, ${t(base.state.key)}, ${t('radius')} ${base.radius}, ${t('damagePower')} ${base.damagePower}`,
       ),
       h(
         'ol',
@@ -237,7 +255,7 @@ function parseTargetStates(value) {
 function normalizeTargetStates(value, baseCount) {
   const parsed = parseTargetStates(value);
   const count = clamp(Number(baseCount) || 1, 1, 3);
-  return Array.from({ length: count }, (_, index) => parsed[index] || parsed[0] || 'parity');
+  return Array.from({ length: count * 2 }, (_, index) => parsed[index] || parsed[0] || 'parity');
 }
 
 function localizeMessages(messages, t) {
@@ -331,6 +349,18 @@ const styles = {
   planTitle: {
     fontSize: 14,
     margin: '0 0 8px',
+  },
+  waves: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginBottom: 8,
+  },
+  wave: {
+    border: '1px solid rgba(128, 128, 128, 0.25)',
+    borderRadius: 4,
+    fontSize: 12,
+    padding: '2px 6px',
   },
   base: {
     borderTop: '1px solid rgba(128, 128, 128, 0.2)',

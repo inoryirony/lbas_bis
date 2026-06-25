@@ -61,6 +61,7 @@ describe('Poi data adapter', () => {
         improvement: 4,
         proficiency: 7,
         role: 'fighter',
+        isLandBased: true,
       }),
       expect.objectContaining({
         instanceId: 1002,
@@ -71,6 +72,7 @@ describe('Poi data adapter', () => {
         torpedo: 14,
         bombing: 14,
         role: 'attacker',
+        isLandBased: true,
       }),
     ]);
   });
@@ -110,6 +112,7 @@ describe('Poi data adapter', () => {
         masterId: 138,
         role: 'recon',
         radius: 20,
+        isLandBased: true,
       }),
     ]);
   });

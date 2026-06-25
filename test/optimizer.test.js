@@ -53,6 +53,88 @@ describe('LBAS optimizer MVP', () => {
     expect(result.results).toHaveLength(0);
     expect(result.messages).toContain('No candidate loadout can reach radius 9.');
   });
+
+  test('prefers land-based aircraft over carrier aircraft after the target state is satisfied', () => {
+    const equipment = [
+      plane('carrier-fighter-1', { antiAir: 15, radius: 7, role: 'fighter', isLandBased: false }),
+      plane('carrier-fighter-2', { antiAir: 14, radius: 7, role: 'fighter', isLandBased: false }),
+      plane('carrier-fighter-3', { antiAir: 13, radius: 7, role: 'fighter', isLandBased: false }),
+      plane('carrier-fighter-4', { antiAir: 12, radius: 7, role: 'fighter', isLandBased: false }),
+      plane('land-fighter', { antiAir: 11, intercept: 5, radius: 7, role: 'fighter', isLandBased: true }),
+      plane('land-attacker-1', { antiAir: 3, radius: 9, role: 'attacker', torpedo: 14, bombing: 14, isLandBased: true }),
+      plane('land-attacker-2', { antiAir: 3, radius: 9, role: 'attacker', torpedo: 13, bombing: 14, isLandBased: true }),
+      plane('land-attacker-3', { antiAir: 2, radius: 8, role: 'attacker', torpedo: 11, bombing: 12, isLandBased: true }),
+    ];
+
+    const result = optimizeLoadouts({
+      equipment,
+      baseCount: 1,
+      targetRadius: 7,
+      enemyAir: 72,
+      targetStates: ['parity', 'parity'],
+      maxResults: 1,
+    });
+
+    const selectedIds = result.results[0].bases[0].loadout.map((item) => item.instanceId);
+    expect(selectedIds).toContain('land-fighter');
+    expect(selectedIds).toContain('land-attacker-1');
+    expect(selectedIds).not.toEqual([
+      'carrier-fighter-1',
+      'carrier-fighter-2',
+      'carrier-fighter-3',
+      'carrier-fighter-4',
+    ]);
+  });
+
+  test('maximizes land-based attackers after satisfying the target air state', () => {
+    const result = optimizeLoadouts({
+      equipment: [
+        plane('land-fighter-1', { antiAir: 11, intercept: 5, radius: 7, role: 'fighter', isLandBased: true }),
+        plane('land-fighter-2', { antiAir: 10, intercept: 4, radius: 7, role: 'fighter', isLandBased: true }),
+        plane('land-fighter-3', { antiAir: 9, intercept: 3, radius: 7, role: 'fighter', isLandBased: true }),
+        plane('land-attacker-1', { antiAir: 3, radius: 9, role: 'attacker', torpedo: 14, bombing: 14, isLandBased: true }),
+        plane('land-attacker-2', { antiAir: 3, radius: 9, role: 'attacker', torpedo: 13, bombing: 14, isLandBased: true }),
+        plane('land-attacker-3', { antiAir: 2, radius: 8, role: 'attacker', torpedo: 11, bombing: 12, isLandBased: true }),
+        plane('land-attacker-4', { antiAir: 2, radius: 8, role: 'attacker', torpedo: 10, bombing: 12, isLandBased: true }),
+      ],
+      baseCount: 1,
+      targetRadius: 7,
+      enemyAir: 72,
+      targetStates: ['parity', 'parity'],
+      maxResults: 1,
+    });
+
+    expect(result.results[0].bases[0].landAttackerCount).toBe(3);
+    expect(result.results[0].bases[0].damagePower).toBeGreaterThan(0);
+  });
+
+  test('treats each base as two waves and records six waves for three bases', () => {
+    const result = optimizeLoadouts({
+      equipment: [
+        plane('f1', { antiAir: 11, intercept: 5, radius: 7, role: 'fighter', isLandBased: true }),
+        plane('f2', { antiAir: 10, intercept: 3, radius: 7, role: 'fighter', isLandBased: true }),
+        plane('f3', { antiAir: 9, intercept: 0, radius: 7, role: 'fighter', isLandBased: true }),
+        plane('f4', { antiAir: 8, intercept: 0, radius: 7, role: 'fighter', isLandBased: true }),
+        plane('f5', { antiAir: 11, intercept: 5, radius: 7, role: 'fighter', isLandBased: true }),
+        plane('f6', { antiAir: 10, intercept: 3, radius: 7, role: 'fighter', isLandBased: true }),
+        plane('f7', { antiAir: 9, intercept: 0, radius: 7, role: 'fighter', isLandBased: true }),
+        plane('f8', { antiAir: 8, intercept: 0, radius: 7, role: 'fighter', isLandBased: true }),
+        plane('f9', { antiAir: 11, intercept: 5, radius: 7, role: 'fighter', isLandBased: true }),
+        plane('f10', { antiAir: 10, intercept: 3, radius: 7, role: 'fighter', isLandBased: true }),
+        plane('f11', { antiAir: 9, intercept: 0, radius: 7, role: 'fighter', isLandBased: true }),
+        plane('f12', { antiAir: 8, intercept: 0, radius: 7, role: 'fighter', isLandBased: true }),
+      ],
+      baseCount: 3,
+      targetRadius: 7,
+      enemyAir: 72,
+      targetStates: ['parity', 'parity', 'parity', 'parity', 'parity', 'parity'],
+      maxResults: 1,
+    });
+
+    expect(result.results[0].bases).toHaveLength(3);
+    expect(result.results[0].waves).toHaveLength(6);
+    expect(result.results[0].waves.map((wave) => wave.baseIndex)).toEqual([0, 0, 1, 1, 2, 2]);
+  });
 });
 
 function plane(instanceId, overrides = {}) {
@@ -69,6 +151,7 @@ function plane(instanceId, overrides = {}) {
     role: 'attacker',
     torpedo: 0,
     bombing: 0,
+    isLandBased: false,
     ...overrides,
   };
 }

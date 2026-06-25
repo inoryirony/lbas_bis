@@ -11,6 +11,13 @@ describe('plugin entry', () => {
 
   test('normalizes target states for one selector per base', () => {
     expect(parseTargetStates('parity,bad,supremacy')).toEqual(['parity', 'supremacy']);
-    expect(normalizeTargetStates(['denial'], 3)).toEqual(['denial', 'denial', 'denial']);
+    expect(normalizeTargetStates(['denial'], 3)).toEqual([
+      'denial',
+      'denial',
+      'denial',
+      'denial',
+      'denial',
+      'denial',
+    ]);
   });
 });

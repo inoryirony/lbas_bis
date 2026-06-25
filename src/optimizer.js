@@ -7,10 +7,12 @@ const {
   calculateEffectiveRadius,
   requiredAirForState,
 } = require('./air-power');
+const { calculateBaseDamagePower } = require('./damage');
 
 const SLOTS_PER_BASE = 4;
 const DEFAULT_MAX_RESULTS = 10;
-const MAX_BASE_CANDIDATES = 160;
+const MAX_BASE_CANDIDATES = 1200;
+const WAVES_PER_BASE = 2;
 
 function optimizeLoadouts(options) {
   const {
@@ -22,6 +24,8 @@ function optimizeLoadouts(options) {
     maxResults = DEFAULT_MAX_RESULTS,
   } = options;
   const messages = [];
+  const wantedBaseCount = Math.max(1, Math.min(3, Number(baseCount) || 1));
+  const waveTargets = normalizeWaveTargets(targetStates, wantedBaseCount);
   const candidates = generateBaseCandidates(equipment, targetRadius, enemyAir);
 
   if (candidates.length === 0) {
@@ -29,17 +33,16 @@ function optimizeLoadouts(options) {
     return { messages, results: [] };
   }
 
-  const wantedBaseCount = Math.max(1, Math.min(3, Number(baseCount) || 1));
   const results = combineBases({
     candidates,
     baseIndex: 0,
     baseCount: wantedBaseCount,
     enemyAir,
-    targetStates,
+    waveTargets,
     usedIds: new Set(),
     selected: [],
   })
-    .map((bases) => summarizePlan(bases, enemyAir, targetStates))
+    .map((bases) => summarizePlan(bases, enemyAir, waveTargets))
     .filter((plan) => plan.fulfilled)
     .sort(comparePlans)
     .slice(0, maxResults);
@@ -61,6 +64,9 @@ function generateBaseCandidates(equipment, targetRadius, enemyAir) {
       const radius = calculateEffectiveRadius(loadout);
       const state = airStateFor(airPower, enemyAir);
       const attackScore = loadout.reduce((total, plane) => total + planeAttackScore(plane), 0);
+      const damagePower = calculateBaseDamagePower(loadout);
+      const landBasedCount = loadout.filter((plane) => plane.isLandBased).length;
+      const landAttackerCount = loadout.filter((plane) => plane.isLandBased && plane.role === 'attacker').length;
 
       return {
         loadout,
@@ -68,6 +74,9 @@ function generateBaseCandidates(equipment, targetRadius, enemyAir) {
         radius,
         state,
         attackScore,
+        damagePower,
+        landBasedCount,
+        landAttackerCount,
         fighterCount: loadout.filter((plane) => plane.role.includes('fighter')).length,
       };
     })
@@ -109,7 +118,7 @@ function combineBases(context) {
     baseIndex,
     baseCount,
     enemyAir,
-    targetStates,
+    waveTargets,
     usedIds,
     selected,
   } = context;
@@ -118,12 +127,15 @@ function combineBases(context) {
     return [[...selected]];
   }
 
-  const targetState = targetStates[baseIndex] || targetStates[0] || 'parity';
+  const targetState = targetStateForBase(waveTargets, baseIndex);
   const requiredRank = AIR_STATES[targetState]?.rank ?? AIR_STATES.parity.rank;
   const plans = [];
+  const sortedCandidates = candidates
+    .filter((candidate) => candidate.state.rank >= requiredRank)
+    .sort((left, right) => compareCandidatesForTarget(left, right, enemyAir, targetState));
 
-  for (const candidate of candidates) {
-    if (candidate.state.rank < requiredRank || overlaps(candidate, usedIds)) {
+  for (const candidate of sortedCandidates) {
+    if (overlaps(candidate, usedIds)) {
       continue;
     }
 
@@ -138,7 +150,7 @@ function combineBases(context) {
         baseIndex: baseIndex + 1,
         baseCount,
         enemyAir,
-        targetStates,
+        waveTargets,
         usedIds,
         selected,
       }),
@@ -157,9 +169,9 @@ function combineBases(context) {
   return plans;
 }
 
-function summarizePlan(bases, enemyAir, targetStates) {
+function summarizePlan(bases, enemyAir, waveTargets) {
   const baseSummaries = bases.map((candidate, index) => {
-    const targetState = targetStates[index] || targetStates[0] || 'parity';
+    const targetState = targetStateForBase(waveTargets, index);
     return {
       ...candidate,
       targetState,
@@ -172,8 +184,10 @@ function summarizePlan(bases, enemyAir, targetStates) {
   return {
     fulfilled,
     bases: baseSummaries,
+    waves: buildWaveSummaries(baseSummaries, enemyAir, waveTargets),
     totalAirPower: baseSummaries.reduce((total, base) => total + base.airPower, 0),
     totalAttackScore: baseSummaries.reduce((total, base) => total + base.attackScore, 0),
+    totalDamagePower: baseSummaries.reduce((total, base) => total + base.damagePower, 0),
     worstMargin: Math.min(...baseSummaries.map((base) => base.marginToTarget)),
   };
 }
@@ -184,9 +198,28 @@ function overlaps(candidate, usedIds) {
 
 function compareCandidates(left, right) {
   return (
-    right.state.rank - left.state.rank ||
+    right.landAttackerCount - left.landAttackerCount ||
+    right.damagePower - left.damagePower ||
+    right.landBasedCount - left.landBasedCount ||
     right.attackScore - left.attackScore ||
+    left.fighterCount - right.fighterCount ||
     right.airPower - left.airPower ||
+    right.state.rank - left.state.rank ||
+    0
+  );
+}
+
+function compareCandidatesForTarget(left, right, enemyAir, targetState) {
+  const requiredAir = requiredAirForTarget(enemyAir, targetState);
+  const leftWaste = Math.max(0, left.airPower - requiredAir);
+  const rightWaste = Math.max(0, right.airPower - requiredAir);
+
+  return (
+    right.landAttackerCount - left.landAttackerCount ||
+    right.damagePower - left.damagePower ||
+    right.landBasedCount - left.landBasedCount ||
+    right.attackScore - left.attackScore ||
+    leftWaste - rightWaste ||
     left.fighterCount - right.fighterCount
   );
 }
@@ -194,6 +227,7 @@ function compareCandidates(left, right) {
 function comparePlans(left, right) {
   return (
     Number(right.fulfilled) - Number(left.fulfilled) ||
+    right.totalDamagePower - left.totalDamagePower ||
     right.totalAttackScore - left.totalAttackScore ||
     right.worstMargin - left.worstMargin ||
     right.totalAirPower - left.totalAirPower
@@ -202,6 +236,7 @@ function comparePlans(left, right) {
 
 function equipmentSortScore(plane) {
   return (
+    (plane.isLandBased ? 1000 : 0) +
     (plane.antiAir || 0) * 10 +
     (plane.intercept || 0) * 8 +
     planeAttackScore(plane) +
@@ -217,7 +252,36 @@ function requiredAirForTarget(enemyAir, targetState) {
   return requiredAirForState(enemyAir, targetState);
 }
 
+function normalizeWaveTargets(targetStates, baseCount) {
+  const states = (Array.isArray(targetStates) ? targetStates : [])
+    .filter((state) => AIR_STATES[state]);
+  const fallback = states[0] || 'parity';
+  return Array.from({ length: baseCount * WAVES_PER_BASE }, (_, index) => states[index] || fallback);
+}
+
+function targetStateForBase(waveTargets, baseIndex) {
+  const first = waveTargets[baseIndex * WAVES_PER_BASE] || waveTargets[0] || 'parity';
+  const second = waveTargets[baseIndex * WAVES_PER_BASE + 1] || first;
+  return [first, second].sort((left, right) => AIR_STATES[right].rank - AIR_STATES[left].rank)[0];
+}
+
+function buildWaveSummaries(baseSummaries, enemyAir, waveTargets) {
+  return waveTargets.map((targetState, waveIndex) => {
+    const baseIndex = Math.floor(waveIndex / WAVES_PER_BASE);
+    const base = baseSummaries[baseIndex];
+    return {
+      waveIndex,
+      baseIndex,
+      targetState,
+      airPower: base.airPower,
+      state: airStateFor(base.airPower, enemyAir),
+      marginToTarget: base.airPower - requiredAirForTarget(enemyAir, targetState),
+    };
+  });
+}
+
 module.exports = {
   generateBaseCandidates,
+  normalizeWaveTargets,
   optimizeLoadouts,
 };

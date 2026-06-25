@@ -1,6 +1,7 @@
 'use strict';
 
 const RECON_MASTER_IDS = new Set([138, 178, 311, 312]);
+const LAND_BASED_API_TYPE_ROOTS = new Set([17, 21, 22, 25, 26]);
 const AIRCRAFT_EQUIP_TYPES = new Set([
   6, 7, 8, 9, 10, 11,
   25, 26,
@@ -53,6 +54,7 @@ function toPlaneInstance(equip, master) {
     improvement: Number(equip.api_level) || 0,
     proficiency: Number(equip.api_alv) || 0,
     role: classifyRole(master, { antiAir, torpedo, bombing }),
+    isLandBased: isLandBasedMaster(master),
     torpedo,
     bombing,
   };
@@ -84,6 +86,10 @@ function classifyRole(master, stats) {
 
 function getEquipType(master) {
   return Number(master.api_type?.[2]) || 0;
+}
+
+function isLandBasedMaster(master) {
+  return LAND_BASED_API_TYPE_ROOTS.has(Number(master.api_type?.[0]) || 0);
 }
 
 module.exports = {
