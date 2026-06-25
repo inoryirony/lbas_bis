@@ -108,6 +108,46 @@ describe('LBAS optimizer MVP', () => {
     expect(result.results[0].bases[0].damagePower).toBeGreaterThan(0);
   });
 
+  test('keeps long-range land attackers in the candidate pool for radius-seven targets', () => {
+    const shortRangeFighters = Array.from({ length: 60 }, (_, index) =>
+      plane(`short-fighter-${index}`, {
+        antiAir: 12,
+        intercept: 4,
+        radius: 3,
+        role: 'fighter',
+        isLandBased: true,
+      }),
+    );
+    const gingaSquadron = Array.from({ length: 4 }, (_, index) =>
+      plane(`ginga-${index}`, {
+        antiAir: 3,
+        radius: 9,
+        role: 'attacker',
+        torpedo: 14,
+        bombing: 14,
+        proficiency: 7,
+        isLandBased: true,
+      }),
+    );
+
+    const result = optimizeLoadouts({
+      equipment: [...shortRangeFighters, ...gingaSquadron],
+      baseCount: 1,
+      targetRadius: 7,
+      enemyAir: 72,
+      targetStates: ['parity', 'parity'],
+      maxResults: 1,
+    });
+
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0].bases[0].loadout.map((item) => item.instanceId)).toEqual([
+      'ginga-0',
+      'ginga-1',
+      'ginga-2',
+      'ginga-3',
+    ]);
+  });
+
   test('treats each base as two waves and records six waves for three bases', () => {
     const result = optimizeLoadouts({
       equipment: [

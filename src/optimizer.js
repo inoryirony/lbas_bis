@@ -54,7 +54,7 @@ function optimizeLoadouts(options) {
 }
 
 function generateBaseCandidates(equipment, targetRadius, enemyAir) {
-  const pool = selectCandidatePool(equipment);
+  const pool = selectCandidatePool(equipment, targetRadius);
   const combinations = [];
   choose(pool, SLOTS_PER_BASE, 0, [], combinations);
 
@@ -85,7 +85,7 @@ function generateBaseCandidates(equipment, targetRadius, enemyAir) {
     .slice(0, MAX_BASE_CANDIDATES);
 }
 
-function selectCandidatePool(equipment) {
+function selectCandidatePool(equipment, targetRadius) {
   const unique = new Map();
   for (const plane of equipment || []) {
     if (!plane || plane.instanceId == null || unique.has(plane.instanceId)) {
@@ -94,9 +94,9 @@ function selectCandidatePool(equipment) {
     unique.set(plane.instanceId, plane);
   }
   return [...unique.values()]
-    .filter((plane) => (plane.radius || 0) > 0)
-    .sort((left, right) => equipmentSortScore(right) - equipmentSortScore(left))
-    .slice(0, 48);
+    .filter((plane) => canContributeToTargetRadius(plane, targetRadius))
+    .sort((left, right) => equipmentSortScore(right, targetRadius) - equipmentSortScore(left, targetRadius))
+    .slice(0, 72);
 }
 
 function choose(items, count, start, current, output) {
@@ -234,9 +234,24 @@ function comparePlans(left, right) {
   );
 }
 
-function equipmentSortScore(plane) {
+function canContributeToTargetRadius(plane, targetRadius) {
+  const radius = Number(plane.radius) || 0;
+  if (radius <= 0) {
+    return false;
+  }
+  if (radius >= targetRadius) {
+    return true;
+  }
+  return plane.role === 'recon' && radius >= Math.max(1, targetRadius - 3);
+}
+
+function equipmentSortScore(plane, targetRadius) {
+  const reachesTarget = (Number(plane.radius) || 0) >= targetRadius;
   return (
+    (reachesTarget ? 10000 : 0) +
     (plane.isLandBased ? 1000 : 0) +
+    (plane.role === 'attacker' ? 700 : 0) +
+    (plane.role === 'recon' ? 350 : 0) +
     (plane.antiAir || 0) * 10 +
     (plane.intercept || 0) * 8 +
     planeAttackScore(plane) +

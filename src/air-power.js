@@ -10,6 +10,7 @@ const AIR_STATES = {
 
 const FIGHTER_PROFICIENCY_BONUS = [0, 0, 2, 5, 9, 14, 14, 22];
 const SEAPLANE_BOMBER_PROFICIENCY_BONUS = [0, 0, 1, 1, 1, 3, 3, 6];
+const ATTACKER_PROFICIENCY_BONUS = [0, 0, 1, 1, 1, 3, 3, 3];
 const RECON_COEFFICIENTS = new Map([
   [311, 1.15],
   [312, 1.18],
@@ -139,6 +140,9 @@ function visibleProficiencyBonus(plane) {
   }
   if (plane.role === 'seaplaneBomber') {
     return SEAPLANE_BOMBER_PROFICIENCY_BONUS[level];
+  }
+  if (plane.role === 'attacker' || plane.role === 'bomber') {
+    return ATTACKER_PROFICIENCY_BONUS[level];
   }
   return 0;
 }

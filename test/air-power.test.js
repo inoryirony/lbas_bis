@@ -30,6 +30,21 @@ describe('LBAS air power formulas', () => {
     expect(airPowerValue).toBe(103);
   });
 
+  test('counts visible proficiency bonus for land-based attackers', () => {
+    const ginga = {
+      antiAir: 3,
+      intercept: 0,
+      improvement: 0,
+      proficiency: 7,
+      role: 'attacker',
+      slotSize: 18,
+    };
+
+    expect(calculateSlotAirPower(ginga)).toBe(15);
+    expect(calculateBaseAirPower([ginga, ginga, ginga, ginga])).toBe(60);
+    expect(airStateFor(calculateBaseAirPower([ginga, ginga, ginga, ginga]), 72).key).toBe('parity');
+  });
+
   test('applies land recon coefficient and range extension to a base loadout', () => {
     const loadout = [
       plane('fighter-1', { antiAir: 10, radius: 4, role: 'fighter' }),
