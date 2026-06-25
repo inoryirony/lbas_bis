@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="description" content="艦隊これくしょん -艦これ- における、制空権の状態についてのシミュレーションが行えます。基地航空隊およびイベント海域にも対応。">
+  <meta name="viewport" content="width=1050">
+
+  <!-- Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-23688950-4"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'UA-23688950-4');
+  </script>
+
+  <title>制空権計算機 - 艦これ計算機</title>
+  <style>
+    body { margin: 40px; font-size: 97%; line-height: 1.5; background-color: #f8f8f8; }
+    .wrapper { max-width: 1200px; margin-left: auto; margin-right: auto; }
+    table { border-collapse: collapse; margin: .2em; }
+    td { padding: .1em .2em; border: solid 1px silver; text-align: center; vertical-align: middle; white-space: nowrap; }
+    .td-nobd { border: 0; text-align: left; }
+    .td-nobd-center { border: 0; }
+    .td-ship { padding-right: .8em; border: 0; text-align: left; }
+    .td-eq { text-align: left; }
+    .blackx { border-left: double 1px black; border-right: double 1px black; }
+    .blackt { border-top: double 1px black; }
+    .icon { display: inline-block; vertical-align: middle; width: 24px; height: 24px; }
+    .icon-img { cursor: move; cursor: grab; cursor: -webkit-grab; }
+    select { vertical-align: middle; }
+    .star-span { vertical-align: middle; }
+    input[type="number"] { width: 3em; text-align: center; vertical-align: middle; }
+    input[type="number"].star { width: 2.5em; color: #43a3a0; }
+    input[type="number"].range-input { width: 2.5em; display: none; }
+    label { margin-right: .5em; cursor: pointer; }
+    hr { margin-top: 1.5em; margin-bottom: 1.5em; width: 40%; color: lightgray; }
+    .prof { display: none; }
+    .star-span { display: none; color: #45a9a5; }
+    .hidden { display: none; }
+    .bold { font-weight: bold; }
+    .small { font-size: 85%; }
+    .alignr { text-align: right; }
+  </style>
+</head>
+
+<body><div class="wrapper">
+  <h1>制空権計算機</h1>
+
+  <!-- Ads by Google -->
+  <div style="text-align:center;margin-bottom:1.5em">
+    <script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>
+    <ins class="adsbygoogle" style="display:inline-block;width:728px;height:90px" data-ad-client="ca-pub-9948128187716309" data-ad-slot="4603637871"></ins>
+    <script>(adsbygoogle=window.adsbygoogle||[]).push({});</script>
+  </div>
+
+  <p>
+    <span style="display:inline-block;margin-right:1em">編成読込:
+    <select id="data-list" style="width:13em"><option selected>--- 登録編成なし ---</option></select>
+    <button id="load-data" disabled>読込</button>
+    <button id="remove-data" disabled>削除</button></span>
+    <span style="display:inline-block;margin-right:1em">編成保存:
+    <input id="save-name" placeholder="登録編成名" maxlength="20" style="width:11em">
+    <button id="save-data">保存</button></span>
+    <span style="display:inline-block">URL生成:
+    <input id="data-url" style="width:11em" readonly>
+    <button id="copy-url">コピー</button></span>
+  </p>
+
+  <table style="border:double 1px black;">
+    <colgroup>
+      <col span="9" class="blackx">
+    </colgroup>
+
+    <tr class="blackt">
+      <td colspan="6" class="td-fleet bold">自艦隊</td>
+      <td colspan="3" class="bold">敵艦隊</td>
+    </tr>
+
+    <tr class="blackt">
+      <td colspan="6" class="td-fleet">
+        <table style="margin:0">
+          <tr>
+            <td class="td-nobd">艦1:</td>
+            <td class="td-ship"><select id="ship0" class="ship"><option value="0" selected>なし</option></select></td>
+            <td class="td-nobd lbas-tgl">艦2:</td>
+            <td class="td-ship lbas-tgl"><select id="ship1" class="ship"><option value="0" selected>なし</option></select></td>
+            <td class="td-nobd lbas-tgl" style="padding-left: 1em" rowspan="3">
+              表示隻数:<br>
+              <label><input type="radio" name="disp-ship-num" value="4" checked>4隻</label>
+              <label><input type="radio" name="disp-ship-num" value="6">6隻</label>
+            </td>
+            <td class="td-nobd" style="padding-left: 1em" rowspan="3">
+              <button id="reset" style="padding: .1em .2em">編成クリア</button>
+            </td>
+          </tr>
+          <tr>
+            <td class="td-nobd lbas-tgl">艦3:</td>
+            <td class="td-ship lbas-tgl"><select id="ship2" class="ship"><option value="0" selected>なし</option></select></td>
+            <td class="td-nobd lbas-tgl">艦4:</td>
+            <td class="td-ship lbas-tgl"><select id="ship3" class="ship"><option value="0" selected>なし</option></select></td>
+            <td id="lbas-info" class="td-nobd-center hidden" colspan="2"></td>
+          </tr>
+          <tr class="tr-6s">
+            <td class="td-nobd">艦5:</td>
+            <td class="td-ship"><select id="ship4" class="ship"><option value="0" selected>なし</option></select></td>
+            <td class="td-nobd">艦6:</td>
+            <td class="td-ship"><select id="ship5" class="ship"><option value="0" selected>なし</option></select></td>
+          </tr>
+        </table>
+      </td>
+      <td colspan="3">
+        <table style="margin:0">
+          <tr>
+            <td class="td-nobd">海域:</td>
+            <td class="td-nobd"><select id="map"><option value="0" selected>なし</option></select></td>
+          </tr>
+          <tr>
+            <td class="td-nobd">マス:</td>
+            <td class="td-nobd">
+              <select id="node"><option value="0" selected>--- 海域を選択 ---</option></select>
+              <span id="mapguide" class="hidden" style="margin-left:1ex">(<a href="dummy" id="maplink">Wiki</a>)</span>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+
+    <tr class="blackt">
+      <td>艦載機</td>
+      <td>搭載</td>
+      <td>制空</td>
+      <td class="lbas-tgl">艦載機</td>
+      <td class="lbas-tgl">搭載</td>
+      <td id="radius-title">制空</td>
+      <td colspan="2">敵艦名</td>
+      <td>制空値</td>
+    </tr>
+
+    <tr id="tr0" class="blackt">
+      <td id="td-eq0" class="td-eq">
+        <span id="icon0" class="icon"></span>
+        <select id="eq0" class="eq"><option value="0" selected>なし</option></select>
+        <select id="prof0" class="prof"></select>
+        <span id="star-span0" class="star-span">★<input type="number" id="star0" class="star" value="0"></span>
+      </td>
+      <td><input type="number" id="num0"></td>
+      <td id="fp0"></td>
+      <td id="td-eq5" class="td-eq lbas-tgl">
+        <span id="icon5" class="icon"></span>
+        <select id="eq5" class="eq"><option value="0" selected>なし</option></select>
+        <select id="prof5" class="prof"></select>
+        <span id="star-span5" class="star-span">★<input type="number" id="star5" class="star" value="0"></span>
+      </td>
+      <td class="lbas-tgl"><input type="number" id="num5"></td>
+      <td><span id="fp5"></span><input type="number" id="range-input0" class="range-input" value="4"></td>
+      <td colspan="2"><select id="eship0" class="eship"><option value="0" selected>なし</option></select></td>
+      <td><input type="number" id="efp-input0" class="hidden" value="0"><span id="efp0"></span></td>
+    </tr>
+
+    <tr id="tr1">
+      <td id="td-eq1" class="td-eq">
+        <span id="icon1" class="icon"></span>
+        <select id="eq1" class="eq"><option value="0" selected>なし</option></select>
+        <select id="prof1" class="prof"></select>
+        <span id="star-span1" class="star-span">★<input type="number" id="star1" class="star" value="0"></span>
+      </td>
+      <td><input type="number" id="num1"></td>
+      <td id="fp1"></td>
+      <td id="td-eq6" class="td-eq lbas-tgl">
+        <span id="icon6" class="icon"></span>
+        <select id="eq6" class="eq"><option value="0" selected>なし</option></select>
+        <select id="prof6" class="prof"></select>
+        <span id="star-span6" class="star-span">★<input type="number" id="star6" class="star" value="0"></span>
+      </td>
+      <td class="lbas-tgl"><input type="number" id="num6"></td>
+      <td><span id="fp6"></span><input type="number" id="range-input1" class="range-input" value="4"></td>
+      <td colspan="2"><select id="eship1" class="eship"><option value="0" selected>なし</option></select></td>
+      <td><input type="number" id="efp-input1" class="hidden" value="0"><span id="efp1"></span></td>
+    </tr>
+
+    <tr id="tr2">
+      <td id="td-eq2" class="td-eq">
+        <span id="icon2" class="icon"></span>
+        <select id="eq2" class="eq"><option value="0" selected>なし</option></select>
+        <select id="prof2" class="prof"></select>
+        <span id="star-span2" class="star-span">★<input type="number" id="star2" class="star" value="0"></span>
+      </td>
+      <td><input type="number" id="num2"></td>
+      <td id="fp2"></td>
+      <td id="td-eq7" class="td-eq lbas-tgl">
+        <span id="icon7" class="icon"></span>
+        <select id="eq7" class="eq"><option value="0" selected>なし</option></select>
+        <select id="prof7" class="prof"></select>
+        <span id="star-span7" class="star-span">★<input type="number" id="star7" class="star" value="0"></span>
+      </td>
+      <td class="lbas-tgl"><input type="number" id="num7"></td>
+      <td><span id="fp7"></span><input type="number" id="range-input2" class="range-input" value="4"></td>
+      <td colspan="2"><select id="eship2" class="eship"><option value="0" selected>なし</option></select></td>
+      <td><input type="number" id="efp-input2" class="hidden" value="0"><span id="efp2"></span></td>
+    </tr>
+
+    <tr id="tr3">
+      <td id="td-eq3" class="td-eq">
+        <span id="icon3" class="icon"></span>
+        <select id="eq3" class="eq"><option value="0" selected>なし</option></select>
+        <select id="prof3" class="prof"></select>
+        <span id="star-span3" class="star-span">★<input type="number" id="star3" class="star" value="0"></span>
+      </td>
+      <td><input type="number" id="num3"></td>
+      <td id="fp3"></td>
+      <td id="td-eq8" class="td-eq lbas-tgl">
+        <span id="icon8" class="icon"></span>
+        <select id="eq8" class="eq"><option value="0" selected>なし</option></select>
+        <select id="prof8" class="prof"></select>
+        <span id="star-span8" class="star-span">★<input type="number" id="star8" class="star" value="0"></span>
+      </td>
+      <td class="lbas-tgl"><input type="number" id="num8"></td>
+      <td><span id="fp8"></span><input type="number" id="range-input3" class="range-input" value="4"></td>
+      <td colspan="2"><select id="eship3" class="eship"><option value="0" selected>なし</option></select></td>
+      <td><input type="number" id="efp-input3" class="hidden" value="0"><span id="efp3"></span></td>
+    </tr>
+
+    <tr id="tr4">
+      <td id="td-eq4" class="td-eq">
+        <span id="icon4" class="icon"></span>
+        <select id="eq4" class="eq"><option value="0" selected>なし</option></select>
+        <select id="prof4" class="prof"></select>
+        <span id="star-span4" class="star-span">★<input type="number" id="star4" class="star" value="0"></span>
+      </td>
+      <td><input type="number" id="num4"></td>
+      <td id="fp4"></td>
+      <td id="td-eq9" class="td-eq lbas-tgl">
+        <span id="icon9" class="icon"></span>
+        <select id="eq9" class="eq"><option value="0" selected>なし</option></select>
+        <select id="prof9" class="prof"></select>
+        <span id="star-span9" class="star-span">★<input type="number" id="star9" class="star" value="0"></span>
+      </td>
+      <td class="lbas-tgl"><input type="number" id="num9"></td>
+      <td id="fp9"></td>
+      <td colspan="2"><select id="eship4" class="eship"><option value="0" selected>なし</option></select></td>
+      <td><input type="number" id="efp-input4" class="hidden" value="0"><span id="efp4"></span></td>
+    </tr>
+
+    <tr id="tr5">
+      <td id="td-eq10" class="td-eq blackt">
+        <span id="icon10" class="icon lbas-tgl"></span>
+        <select id="eq10" class="eq lbas-tgl"><option value="0" selected>なし</option></select>
+        <select id="prof10" class="prof"></select>
+        <span id="star-span10" class="star-span">★<input type="number" id="star10" class="star" value="0"></span>
+        <table id="lbas-result-table" class="hidden" style="width:100%;margin:0">
+          <tr>
+            <td id="lbas-fp-sum" class="td-nobd-center bold" style="width:50%;padding:0"></td>
+            <td id="lbas-efp-sum" class="td-nobd-center bold" style="width:50%;padding:0"></td>
+          </tr>
+          <tr>
+            <td id="lbas-border" class="td-nobd-center" colspan="2" style="padding:0"></td>
+          </tr>
+        </table>
+      </td>
+      <td class="lbas-tgl blackt"><input type="number" id="num10"></td>
+      <td id="fp10" class="lbas-tgl blackt"></td>
+      <td id="td-eq15" class="td-eq lbas-tgl blackt">
+        <span id="icon15" class="icon"></span>
+        <select id="eq15" class="eq"><option value="0" selected>なし</option></select>
+        <select id="prof15" class="prof"></select>
+        <span id="star-span15" class="star-span">★<input type="number" id="star15" class="star" value="0"></span>
+      </td>
+      <td class="lbas-tgl blackt"><input type="number" id="num15"></td>
+      <td id="fp15" class="lbas-tgl blackt"></td>
+      <td colspan="2" class="black-tgl"><select id="eship5" class="eship"><option value="0" selected>なし</option></select></td>
+      <td class="black-tgl"><input type="number" id="efp-input5" class="hidden" value="0"><span id="efp5"></span></td>
+    </tr>
+
+    <tr id="tr6">
+      <td id="td-eq11" class="td-eq lbas-tgl">
+        <span id="icon11" class="icon"></span>
+        <select id="eq11" class="eq"><option value="0" selected>なし</option></select>
+        <select id="prof11" class="prof"></select>
+        <span id="star-span11" class="star-span">★<input type="number" id="star11" class="star" value="0"></span>
+      </td>
+      <td class="lbas-tgl"><input type="number" id="num11"></td>
+      <td id="fp11" class="lbas-tgl"></td>
+      <td id="td-eq16" class="td-eq lbas-tgl">
+        <span id="icon16" class="icon"></span>
+        <select id="eq16" class="eq"><option value="0" selected>なし</option></select>
+        <select id="prof16" class="prof"></select>
+        <span id="star-span16" class="star-span">★<input type="number" id="star16" class="star" value="0"></span>
+      </td>
+      <td class="lbas-tgl"><input type="number" id="num16"></td>
+      <td id="fp16" class="lbas-tgl"></td>
+      <td colspan="3" class="blackt"></td>
+    </tr>
+
+    <tr id="tr7" class="lbas-tgl">
+      <td id="td-eq12" class="td-eq">
+        <span id="icon12" class="icon"></span>
+        <select id="eq12" class="eq"><option value="0" selected>なし</option></select>
+        <select id="prof12" class="prof"></select>
+        <span id="star-span12" class="star-span">★<input type="number" id="star12" class="star" value="0"></span>
+      </td>
+      <td><input type="number" id="num12"></td>
+      <td id="fp12"></td>
+      <td id="td-eq17" class="td-eq">
+        <span id="icon17" class="icon"></span>
+        <select id="eq17" class="eq"><option value="0" selected>なし</option></select>
+        <select id="prof17" class="prof"></select>
+        <span id="star-span17" class="star-span">★<input type="number" id="star17" class="star" value="0"></span>
+      </td>
+      <td><input type="number" id="num17"></td>
+      <td id="fp17"></td>
+      <td colspan="3" class="blackt"></td>
+    </tr>
+
+    <tr id="tr8" class="lbas-tgl">
+      <td id="td-eq13" class="td-eq">
+        <span id="icon13" class="icon"></span>
+        <select id="eq13" class="eq"><option value="0" selected>なし</option></select>
+        <select id="prof13" class="prof"></select>
+        <span id="star-span13" class="star-span">★<input type="number" id="star13" class="star" value="0"></span>
+      </td>
+      <td><input type="number" id="num13"></td>
+      <td id="fp13"></td>
+      <td id="td-eq18" class="td-eq">
+        <span id="icon18" class="icon"></span>
+        <select id="eq18" class="eq"><option value="0" selected>なし</option></select>
+        <select id="prof18" class="prof"></select>
+        <span id="star-span18" class="star-span">★<input type="number" id="star18" class="star" value="0"></span>
+      </td>
+      <td><input type="number" id="num18"></td>
+      <td id="fp18"></td>
+      <td colspan="3" class="blackt"></td>
+    </tr>
+
+    <tr id="tr9">
+      <td id="td-eq14" class="td-eq">
+        <span id="icon14" class="icon"></span>
+        <select id="eq14" class="eq"><option value="0" selected>なし</option></select>
+        <select id="prof14" class="prof"></select>
+        <span id="star-span14" class="star-span">★<input type="number" id="star14" class="star" value="0"></span>
+      </td>
+      <td><input type="number" id="num14"></td>
+      <td id="fp14"></td>
+      <td id="td-eq19" class="td-eq">
+        <span id="icon19" class="icon"></span>
+        <select id="eq19" class="eq"><option value="0" selected>なし</option></select>
+        <select id="prof19" class="prof"></select>
+        <span id="star-span19" class="star-span">★<input type="number" id="star19" class="star" value="0"></span>
+      </td>
+      <td><input type="number" id="num19"></td>
+      <td id="fp19"></td>
+      <td colspan="2" class="bold blackt">自艦隊制空値</td>
+      <td id="fp-sum" class="bold blackt"></td>
+    </tr>
+
+    <tr id="tr10" class="tr-6s blackt">
+      <td id="td-eq20" class="td-eq">
+        <span id="icon20" class="icon"></span>
+        <select id="eq20" class="eq"><option value="0" selected>なし</option></select>
+        <select id="prof20" class="prof"></select>
+        <span id="star-span20" class="star-span">★<input type="number" id="star20" class="star" value="0"></span>
+      </td>
+      <td><input type="number" id="num20"></td>
+      <td id="fp20"></td>
+      <td id="td-eq25" class="td-eq">
+        <span id="icon25" class="icon"></span>
+        <select id="eq25" class="eq"><option value="0" selected>なし</option></select>
+        <select id="prof25" class="prof"></select>
+        <span id="star-span25" class="star-span">★<input type="number" id="star25" class="star" value="0"></span>
+      </td>
+      <td><input type="number" id="num25"></td>
+      <td id="fp25"></td>
+      <td colspan="2" class="bold blackt">敵艦隊制空値</td>
+      <td id="efp-sum" class="bold blackt"></td>
+    </tr>
+
+    <tr id="tr11" class="tr-6s">
+      <td id="td-eq21" class="td-eq">
+        <span id="icon21" class="icon"></span>
+        <select id="eq21" class="eq"><option value="0" selected>なし</option></select>
+        <select id="prof21" class="prof"></select>
+        <span id="star-span21" class="star-span">★<input type="number" id="star21" class="star" value="0"></span>
+      </td>
+      <td><input type="number" id="num21"></td>
+      <td id="fp21"></td>
+      <td id="td-eq26" class="td-eq">
+        <span id="icon26" class="icon"></span>
+        <select id="eq26" class="eq"><option value="0" selected>なし</option></select>
+        <select id="prof26" class="prof"></select>
+        <span id="star-span26" class="star-span">★<input type="number" id="star26" class="star" value="0"></span>
+      </td>
+      <td><input type="number" id="num26"></td>
+      <td id="fp26"></td>
+      <td rowspan="4" class="bold blackt" style="line-height:1.15">必<br>要<br>ラ<br>イ<br>ン</td>
+      <td class="blackt">制空権確保</td>
+      <td id="border0" class="blackt"></td>
+    </tr>
+
+    <tr id="tr12" class="tr-6s">
+      <td id="td-eq22" class="td-eq">
+        <span id="icon22" class="icon"></span>
+        <select id="eq22" class="eq"><option value="0" selected>なし</option></select>
+        <select id="prof22" class="prof"></select>
+        <span id="star-span22" class="star-span">★<input type="number" id="star22" class="star" value="0"></span>
+      </td>
+      <td><input type="number" id="num22"></td>
+      <td id="fp22"></td>
+      <td id="td-eq27" class="td-eq">
+        <span id="icon27" class="icon"></span>
+        <select id="eq27" class="eq"><option value="0" selected>なし</option></select>
+        <select id="prof27" class="prof"></select>
+        <span id="star-span27" class="star-span">★<input type="number" id="star27" class="star" value="0"></span>
+      </td>
+      <td><input type="number" id="num27"></td>
+      <td id="fp27"></td>
+      <td>航空優勢</td>
+      <td id="border1"></td>
+    </tr>
+
+    <tr id="tr13" class="tr-6s">
+      <td id="td-eq23" class="td-eq">
+        <span id="icon23" class="icon"></span>
+        <select id="eq23" class="eq"><option value="0" selected>なし</option></select>
+        <select id="prof23" class="prof"></select>
+        <span id="star-span23" class="star-span">★<input type="number" id="star23" class="star" value="0"></span>
+      </td>
+      <td><input type="number" id="num23"></td>
+      <td id="fp23"></td>
+      <td id="td-eq28" class="td-eq">
+        <span id="icon28" class="icon"></span>
+        <select id="eq28" class="eq"><option value="0" selected>なし</option></select>
+        <select id="prof28" class="prof"></select>
+        <span id="star-span28" class="star-span">★<input type="number" id="star28" class="star" value="0"></span>
+      </td>
+      <td><input type="number" id="num28"></td>
+      <td id="fp28"></td>
+      <td>航空均衡</td>
+      <td id="border2"></td>
+    </tr>
+
+    <tr id="tr14">
+      <td id="td-eq24" class="td-eq">
+        <span id="icon24" class="icon"></span>
+        <select id="eq24" class="eq"><option value="0" selected>なし</option></select>
+        <select id="prof24" class="prof"></select>
+        <span id="star-span24" class="star-span">★<input type="number" id="star24" class="star" value="0"></span>
+      </td>
+      <td><input type="number" id="num24"></td>
+      <td id="fp24"></td>
+      <td id="td-eq29" class="td-eq">
+        <span id="icon29" class="icon"></span>
+        <select id="eq29" class="eq"><option value="0" selected>なし</option></select>
+        <select id="prof29" class="prof"></select>
+        <span id="star-span29" class="star-span">★<input type="number" id="star29" class="star" value="0"></span>
+      </td>
+      <td><input type="number" id="num29"></td>
+      <td id="fp29"></td>
+      <td>航空劣勢</td>
+      <td id="border3"></td>
+    </tr>
+  </table>
+
+  <table style="margin-top:1em"><tr><td class="td-nobd" style="vertical-align:top;padding:0">
+  <table>
+    <tr>
+      <td class="td-nobd bold" style="padding-right:.5em">状態:</td>
+      <td id="result" class="td-nobd bold"></td>
+    </tr>
+  </table>
+
+  <div id="chart" style="width:540px;height:54px"></div>
+
+  <div class="small" style="margin-top:1.2em;margin-bottom:1.5em">
+    次の機種の表示熟練度&gt;&gt;を内部熟練度120として扱う:
+    <table><tr>
+      <td class="td-nobd">
+        <label><input type="checkbox" id="max-prof0" class="max-prof" checked>艦戦</label>
+        <label><input type="checkbox" id="max-prof1" class="max-prof">艦攻</label>
+        <label><input type="checkbox" id="max-prof2" class="max-prof">艦爆</label>
+        <label><input type="checkbox" id="max-prof3" class="max-prof" checked>水戦</label>
+        <label><input type="checkbox" id="max-prof4" class="max-prof">水爆</label><br>
+        <label><input type="checkbox" id="max-prof5" class="max-prof" checked>陸戦</label>
+        <label><input type="checkbox" id="max-prof6" class="max-prof">陸攻</label>
+        <label><input type="checkbox" id="max-prof7" class="max-prof">噴式</label>
+        <label><input type="checkbox" id="max-prof8" class="max-prof">艦偵</label>
+        <label><input type="checkbox" id="max-prof9" class="max-prof">水偵</label>
+        <label><input type="checkbox" id="max-prof10" class="max-prof">飛行艇</label>
+      </td>
+      <td class="td-nobd">
+        <button id="prof-check">全てチェック</button>
+        <button id="prof-uncheck">全て外す</button>
+      </td>
+    </tr></table>
+  </div>
+  </td>
+
+  <td class="td-nobd lbas-tgl small" style="padding-left:1.5em;vertical-align:top">
+  <label id="label-enable-pre-battle"><input type="checkbox" id="enable-pre-battle">道中の制空状態による自機損耗を考慮</label>
+  <div id="pre-battle-input" class="hidden">
+    <table>
+      <tr id="tr-pre-battle0">
+        <td class="td-nobd">1戦目:</td>
+        <td class="td-nobd"><select id="pre-battle0" class="pre-battle"><option value="0" selected>なし</option></select></td>
+      </tr>
+      <tr id="tr-pre-battle1">
+        <td class="td-nobd">2戦目:</td>
+        <td class="td-nobd"><select id="pre-battle1" class="pre-battle"><option value="0" selected>なし</option></select></td>
+      </tr>
+      <tr id="tr-pre-battle2">
+        <td class="td-nobd">3戦目:</td>
+        <td class="td-nobd"><select id="pre-battle2" class="pre-battle"><option value="0" selected>なし</option></select></td>
+      </tr>
+      <tr id="tr-pre-battle3">
+        <td class="td-nobd">4戦目:</td>
+        <td class="td-nobd"><select id="pre-battle3" class="pre-battle"><option value="0" selected>なし</option></select></td>
+      </tr>
+      <tr id="tr-pre-battle4">
+        <td class="td-nobd">5戦目:</td>
+        <td class="td-nobd"><select id="pre-battle4" class="pre-battle"><option value="0" selected>なし</option></select></td>
+      </tr>
+      <tr id="tr-pre-battle5">
+        <td class="td-nobd">6戦目:</td>
+        <td class="td-nobd"><select id="pre-battle5" class="pre-battle"><option value="0" selected>なし</option></select></td>
+      </tr>
+      <tr id="tr-pre-battle6">
+        <td class="td-nobd">7戦目:</td>
+        <td class="td-nobd"><select id="pre-battle6" class="pre-battle"><option value="0" selected>なし</option></select></td>
+      </tr>
+      <tr id="tr-pre-battle7">
+        <td class="td-nobd">8戦目:</td>
+        <td class="td-nobd"><select id="pre-battle7" class="pre-battle"><option value="0" selected>なし</option></select></td>
+      </tr>
+      <tr id="tr-pre-battle8">
+        <td class="td-nobd">9戦目:</td>
+        <td class="td-nobd"><select id="pre-battle8" class="pre-battle"><option value="0" selected>なし</option></select></td>
+      </tr>
+      <tr id="tr-pre-battle9">
+        <td class="td-nobd">10戦目:</td>
+        <td class="td-nobd"><select id="pre-battle9" class="pre-battle"><option value="0" selected>なし</option></select></td>
+      </tr>
+    </table>
+    <table><tr><td class="td-nobd" colspan="2">
+      <table>
+        <tr>
+          <td rowspan="2" class="td-nobd-center bold" style="padding-right:.5em">損耗後<br>自制空値</td>
+          <td class="td-nobd-center small">下位1%</td><td class="td-nobd"></td>
+          <td class="td-nobd-center small">下位5%</td><td class="td-nobd"></td>
+          <td class="td-nobd-center small">中央値</td>
+        </tr>
+        <tr>
+          <td id="pre-battle-result-1p" class="td-nobd-center bold"></td><td class="td-nobd bold">～</td>
+          <td id="pre-battle-result-5p" class="td-nobd-center bold"></td><td class="td-nobd bold">～</td>
+          <td id="pre-battle-result-median" class="td-nobd-center bold"></td>
+        </tr>
+      </table>
+    </td></tr></table>
+  </div>
+  </td>
+
+  <td class="td-nobd small" style="padding-left:1em;vertical-align:top">
+  <label id="label-enable-pre-lbas"><input type="checkbox" id="enable-pre-lbas">基地航空隊による敵機損耗を考慮</label>
+  <div id="pre-lbas-input" class="hidden">
+    <table>
+      <tr>
+        <td class="td-nobd">第1航空隊:</td>
+        <td class="td-nobd"><select id="pre-lbas0" class="pre-lbas"><option value="0" selected>なし</option></select></td>
+      </tr><tr>
+        <td class="td-nobd alignr">(2回目)</td>
+        <td class="td-nobd"><select id="pre-lbas1" class="pre-lbas"><option value="0" selected>なし</option></select></td>
+      </tr><tr>
+        <td class="td-nobd">第2航空隊:</td>
+        <td class="td-nobd"><select id="pre-lbas2" class="pre-lbas"><option value="0" selected>なし</option></select></td>
+      </tr><tr>
+        <td class="td-nobd alignr">(2回目)</td>
+        <td class="td-nobd"><select id="pre-lbas3" class="pre-lbas"><option value="0" selected>なし</option></select></td>
+      </tr><tr>
+        <td class="td-nobd">第3航空隊:</td>
+        <td class="td-nobd"><select id="pre-lbas4" class="pre-lbas"><option value="0" selected>なし</option></select></td>
+      </tr><tr class="lbas-tgl">
+        <td class="td-nobd alignr">(2回目)</td>
+        <td class="td-nobd"><select id="pre-lbas5" class="pre-lbas"><option value="0" selected>なし</option></select></td>
+      </tr>
+    </table>
+    <table><tr><td class="td-nobd" colspan="2">
+      <table>
+        <tr>
+          <td rowspan="2" class="td-nobd-center bold" style="padding-right:.5em">損耗後<br>敵制空値</td>
+          <td class="td-nobd-center small">中央値</td><td class="td-nobd"></td>
+          <td class="td-nobd-center small">上位5%</td><td class="td-nobd"></td>
+          <td class="td-nobd-center small">上位1%</td>
+        </tr>
+        <tr>
+          <td id="pre-lbas-result-median" class="td-nobd-center bold"></td><td class="td-nobd bold">～</td>
+          <td id="pre-lbas-result-95p" class="td-nobd-center bold"></td><td class="td-nobd bold">～</td>
+          <td id="pre-lbas-result-99p" class="td-nobd-center bold"></td>
+        </tr>
+      </table>
+    </td></tr></table>
+  </div>
+  </td></tr></table>
+
+  <hr>
+
+  <p>
+    <b>「艦1:」</b>で<b>「基地航空隊」</b>を選択することで、基地航空隊の計算を行うことが可能です。<br>
+    複数の航空隊による「防空」には対応しておりません。お手数ですが自艦隊制空値を手動で加算してご利用ください。
+  </p>
+
+  <p style="margin-bottom:0">
+    <b>「道中の制空状態による自機損耗を考慮」</b>か<b>「基地航空隊による敵機損耗を考慮」</b>を有効にすると、制空状態の確率が計算できます。<br>
+    確率は小数第三位で四捨五入しているため、表示された確率の和が1にならない場合があります。<br>
+    可能性が0.005%未満の制空状態は表示されません。グラフのエラーバーは90%区間を表します。<br>
+    自機損耗は制空状態による損耗のみ計算を行い、敵対空砲火による損耗は考慮されません。<span class="small">(攻撃機/爆撃機は実際にはより損耗します)</span><br>
+    敵制空値を直接入力した分に関しては敵機損耗の計算は行われず、制空値がそのまま加算されます。<br>
+    <span id="toggle-pre-lbas-desc" class="small bold" style="cursor:pointer">＋ 詳細を表示する</span><br>
+  </p>
+  <p id="pre-lbas-description" class="small hidden" style="margin-top:0;padding-left:1.5em">
+    損耗後の制空値の計算は、スロット毎に搭載数の確率分布を独立に求めた上で、それらの制空値を加算して行っています。<br>
+    なお実際には、前段の制空状態が確率的に定まる場合、スロット間の搭載数には条件 (相関) が発生し、正確な計算が行えない点に留意ください。<br>
+    損耗の機数の計算式については、次に示す式を仮定しています: (艦これ改の解析結果を利用; 自機損耗は独自の推測式; 敵機損耗は<a href="https://docs.google.com/spreadsheets/d/1RTOztxst5pFGCi-Qr8dw6DZwYw0jd8fkymGg44dapAk/edit#gid=1463317514">こちら</a>を参照)<br>
+    　自機損耗数 = floor(現機数 × (n / 4 + (0 ～ floor(n × 100 / 3) の範囲の一様整数乱数) / 100) / 10),<br>
+    　敵機損耗数 = floor(現機数 × (0.65 × (0 ～ (11 - n) の範囲の一様整数乱数A) + 0.35 × (0 ～ (11 - n) の範囲の一様整数乱数B)) / 10).<br>
+    nの値は制空状態によって異なり、確保時n=1, 優勢時n=3, 均衡時n=5, 劣勢時n=7, 喪失時n=10. 乱数はスロット別に独立。<br>
+    敵艦スロット情報: <select id="enemy-detail"><option value="0" selected>なし</option></select><span id="enemy-detail-right"></span><br>
+    <span id="enemy-detail-bottom" style="display:inline-block;padding-left:1em">--- ここに情報が表示されます ---</span><br>
+    (対空値を持たない艦載機スロットは省略 / スロット毎の搭載数は推定値を多く含みます)
+  </p>
+
+  <p>
+    オプションによる指定がない限り、内部熟練度は最も低い値を仮定して計算が行われます。<br>
+    サーバ側からのみ確認できる内部熟練度により、実際の各スロットの制空値は1だけズレることがあります。
+  </p>
+
+  <p>
+    自艦隊の搭載数については、各スロットの搭載数を合計したりせずに、スロット別に入力してください。<br>
+    敵艦隊の編成データは主に <a href="http://kancolle.wikia.com/wiki/">Kancolle English Wikia</a> に準じ、各マスにおいて最も制空値の高い編成を採用しています。<br>
+    敵艦情報の誤りなどの要因により、実際の制空権の状態とは一致しない可能性があります。
+  </p>
+
+  <a href="index.html">トップに戻る</a>
+
+  <script src="jquery3.min.js"></script>
+  <script src="highcharts.custom.js"></script>
+  <script src="tooltip.js"></script>
+  <script src="air_supremacy.js"></script>
+
+  <!-- load stylesheet -->
+  <script>
+    var cb = function() {
+      var l = document.createElement("link"); l.href = "tooltip.css"; l.rel = "stylesheet";
+      var h = document.getElementsByTagName("head")[0]; h.parentNode.insertBefore(l, h);
+    };
+    var raf = window.requestAnimationFrame || window.mozRequestAnimationFrame || window.webkitRequestAnimationFrame;
+    if (raf) raf(cb); else window.addEventListener("load", cb);
+  </script>
+</div>
+<!-- Text below inserted by FC2 -->
+<script><!--
+var fc2footerparam = 'ver=1'
+    + '&url=' + encodeURIComponent(document.location)
+    + '&service=0'
+    + '&r=' + Math.floor(Math.random() * 99999999999);
+var fc2footertag = "//vip.chps-api.fc2.com/apis/footer/?" + fc2footerparam;
+var script = document.createElement('script');
+script.src = fc2footertag;
+script.charset = "UTF-8";
+script.async = true;
+document.getElementsByTagName('head')[0].appendChild(script);
+//--></script>
+<!-- FC2, inc.-->
+<img src="//media.fc2.com/counter_img.php?id=50" style="display:none" alt="inserted by FC2 system" width="0" height="0">
+<!-- FC2, inc.--></body>
+</html>
