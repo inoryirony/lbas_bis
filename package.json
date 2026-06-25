@@ -1,7 +1,7 @@
 {
   "name": "poi-plugin-lbas-bis",
   "version": "0.1.0",
-  "description": "Poi plugin MVP for KanColle LBAS air power loadout optimization.",
+  "description": "Poi 陆航配装优化插件。",
   "main": "index.js",
   "type": "commonjs",
   "scripts": {
@@ -16,16 +16,18 @@
   ],
   "files": [
     "index.js",
+    "i18n",
     "src",
     "README.md",
     "LICENSE"
   ],
   "license": "MIT",
   "poiPlugin": {
-    "title": "LBAS BIS",
+    "title": "陆航优化",
     "id": "lbas_bis",
-    "description": "Manual LBAS air power and loadout optimizer.",
+    "description": "手动输入目标后计算基地航空队配装方案。",
     "icon": "fa/plane",
+    "i18nDir": "i18n",
     "priority": 52
   },
   "dependencies": {

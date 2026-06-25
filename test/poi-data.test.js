@@ -11,6 +11,7 @@ describe('Poi data adapter', () => {
           225: {
             api_id: 225,
             api_name: 'Hayabusa 64',
+            api_type: [22, 39, 48, 44, 27],
             api_tyku: 11,
             api_houk: 5,
             api_bakk: 0,
@@ -21,6 +22,7 @@ describe('Poi data adapter', () => {
           187: {
             api_id: 187,
             api_name: 'Ginga',
+            api_type: [21, 38, 47, 37, 4],
             api_tyku: 3,
             api_houk: 0,
             api_bakk: 0,
@@ -80,6 +82,7 @@ describe('Poi data adapter', () => {
           138: {
             api_id: 138,
             api_name: 'Type 2 Flying Boat',
+            api_type: [17, 33, 41, 33, 19],
             api_tyku: 0,
             api_houk: 0,
             api_bakk: 0,
@@ -109,5 +112,31 @@ describe('Poi data adapter', () => {
         radius: 20,
       }),
     ]);
+  });
+
+  test('ignores non-aircraft equipment even if malformed data contains a distance', () => {
+    const planes = extractOwnedPlanes({
+      const: {
+        $equips: {
+          999: {
+            api_id: 999,
+            api_name: 'Bad crawler radar',
+            api_type: [5, 8, 12, 11, 0],
+            api_tyku: 10,
+            api_distance: 9,
+          },
+        },
+      },
+      info: {
+        equips: {
+          3001: {
+            api_id: 3001,
+            api_slotitem_id: 999,
+          },
+        },
+      },
+    });
+
+    expect(planes).toEqual([]);
   });
 });

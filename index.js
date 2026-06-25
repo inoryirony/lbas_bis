@@ -5,16 +5,43 @@ const { optimizeLoadouts } = require('./src/optimizer');
 const { extractOwnedPlanes } = require('./src/poi-data');
 
 const h = React.createElement;
+const PLUGIN_ID = 'lbas_bis';
 const STATE_OPTIONS = ['denial', 'parity', 'superiority', 'supremacy'];
+const FALLBACK_ZH_CN = {
+  title: '陆航优化',
+  targetRadius: '目标半径',
+  enemyAir: '敌制空',
+  baseCount: '基地队数',
+  targetState: '目标状态',
+  optimize: '计算配装',
+  availablePlanes: '可用飞机',
+  noResult: '暂无结果',
+  noPoiState: '尚未读取到 Poi 数据，请在游戏数据加载后重试。',
+  noCandidateRadius: '没有可达半径 {{radius}} 的候选配装。',
+  plan: '方案',
+  attack: '攻击',
+  worstMargin: '最小余量',
+  base: '第 {{index}} 队',
+  airPower: '制空',
+  radius: '半径',
+  denial: '劣势',
+  parity: '均势',
+  superiority: '优势',
+  supremacy: '确保',
+  role_fighter: '制空',
+  role_attacker: '攻击',
+  role_recon: '侦察/延程',
+  role_unknown: '其他',
+};
 
-class LbasBisPanel extends React.Component {
+class LbasOptimizerPanel extends React.Component {
   constructor(props) {
     super(props);
     this.state = {
-      baseCount: 2,
+      baseCount: 1,
       enemyAir: 72,
       targetRadius: 7,
-      targetStates: 'parity,parity',
+      targetStates: ['parity'],
       equipmentCount: 0,
       messages: [],
       results: [],
@@ -22,10 +49,11 @@ class LbasBisPanel extends React.Component {
   }
 
   runOptimizer = () => {
+    const t = getT();
     const poiState = readPoiState();
     if (!poiState) {
       this.setState({
-        messages: ['Poi state is not available yet. Open this inside Poi after game data is loaded.'],
+        messages: [t('noPoiState')],
         results: [],
         equipmentCount: 0,
       });
@@ -38,55 +66,58 @@ class LbasBisPanel extends React.Component {
       baseCount: Number(this.state.baseCount),
       targetRadius: Number(this.state.targetRadius),
       enemyAir: Number(this.state.enemyAir),
-      targetStates: parseTargetStates(this.state.targetStates),
+      targetStates: normalizeTargetStates(this.state.targetStates, this.state.baseCount),
       maxResults: 10,
     });
 
     this.setState({
       equipmentCount: equipment.length,
-      messages: result.messages,
+      messages: localizeMessages(result.messages, t),
       results: result.results,
     });
   };
 
   updateNumber = (key) => (event) => {
-    this.setState({ [key]: Number(event.target.value) });
+    const value = Number(event.target.value);
+    if (key === 'baseCount') {
+      const baseCount = clamp(value, 1, 3);
+      this.setState((state) => ({
+        baseCount,
+        targetStates: normalizeTargetStates(state.targetStates, baseCount),
+      }));
+      return;
+    }
+    this.setState({ [key]: value });
   };
 
-  updateText = (key) => (event) => {
-    this.setState({ [key]: event.target.value });
+  updateTargetState = (index) => (event) => {
+    const targetStates = normalizeTargetStates(this.state.targetStates, this.state.baseCount);
+    targetStates[index] = event.target.value;
+    this.setState({ targetStates });
   };
 
   render() {
+    const t = getT();
     return h(
       'div',
       { style: styles.page },
-      h('h2', { style: styles.title }, 'LBAS BIS'),
+      h('h2', { style: styles.title }, t('title')),
       h(
         'div',
         { style: styles.controls },
-        this.renderNumberInput('Target radius', 'targetRadius', 1, 20),
-        this.renderNumberInput('Enemy air', 'enemyAir', 0, 999),
-        this.renderNumberInput('Bases', 'baseCount', 1, 3),
-        h(
-          'label',
-          { style: styles.field },
-          h('span', null, 'Target states'),
-          h('input', {
-            value: this.state.targetStates,
-            onChange: this.updateText('targetStates'),
-            style: styles.input,
-          }),
-        ),
+        this.renderNumberInput(t('targetRadius'), 'targetRadius', 1, 20),
+        this.renderNumberInput(t('enemyAir'), 'enemyAir', 0, 999),
+        this.renderNumberInput(t('baseCount'), 'baseCount', 1, 3),
+        ...this.renderTargetStateInputs(t),
         h(
           'button',
           { type: 'button', onClick: this.runOptimizer, style: styles.button },
-          'Optimize',
+          t('optimize'),
         ),
       ),
-      h('div', { style: styles.meta }, `Owned LBAS candidates: ${this.state.equipmentCount}`),
+      h('div', { style: styles.meta }, `${t('availablePlanes')}: ${this.state.equipmentCount}`),
       this.renderMessages(),
-      this.renderResults(),
+      this.renderResults(t),
     );
   }
 
@@ -106,6 +137,27 @@ class LbasBisPanel extends React.Component {
     );
   }
 
+  renderTargetStateInputs(t) {
+    return normalizeTargetStates(this.state.targetStates, this.state.baseCount).map((state, index) =>
+      h(
+        'label',
+        { key: `target-state-${index}`, style: styles.field },
+        h('span', null, `${t('targetState')} ${index + 1}`),
+        h(
+          'select',
+          {
+            value: state,
+            onChange: this.updateTargetState(index),
+            style: styles.input,
+          },
+          STATE_OPTIONS.map((option) =>
+            h('option', { key: option, value: option }, t(option)),
+          ),
+        ),
+      ),
+    );
+  }
+
   renderMessages() {
     if (!this.state.messages.length) {
       return null;
@@ -118,9 +170,9 @@ class LbasBisPanel extends React.Component {
     );
   }
 
-  renderResults() {
+  renderResults(t) {
     if (!this.state.results.length) {
-      return h('div', { style: styles.empty }, 'No result yet.');
+      return h('div', { style: styles.empty }, t('noResult'));
     }
 
     return h(
@@ -133,22 +185,22 @@ class LbasBisPanel extends React.Component {
           h(
             'h3',
             { style: styles.planTitle },
-            `Plan ${planIndex + 1} - attack ${plan.totalAttackScore}, worst margin ${plan.worstMargin}`,
+            `${t('plan')} ${planIndex + 1} · ${t('attack')} ${plan.totalAttackScore} · ${t('worstMargin')} ${plan.worstMargin}`,
           ),
-          ...plan.bases.map((base, baseIndex) => this.renderBase(base, baseIndex)),
+          ...plan.bases.map((base, baseIndex) => this.renderBase(base, baseIndex, t)),
         ),
       ),
     );
   }
 
-  renderBase(base, baseIndex) {
+  renderBase(base, baseIndex, t) {
     return h(
       'div',
       { key: `base-${baseIndex}`, style: styles.base },
       h(
         'div',
         { style: styles.baseSummary },
-        `Base ${baseIndex + 1}: air ${base.airPower}, ${base.state.key}, radius ${base.radius}`,
+        `${format(t('base'), { index: baseIndex + 1 })}: ${t('airPower')} ${base.airPower}, ${t(base.state.key)}, ${t('radius')} ${base.radius}`,
       ),
       h(
         'ol',
@@ -157,7 +209,7 @@ class LbasBisPanel extends React.Component {
           h(
             'li',
             { key: item.instanceId },
-            `${item.name} #${item.instanceId} aa ${item.antiAir} r${item.radius} ${item.role}`,
+            `${item.name} #${item.instanceId} · ${t('airPower')} ${item.antiAir} · ${t('radius')} ${item.radius} · ${t(`role_${item.role}`)}`,
           ),
         ),
       ),
@@ -173,29 +225,64 @@ function readPoiState() {
 }
 
 function parseTargetStates(value) {
-  const states = String(value || '')
-    .split(',')
-    .map((state) => state.trim())
-    .filter((state) => STATE_OPTIONS.includes(state))
-    .filter(Boolean);
-  return states.length ? states : ['parity'];
+  const states = Array.isArray(value)
+    ? value
+    : String(value || '').split(',');
+  const filtered = states
+    .map((state) => String(state).trim())
+    .filter((state) => STATE_OPTIONS.includes(state));
+  return filtered.length ? filtered : ['parity'];
+}
+
+function normalizeTargetStates(value, baseCount) {
+  const parsed = parseTargetStates(value);
+  const count = clamp(Number(baseCount) || 1, 1, 3);
+  return Array.from({ length: count }, (_, index) => parsed[index] || parsed[0] || 'parity');
+}
+
+function localizeMessages(messages, t) {
+  return messages.map((message) => {
+    const radiusMatch = message.match(/^No candidate loadout can reach radius (\d+)\.$/);
+    if (radiusMatch) {
+      return format(t('noCandidateRadius'), { radius: radiusMatch[1] });
+    }
+    return message;
+  });
+}
+
+function getT() {
+  try {
+    const i18next = require('views/env-parts/i18next').default;
+    const fixedT = i18next.getFixedT(null, PLUGIN_ID);
+    return (key) => fixedT(key);
+  } catch (error) {
+    return (key) => FALLBACK_ZH_CN[key] || key;
+  }
+}
+
+function format(template, values) {
+  return String(template).replace(/\{\{(\w+)\}\}/g, (_, key) => values[key] ?? '');
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
 }
 
 const styles = {
   page: {
     boxSizing: 'border-box',
     fontFamily: 'sans-serif',
-    padding: 16,
+    padding: 12,
   },
   title: {
-    fontSize: 20,
-    margin: '0 0 12px',
+    fontSize: 18,
+    margin: '0 0 10px',
   },
   controls: {
     alignItems: 'end',
     display: 'grid',
     gap: 8,
-    gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
   },
   field: {
     display: 'grid',
@@ -216,29 +303,29 @@ const styles = {
     padding: '0 12px',
   },
   meta: {
-    color: '#555',
+    color: '#777',
     fontSize: 12,
     marginTop: 8,
   },
   messages: {
-    color: '#9a3412',
+    color: '#d9534f',
     fontSize: 12,
     margin: '8px 0',
     paddingLeft: 18,
   },
   empty: {
-    color: '#666',
+    color: '#777',
     fontSize: 13,
-    marginTop: 16,
+    marginTop: 12,
   },
   results: {
     display: 'grid',
-    gap: 12,
-    marginTop: 16,
+    gap: 10,
+    marginTop: 12,
   },
   plan: {
-    border: '1px solid #d8d8d8',
-    borderRadius: 6,
+    border: '1px solid rgba(128, 128, 128, 0.35)',
+    borderRadius: 4,
     padding: 10,
   },
   planTitle: {
@@ -246,7 +333,7 @@ const styles = {
     margin: '0 0 8px',
   },
   base: {
-    borderTop: '1px solid #ececec',
+    borderTop: '1px solid rgba(128, 128, 128, 0.2)',
     paddingTop: 8,
   },
   baseSummary: {
@@ -263,7 +350,7 @@ const styles = {
 };
 
 module.exports = {
-  reactClass: LbasBisPanel,
-  windowMode: true,
+  reactClass: LbasOptimizerPanel,
   parseTargetStates,
+  normalizeTargetStates,
 };
