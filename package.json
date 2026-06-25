@@ -1,5 +1,5 @@
 {
-  "name": "lbas_bis",
+  "name": "poi-plugin-lbas-bis",
   "version": "0.1.0",
   "description": "Poi plugin MVP for KanColle LBAS air power loadout optimization.",
   "main": "index.js",
@@ -23,6 +23,7 @@
   "license": "MIT",
   "poiPlugin": {
     "title": "LBAS BIS",
+    "id": "lbas_bis",
     "description": "Manual LBAS air power and loadout optimizer.",
     "icon": "fa/plane",
     "priority": 52
