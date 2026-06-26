@@ -21,20 +21,24 @@ function optimizeLoadouts(options) {
     targetRadius,
     enemyAir,
     targetStates = [],
+    lockedBases = [],
     maxResults = DEFAULT_MAX_RESULTS,
   } = options;
   const messages = [];
   const wantedBaseCount = Math.max(1, Math.min(3, Number(baseCount) || 1));
   const waveTargets = normalizeWaveTargets(targetStates, wantedBaseCount);
-  const candidates = generateBaseCandidates(equipment, targetRadius, enemyAir);
+  const baseLocks = normalizeLockedBases(lockedBases, wantedBaseCount);
+  const candidatesByBase = baseLocks.map((lockedBase) =>
+    generateBaseCandidates(equipment, targetRadius, enemyAir, lockedBase.slots),
+  );
 
-  if (candidates.length === 0) {
+  if (candidatesByBase.some((candidates) => candidates.length === 0)) {
     messages.push(`No candidate loadout can reach radius ${targetRadius}.`);
     return { messages, results: [] };
   }
 
   const results = combineBases({
-    candidates,
+    candidatesByBase,
     baseIndex: 0,
     baseCount: wantedBaseCount,
     enemyAir,
@@ -53,36 +57,59 @@ function optimizeLoadouts(options) {
   };
 }
 
-function generateBaseCandidates(equipment, targetRadius, enemyAir) {
-  const pool = selectCandidatePool(equipment, targetRadius);
+function generateBaseCandidates(equipment, targetRadius, enemyAir, slotConstraints = []) {
+  const slots = normalizeSlotConstraints(slotConstraints);
+  const lockedLoadout = slots.map((slot) => slot.locked ? slot.plane : null).filter(Boolean);
+  if (hasDuplicateInstanceId(lockedLoadout)) {
+    return [];
+  }
+
+  const lockedIds = new Set(lockedLoadout.map((plane) => plane.instanceId));
+  const pool = selectCandidatePool([...(equipment || []), ...lockedLoadout], targetRadius)
+    .filter((plane) => !lockedIds.has(plane.instanceId));
+  const unlockedSlots = slots
+    .map((slot, index) => ({ slot, index }))
+    .filter((entry) => !entry.slot.locked);
   const combinations = [];
-  choose(pool, SLOTS_PER_BASE, 0, [], combinations);
+  choose(pool, unlockedSlots.length, 0, [], combinations);
 
   return combinations
-    .map((loadout) => {
-      const airPower = calculateBaseAirPower(loadout);
-      const radius = calculateEffectiveRadius(loadout);
-      const state = airStateFor(airPower, enemyAir);
-      const attackScore = loadout.reduce((total, plane) => total + planeAttackScore(plane), 0);
-      const damagePower = calculateBaseDamagePower(loadout);
-      const landBasedCount = loadout.filter((plane) => plane.isLandBased).length;
-      const landAttackerCount = loadout.filter((plane) => plane.isLandBased && plane.role === 'attacker').length;
-
-      return {
-        loadout,
-        airPower,
-        radius,
-        state,
-        attackScore,
-        damagePower,
-        landBasedCount,
-        landAttackerCount,
-        fighterCount: loadout.filter((plane) => plane.role.includes('fighter')).length,
-      };
-    })
+    .map((selectedPlanes) => buildLoadoutFromSlots(slots, unlockedSlots, selectedPlanes))
+    .filter((loadout) => loadout.length === SLOTS_PER_BASE && !hasDuplicateInstanceId(loadout))
+    .map((loadout) => summarizeCandidate(loadout, enemyAir))
     .filter((candidate) => candidate.radius >= targetRadius)
     .sort(compareCandidates)
     .slice(0, MAX_BASE_CANDIDATES);
+}
+
+function buildLoadoutFromSlots(slots, unlockedSlots, selectedPlanes) {
+  const loadout = slots.map((slot) => slot.locked ? slot.plane : null);
+  unlockedSlots.forEach((entry, selectedIndex) => {
+    loadout[entry.index] = selectedPlanes[selectedIndex] || null;
+  });
+  return loadout.filter(Boolean);
+}
+
+function summarizeCandidate(loadout, enemyAir) {
+  const airPower = calculateBaseAirPower(loadout);
+  const radius = calculateEffectiveRadius(loadout);
+  const state = airStateFor(airPower, enemyAir);
+  const attackScore = loadout.reduce((total, plane) => total + planeAttackScore(plane), 0);
+  const damagePower = calculateBaseDamagePower(loadout);
+  const landBasedCount = loadout.filter((plane) => plane.isLandBased).length;
+  const landAttackerCount = loadout.filter((plane) => plane.isLandBased && plane.role === 'attacker').length;
+
+  return {
+    loadout,
+    airPower,
+    radius,
+    state,
+    attackScore,
+    damagePower,
+    landBasedCount,
+    landAttackerCount,
+    fighterCount: loadout.filter((plane) => plane.role.includes('fighter')).length,
+  };
 }
 
 function selectCandidatePool(equipment, targetRadius) {
@@ -118,7 +145,7 @@ function choose(items, count, start, current, output) {
 
 function combineBases(context) {
   const {
-    candidates,
+    candidatesByBase,
     baseIndex,
     baseCount,
     enemyAir,
@@ -134,7 +161,7 @@ function combineBases(context) {
   const targetState = targetStateForBase(waveTargets, baseIndex);
   const requiredRank = AIR_STATES[targetState]?.rank ?? AIR_STATES.parity.rank;
   const plans = [];
-  const sortedCandidates = candidates
+  const sortedCandidates = candidatesByBase[baseIndex]
     .filter((candidate) => candidate.state.rank >= requiredRank)
     .sort((left, right) => compareCandidatesForTarget(left, right, enemyAir, targetState));
 
@@ -150,7 +177,7 @@ function combineBases(context) {
 
     plans.push(
       ...combineBases({
-        candidates,
+        candidatesByBase,
         baseIndex: baseIndex + 1,
         baseCount,
         enemyAir,
@@ -207,6 +234,36 @@ function summarizePlan(bases, enemyAir, waveTargets) {
 
 function overlaps(candidate, usedIds) {
   return candidate.loadout.some((plane) => usedIds.has(plane.instanceId));
+}
+
+function normalizeLockedBases(lockedBases, baseCount) {
+  return Array.from({ length: baseCount }, (_, baseIndex) => ({
+    slots: normalizeSlotConstraints(lockedBases?.[baseIndex]?.slots),
+  }));
+}
+
+function normalizeSlotConstraints(slotConstraints = []) {
+  return Array.from({ length: SLOTS_PER_BASE }, (_, slotIndex) => {
+    const slot = slotConstraints[slotIndex] || {};
+    return {
+      plane: slot.plane || null,
+      locked: Boolean(slot.locked && slot.plane),
+    };
+  });
+}
+
+function hasDuplicateInstanceId(loadout) {
+  const seen = new Set();
+  for (const plane of loadout) {
+    if (!plane || plane.instanceId == null) {
+      return true;
+    }
+    if (seen.has(plane.instanceId)) {
+      return true;
+    }
+    seen.add(plane.instanceId);
+  }
+  return false;
 }
 
 function compareCandidates(left, right) {

@@ -23,6 +23,7 @@ function extractOwnedPlanes(poiState) {
 }
 
 function extractOptimizationPlanes(poiState, options = {}) {
+  const includeMissing = options.includeMissing === true;
   const maxCopiesPerMaster = Math.max(1, Number(options.maxCopiesPerMaster) || 4);
   const missingProficiency = Math.max(0, Math.min(7, Number(options.missingProficiency ?? 7) || 0));
   const masterById = getMasterEquipment(poiState);
@@ -31,6 +32,11 @@ function extractOptimizationPlanes(poiState, options = {}) {
     available: true,
     missing: false,
   }));
+
+  if (!includeMissing) {
+    return ownedPlanes;
+  }
+
   const ownedCounts = new Map();
 
   for (const plane of ownedPlanes) {

@@ -249,6 +249,100 @@ describe('LBAS optimizer MVP', () => {
     expect(result.results[0].waves).toHaveLength(6);
     expect(result.results[0].waves.map((wave) => wave.baseIndex)).toEqual([0, 0, 1, 1, 2, 2]);
   });
+
+  test('keeps locked equipment in the requested base and fills remaining slots', () => {
+    const lockedAttacker = plane('locked-ginga', {
+      antiAir: 3,
+      radius: 9,
+      role: 'attacker',
+      torpedo: 14,
+      bombing: 14,
+      isLandBased: true,
+    });
+    const result = optimizeLoadouts({
+      equipment: [
+        lockedAttacker,
+        plane('fighter-1', { antiAir: 11, intercept: 5, radius: 7, role: 'fighter', isLandBased: true }),
+        plane('attacker-1', { antiAir: 3, radius: 9, role: 'attacker', torpedo: 14, bombing: 14, isLandBased: true }),
+        plane('attacker-2', { antiAir: 3, radius: 9, role: 'attacker', torpedo: 13, bombing: 14, isLandBased: true }),
+        plane('attacker-3', { antiAir: 2, radius: 8, role: 'attacker', torpedo: 11, bombing: 12, isLandBased: true }),
+      ],
+      baseCount: 1,
+      targetRadius: 7,
+      enemyAir: 72,
+      targetStates: ['parity', 'parity'],
+      lockedBases: [
+        {
+          slots: [
+            { plane: lockedAttacker, locked: true },
+            { plane: null, locked: false },
+            { plane: null, locked: false },
+            { plane: null, locked: false },
+          ],
+        },
+      ],
+      maxResults: 1,
+    });
+
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0].bases[0].loadout[0].instanceId).toBe('locked-ginga');
+    expect(result.results[0].bases[0].loadout).toHaveLength(4);
+  });
+
+  test('does not reuse a locked equipment instance in another base', () => {
+    const lockedFighter = plane('locked-fighter', {
+      antiAir: 11,
+      intercept: 5,
+      radius: 7,
+      role: 'fighter',
+      isLandBased: true,
+    });
+    const equipment = [
+      lockedFighter,
+      ...Array.from({ length: 11 }, (_, index) =>
+        plane(`plane-${index}`, {
+          antiAir: index < 3 ? 10 : 3,
+          radius: index < 3 ? 7 : 9,
+          role: index < 3 ? 'fighter' : 'attacker',
+          torpedo: index < 3 ? 0 : 14,
+          bombing: index < 3 ? 0 : 14,
+          isLandBased: true,
+        }),
+      ),
+    ];
+
+    const result = optimizeLoadouts({
+      equipment,
+      baseCount: 2,
+      targetRadius: 7,
+      enemyAir: 40,
+      targetStates: ['parity', 'parity', 'parity', 'parity'],
+      lockedBases: [
+        {
+          slots: [
+            { plane: lockedFighter, locked: true },
+            { plane: null, locked: false },
+            { plane: null, locked: false },
+            { plane: null, locked: false },
+          ],
+        },
+        {
+          slots: [
+            { plane: null, locked: false },
+            { plane: null, locked: false },
+            { plane: null, locked: false },
+            { plane: null, locked: false },
+          ],
+        },
+      ],
+      maxResults: 1,
+    });
+
+    const usedIds = result.results[0].bases.flatMap((base) =>
+      base.loadout.map((item) => item.instanceId),
+    );
+    expect(usedIds.filter((id) => id === 'locked-fighter')).toHaveLength(1);
+  });
 });
 
 function plane(instanceId, overrides = {}) {

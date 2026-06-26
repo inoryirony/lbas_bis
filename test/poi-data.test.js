@@ -143,34 +143,23 @@ describe('Poi data adapter', () => {
     expect(planes).toEqual([]);
   });
 
-  test('adds theoretical missing copies from master equipment for optimizer plans', () => {
-    const planes = extractOptimizationPlanes({
-      const: {
-        $equips: {
-          187: {
-            api_id: 187,
-            api_name: 'Ginga',
-            api_type: [21, 38, 47, 37, 4],
-            api_tyku: 3,
-            api_houk: 0,
-            api_bakk: 0,
-            api_distance: 9,
-            api_raig: 14,
-            api_baku: 14,
-          },
-        },
-      },
-      info: {
-        equips: {
-          1002: {
-            api_id: 1002,
-            api_slotitem_id: 187,
-            api_level: 0,
-            api_alv: 2,
-          },
-        },
-      },
-    }, { maxCopiesPerMaster: 4 });
+  test('defaults optimization candidates to owned equipment only', () => {
+    const planes = extractOptimizationPlanes(samplePoiStateWithOneGinga(), { maxCopiesPerMaster: 4 });
+
+    expect(planes).toHaveLength(1);
+    expect(planes[0]).toEqual(expect.objectContaining({
+      instanceId: 1002,
+      masterId: 187,
+      available: true,
+      missing: false,
+    }));
+  });
+
+  test('adds theoretical missing copies only when includeMissing is true', () => {
+    const planes = extractOptimizationPlanes(samplePoiStateWithOneGinga(), {
+      includeMissing: true,
+      maxCopiesPerMaster: 4,
+    });
 
     expect(planes).toHaveLength(4);
     expect(planes.filter((plane) => plane.masterId === 187 && plane.available)).toHaveLength(1);
@@ -182,3 +171,33 @@ describe('Poi data adapter', () => {
     }));
   });
 });
+
+function samplePoiStateWithOneGinga() {
+  return {
+    const: {
+      $equips: {
+        187: {
+          api_id: 187,
+          api_name: 'Ginga',
+          api_type: [21, 38, 47, 37, 4],
+          api_tyku: 3,
+          api_houk: 0,
+          api_bakk: 0,
+          api_distance: 9,
+          api_raig: 14,
+          api_baku: 14,
+        },
+      },
+    },
+    info: {
+      equips: {
+        1002: {
+          api_id: 1002,
+          api_slotitem_id: 187,
+          api_level: 0,
+          api_alv: 2,
+        },
+      },
+    },
+  };
+}
