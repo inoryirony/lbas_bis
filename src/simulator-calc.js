@@ -9,6 +9,7 @@ const {
 const { calculateBaseDamagePower } = require('./damage');
 const { normalizeSimulatorState } = require('./simulator-state');
 const { monteCarloWaveSequence } = require('./wave-simulator');
+const { INVALID_SLOT_LIMITATION } = require('./enemy-slots');
 
 const STATIC_LIMITATIONS = Object.freeze(['STATIC_ENEMY_AIR']);
 
@@ -28,6 +29,9 @@ function calculateEnemyAirLines(enemyAir) {
  */
 function calculateSimulatorSummary(state) {
   const normalized = normalizeSimulatorState(state);
+  if (normalized.enemy.mode === 'detailed' && normalized.enemy.valid === false) {
+    return invalidDetailedSummary(normalized.enemy.errors);
+  }
   const enemyAir = normalized.enemy.enemyAir;
   const bases = normalized.bases.map((base, baseIndex) => {
     const loadout = base.slots.map((slot) => slot.plane).filter(Boolean);
@@ -93,6 +97,24 @@ function calculateSimulatorSummary(state) {
     limitations: simulation.limitations,
     limitationNotes: simulation.limitationNotes,
     statusKey: weakestExpectedStateKey(simulation.waves),
+  };
+}
+
+/** Returns a non-simulated structured result for invalid detailed enemy slots. */
+function invalidDetailedSummary(errors) {
+  return {
+    calculationMode: 'invalid',
+    mode: 'invalid',
+    errors: [...errors],
+    limitations: [INVALID_SLOT_LIMITATION],
+    limitationNotes: {
+      [INVALID_SLOT_LIMITATION]: 'Detailed enemy slots must be corrected before simulation.',
+    },
+    bases: [],
+    waves: [],
+    enemyAirLines: null,
+    totalAirPower: null,
+    statusKey: 'invalid',
   };
 }
 

@@ -104,6 +104,79 @@ describe('wave simulator', () => {
     expect(result.waves[1].jetAssault).toBeNull();
   });
 
+  test.each(['concentrated', 'separate'])(
+    'does not run jet assault or consume steel at an air-raid cell in %s mode',
+    (dispatchMode) => {
+      const calls = [];
+      const airRaid = { ...enemyFleet('air-raid', 18), isAirRaidCell: true };
+      const result = simulateWaveSequence({
+        bases: [[fighter('jet', {
+          currentSlot: 100,
+          slotSize: 100,
+          isJet: true,
+          cost: 10,
+        })]],
+        ...(dispatchMode === 'separate'
+          ? {
+            enemyFleets: [
+              airRaid,
+              { ...enemyFleet('air-raid-2', 18), isAirRaidCell: true },
+            ],
+          }
+          : { enemy: airRaid }),
+        dispatchMode,
+        random: (...coordinates) => {
+          calls.push(coordinates);
+          return 0.999999;
+        },
+      });
+
+      expect(result.waves.every((wave) => wave.jetAssault === null)).toBe(true);
+      expect(result.totalUsedSteel).toBe(0);
+      expect(calls.some(([, side]) => side === 'jet-player')).toBe(false);
+    },
+  );
+
+  test('runs jet assault once for each ordinary separate target', () => {
+    const result = simulateWaveSequence({
+      bases: [[fighter('jet', {
+        currentSlot: 100,
+        slotSize: 100,
+        isJet: true,
+        cost: 10,
+      })]],
+      enemyFleets: [enemyFleet('target-a', 18), enemyFleet('target-b', 18)],
+      dispatchMode: 'separate',
+      random: () => 0.999999,
+    });
+
+    expect(result.waves.map((wave) => wave.jetAssault?.phase))
+      .toEqual(['jetAssault', 'jetAssault']);
+    expect(result.totalUsedSteel).toBeGreaterThan(0);
+  });
+
+  test('uses only the second-wave parity constant after denial reduces enemy air', () => {
+    const calls = [];
+    const basePlane = fighter('denial-to-parity', { antiAir: 6, currentSlot: 18 });
+    const result = simulateWaveSequence({
+      bases: [[basePlane]],
+      enemy: enemyFleet('same-node', 18),
+      random: (...coordinates) => {
+        calls.push(coordinates);
+        return 0.999999;
+      },
+    });
+
+    expect(result.waves.map((wave) => wave.state.key)).toEqual(['denial', 'parity']);
+    expect(calls.filter(([, side]) => side === 'player')).toEqual([
+      [1, 'player', 0, 0],
+    ]);
+    expect(result.waves[1].ownSlotLoss)
+      .toBe(playerStageOneLoss('parity', 18, () => 0.999999, basePlane));
+    expect(result.waves[1].ownSlotLoss)
+      .not.toBe(playerStageOneLoss('denial', 18, () => 0.999999, basePlane));
+  });
+
   test('reproduces complete Monte Carlo output for the same seed and options', () => {
     const options = {
       bases: [[fighter('fighter')]],

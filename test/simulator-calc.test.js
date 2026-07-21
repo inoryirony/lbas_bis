@@ -6,6 +6,7 @@ const {
   addDetailedEnemySlot,
   createEmptySimulatorState,
   normalizeDetailedEnemySlots,
+  normalizeSimulatorState,
   removeDetailedEnemySlot,
   setBaseSlot,
   setDetailedEnemySlot,
@@ -53,19 +54,19 @@ describe('simulator calculations', () => {
     const source = [{
       instanceId: 'enemy-1',
       name: 'Enemy fighter',
-      sortieAntiAir: Number.POSITIVE_INFINITY,
-      currentSlot: -4,
+      sortieAntiAir: 10,
+      currentSlot: 18,
       maxSlot: 18,
     }];
     const normalized = normalizeDetailedEnemySlots(source);
     expect(normalized).toEqual([{
       instanceId: 'enemy-1',
       name: 'Enemy fighter',
-      sortieAntiAir: 0,
-      currentSlot: 0,
+      sortieAntiAir: 10,
+      currentSlot: 18,
       maxSlot: 18,
     }]);
-    expect(source[0].currentSlot).toBe(-4);
+    expect(source[0].currentSlot).toBe(18);
 
     let state = createEmptySimulatorState();
     state = addDetailedEnemySlot(state, {
@@ -94,6 +95,7 @@ describe('simulator calculations', () => {
       ...state,
       enemy: {
         mode: 'detailed',
+        isAirRaidCell: true,
         slots: [{
           instanceId: 'enemy-1',
           name: 'Enemy fighter',
@@ -106,8 +108,10 @@ describe('simulator calculations', () => {
     };
     const snapshot = structuredClone(state);
 
-    const summary = calculateSimulatorSummary(state);
+    const normalized = normalizeSimulatorState(state);
+    const summary = calculateSimulatorSummary(normalized);
 
+    expect(normalized.enemy.isAirRaidCell).toBe(true);
     expect(state).toEqual(snapshot);
     expect(summary.calculationMode).toBe('detailed');
     expect(summary.simulation.sampleCount).toBe(16);
@@ -116,6 +120,37 @@ describe('simulator calculations', () => {
       'ENEMY_STAGE2_OMITTED',
       'JET_STAGE2_OMITTED',
     ]));
+  });
+
+  test('returns a structured invalid summary without running Monte Carlo for bad slots', () => {
+    const initial = createEmptySimulatorState();
+    const state = {
+      ...initial,
+      enemy: {
+        mode: 'detailed',
+        isAirRaidCell: false,
+        slots: [{
+          instanceId: 'enemy-1',
+          name: 'Invalid enemy',
+          sortieAntiAir: Number.POSITIVE_INFINITY,
+          currentSlot: 18,
+          maxSlot: 18,
+        }],
+      },
+    };
+
+    const normalized = normalizeSimulatorState(state);
+    const summary = calculateSimulatorSummary(normalized);
+
+    expect(summary).toEqual(expect.objectContaining({
+      calculationMode: 'invalid',
+      mode: 'invalid',
+      limitations: expect.arrayContaining(['INVALID_DETAILED_ENEMY_SLOTS']),
+      errors: expect.arrayContaining([
+        expect.objectContaining({ field: 'sortieAntiAir', slotIndex: 0 }),
+      ]),
+    }));
+    expect(summary.simulation).toBeUndefined();
   });
 
   test('reports NONE for an empty base but supremacy for a real zero-air-power plane', () => {

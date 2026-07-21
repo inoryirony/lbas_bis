@@ -10,6 +10,10 @@ const {
 } = require('./air-power');
 const { capabilitiesFor } = require('./aircraft');
 const { calculateBaseDamagePower } = require('./damage');
+const {
+  detailedEnemyValidationError,
+  validateAndNormalizeDetailedEnemySlots,
+} = require('./enemy-slots');
 const { commonRandomNumber } = require('./random');
 
 const PLAYER_STAGE_ONE_CONSTANTS = Object.freeze({
@@ -97,7 +101,8 @@ function simulateWaveSequence(options = {}) {
       const enemy = enemies[enemyIndex];
       const enemySlotsBefore = slotsForEnemy(enemy);
       const enemyAirBefore = airPowerForEnemy(enemy);
-      const runJet = dispatchMode === 'separate' || waveInBase === 0;
+      const runJet = !enemy.isAirRaidCell &&
+        (dispatchMode === 'separate' || waveInBase === 0);
       const jetAssault = runJet
         ? simulateJetAssault(base, waveIndex, random)
         : null;
@@ -381,22 +386,14 @@ function normalizeEnemyInputs(options, dispatchMode) {
 
 /** Safely normalizes the required detailed enemy slot fields. */
 function normalizeEnemyFleet(enemy = {}) {
-  const slots = Array.isArray(enemy.slots)
-    ? enemy.slots
-    : Array.isArray(enemy.enemySlots) ? enemy.enemySlots : [];
+  const slots = enemy.slots ?? enemy.enemySlots ?? [];
+  const validation = validateAndNormalizeDetailedEnemySlots(slots);
+  if (!validation.valid) throw detailedEnemyValidationError(validation.errors);
   return {
     ...enemy,
     mode: 'detailed',
-    slots: slots.filter(Boolean).map((slot, index) => {
-      const maxSlot = nonNegativeFinite(slot.maxSlot ?? slot.currentSlot, 0);
-      return {
-        instanceId: slot.instanceId ?? `enemy-slot-${index}`,
-        name: typeof slot.name === 'string' ? slot.name : '',
-        sortieAntiAir: nonNegativeFinite(slot.sortieAntiAir, 0),
-        currentSlot: Math.min(nonNegativeFinite(slot.currentSlot ?? maxSlot, 0), maxSlot),
-        maxSlot,
-      };
-    }),
+    isAirRaidCell: enemy.isAirRaidCell === true,
+    slots: validation.slots,
   };
 }
 

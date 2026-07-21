@@ -1,5 +1,10 @@
 'use strict';
 
+const {
+  detailedEnemyValidationError,
+  validateAndNormalizeDetailedEnemySlots,
+} = require('./enemy-slots');
+
 const SLOTS_PER_BASE = 4;
 const WAVES_PER_BASE = 2;
 const MIN_BASES = 1;
@@ -124,6 +129,7 @@ function createDefaultEnemy() {
     enemyAir: DEFAULT_ENEMY_AIR,
     areaId: null,
     nodeId: null,
+    isAirRaidCell: false,
     slots: [],
     ships: Array.from({ length: 6 }, (_, index) => ({
       id: null,
@@ -139,7 +145,12 @@ function normalizeEnemy(enemy = {}) {
   const detailed = enemy.mode === 'detailed' ||
     Array.isArray(enemy.enemySlots) ||
     (Array.isArray(enemy.slots) && enemy.slots.length > 0);
-  const slots = normalizeDetailedEnemySlots(enemy.slots || enemy.enemySlots);
+  const slotValidation = validateAndNormalizeDetailedEnemySlots(
+    enemy.slots || enemy.enemySlots,
+  );
+  const slots = slotValidation.valid
+    ? slotValidation.slots
+    : preserveDetailedSlotInputs(enemy.slots || enemy.enemySlots);
   const ships = Array.from({ length: 6 }, (_, index) => {
     const ship = enemy.ships?.[index] || defaults.ships[index];
     return {
@@ -153,32 +164,44 @@ function normalizeEnemy(enemy = {}) {
     ? summedAir
     : nonNegativeNumber(enemy.enemyAir, DEFAULT_ENEMY_AIR);
 
-  const detailedAir = slots.reduce(
-    (total, slot) => total + Math.floor(slot.sortieAntiAir * Math.sqrt(slot.currentSlot)),
-    0,
-  );
+  const detailedAir = slotValidation.valid
+    ? slots.reduce(
+      (total, slot) => total + Math.floor(slot.sortieAntiAir * Math.sqrt(slot.currentSlot)),
+      0,
+    )
+    : 0;
   return {
     mode: detailed ? 'detailed' : enemy.mode || 'manual',
     enemyAir: detailed ? detailedAir : enemyAir,
     areaId: enemy.areaId ?? null,
     nodeId: enemy.nodeId ?? null,
+    isAirRaidCell: enemy.isAirRaidCell === true,
     ships,
     slots,
+    ...(detailed ? {
+      valid: slotValidation.valid,
+      errors: slotValidation.errors,
+    } : {}),
   };
 }
 
-/** Safely normalizes detailed enemy aircraft slots without mutating the input. */
+/** Preserves invalid UI inputs so repeated normalization cannot erase errors. */
+function preserveDetailedSlotInputs(slots = []) {
+  if (!Array.isArray(slots)) return slots;
+  return slots.filter(Boolean).map((slot, index) => ({
+    instanceId: slot.instanceId ?? `enemy-slot-${index}`,
+    name: typeof slot.name === 'string' ? slot.name : '',
+    sortieAntiAir: slot.sortieAntiAir,
+    currentSlot: slot.currentSlot,
+    maxSlot: slot.maxSlot,
+  }));
+}
+
+/** Strictly normalizes valid detailed enemy slots and throws for explicit bad values. */
 function normalizeDetailedEnemySlots(slots = []) {
-  return (Array.isArray(slots) ? slots : []).filter(Boolean).map((slot, index) => {
-    const maxSlot = nonNegativeNumber(slot.maxSlot ?? slot.currentSlot, 0);
-    return {
-      instanceId: slot.instanceId ?? `enemy-slot-${index}`,
-      name: typeof slot.name === 'string' ? slot.name : '',
-      sortieAntiAir: nonNegativeNumber(slot.sortieAntiAir, 0),
-      currentSlot: Math.min(nonNegativeNumber(slot.currentSlot ?? maxSlot, 0), maxSlot),
-      maxSlot,
-    };
-  });
+  const result = validateAndNormalizeDetailedEnemySlots(slots);
+  if (!result.valid) throw detailedEnemyValidationError(result.errors);
+  return result.slots;
 }
 
 /** Replaces one detailed enemy slot immutably. */

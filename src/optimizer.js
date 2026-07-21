@@ -9,6 +9,7 @@ const {
 } = require('./air-power');
 const { aircraftEquivalenceKey, capabilitiesFor } = require('./aircraft');
 const { calculateBaseDamagePower } = require('./damage');
+const { validateAndNormalizeDetailedEnemySlots } = require('./enemy-slots');
 const {
   comparePlanScores,
   comparePlansForSort,
@@ -39,7 +40,7 @@ const SLOT_KINDS = Object.freeze({
 function optimizeLoadouts(options = {}) {
   const prepared = prepareSearch(options);
   if (!prepared.valid) {
-    return invalidResult('branch-and-bound', prepared.budget, prepared.message);
+    return invalidResult('branch-and-bound', prepared.budget, prepared.message, prepared.errors);
   }
 
   const {
@@ -266,15 +267,29 @@ function prepareSearch(options) {
     Math.max(0, Number(options.targetRadius) || 0),
   );
   const groups = groupEquipment(relevantEquipment);
-  const enemyFleets = Array.isArray(options.enemyFleets)
+  const enemyFleetInputs = Array.isArray(options.enemyFleets)
     ? options.enemyFleets
     : Array.isArray(options.targets) ? options.targets : null;
   const detailed = isDetailedEnemy(options.enemy) ||
     Array.isArray(options.enemySlots) ||
-    Boolean(enemyFleets?.length);
-  const enemy = detailed && !enemyFleets
-    ? normalizeDetailedEnemy(options.enemy, options.enemySlots)
-    : options.enemy;
+    Boolean(enemyFleetInputs?.length);
+  let enemy = options.enemy;
+  let enemyFleets = enemyFleetInputs;
+  if (detailed) {
+    const normalizedEnemies = enemyFleetInputs
+      ? enemyFleetInputs.map((fleet, index) =>
+        validateOptimizerEnemy(fleet, undefined, `enemyFleets[${index}].slots`))
+      : [validateOptimizerEnemy(options.enemy, options.enemySlots, 'enemy.slots')];
+    const errors = normalizedEnemies.flatMap((result) => result.errors);
+    if (errors.length) {
+      return invalidPreparation(options, errors[0].message, errors);
+    }
+    if (enemyFleetInputs) {
+      enemyFleets = normalizedEnemies.map((result) => result.enemy);
+    } else {
+      enemy = normalizedEnemies[0].enemy;
+    }
+  }
   const detailedEnemyAir = detailed
     ? initialDetailedEnemyAir(enemyFleets?.[0] || enemy)
     : Math.max(0, Number(options.enemyAir) || 0);
@@ -307,10 +322,11 @@ function prepareSearch(options) {
 }
 
 /** Returns a minimal invalid preparation record with normalized budget. */
-function invalidPreparation(options, message) {
+function invalidPreparation(options, message, errors = []) {
   return {
     valid: false,
     message,
+    errors,
     budget: normalizeBudget(options.nodeBudget),
   };
 }
@@ -804,38 +820,28 @@ function isDetailedEnemy(enemy) {
     Array.isArray(enemy?.enemySlots);
 }
 
-/** Normalizes detailed optimizer enemy input while preserving only required slot fields. */
-function normalizeDetailedEnemy(enemy = {}, enemySlots) {
+/** Validates and normalizes one optimizer detailed enemy input. */
+function validateOptimizerEnemy(enemy = {}, enemySlots, pathPrefix) {
   const slots = enemySlots || enemy.slots || enemy.enemySlots || [];
+  const validation = validateAndNormalizeDetailedEnemySlots(slots, { pathPrefix });
   return {
-    ...enemy,
-    mode: 'detailed',
-    slots: slots.filter(Boolean).map((slot, index) => {
-      const maxSlot = safeNonNegative(slot.maxSlot ?? slot.currentSlot);
-      return {
-        instanceId: slot.instanceId ?? `enemy-slot-${index}`,
-        name: typeof slot.name === 'string' ? slot.name : '',
-        sortieAntiAir: safeNonNegative(slot.sortieAntiAir),
-        currentSlot: Math.min(safeNonNegative(slot.currentSlot ?? maxSlot), maxSlot),
-        maxSlot,
-      };
-    }),
+    valid: validation.valid,
+    errors: validation.errors,
+    enemy: {
+      ...enemy,
+      mode: 'detailed',
+      isAirRaidCell: enemy.isAirRaidCell === true,
+      slots: validation.slots,
+    },
   };
 }
 
 /** Calculates the initial detailed enemy air power for traversal ordering only. */
 function initialDetailedEnemyAir(enemy = {}) {
-  const normalized = normalizeDetailedEnemy(enemy);
-  return normalized.slots.reduce(
+  return (enemy.slots || []).reduce(
     (total, slot) => total + Math.floor(slot.sortieAntiAir * Math.sqrt(slot.currentSlot)),
     0,
   );
-}
-
-/** Converts arbitrary numeric input to a finite nonnegative optimizer value. */
-function safeNonNegative(value) {
-  const number = Number(value);
-  return Number.isFinite(number) && number >= 0 ? number : 0;
 }
 
 /** Subtracts a candidate's group usage from remaining inventory. */
@@ -902,9 +908,10 @@ function normalizeBudget(value) {
 }
 
 /** Returns the common invalid-input result shape. */
-function invalidResult(mode, budget, message) {
+function invalidResult(mode, budget, message, errors = []) {
   return {
     messages: [message],
+    errors,
     results: [],
     search: {
       mode,

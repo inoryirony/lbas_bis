@@ -525,6 +525,38 @@ describe('LBAS optimizer MVP', () => {
     expect(result.messages.join(' ')).not.toMatch(/infeasible/i);
   });
 
+  test('returns invalid_input for invalid detailed enemy slots', () => {
+    const result = optimizeLoadouts({
+      equipment: [plane('fighter', { antiAir: 12, radius: 7, role: 'fighter' })],
+      baseCount: 1,
+      targetRadius: 7,
+      enemy: {
+        mode: 'detailed',
+        slots: [{
+          instanceId: 'enemy-1',
+          name: 'Invalid enemy',
+          sortieAntiAir: 10,
+          currentSlot: 19,
+          maxSlot: 18,
+        }],
+      },
+      simulationOptions: { seed: 'invalid', sampleCount: 8 },
+    });
+
+    expect(result.results).toEqual([]);
+    expect(result.search).toEqual(expect.objectContaining({
+      status: 'invalid_input',
+      provenOptimal: false,
+    }));
+    expect(result.messages.join(' ')).toMatch(/currentSlot.*maxSlot/i);
+    expect(result.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'DETAILED_ENEMY_CURRENT_SLOT_EXCEEDS_MAX',
+        slotIndex: 0,
+      }),
+    ]));
+  });
+
   test('fully enumerates and ranks detailed plans by all-wave fulfillment first', () => {
     const fighterPlane = plane('fighter', {
       antiAir: 20,
