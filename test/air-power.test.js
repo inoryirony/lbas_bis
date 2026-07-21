@@ -4,6 +4,7 @@ import airPower from '../src/air-power.js';
 const {
   airStateFor,
   calculateBaseAirPower,
+  calculateBaseAirPowerBounds,
   calculateEffectiveRadius,
   calculateSlotAirPower,
   calculateSlotAirPowerBounds,
@@ -59,6 +60,46 @@ describe('LBAS air power formulas', () => {
       .toEqual({ lower: 16, upper: 16 });
     expect(calculateBaseAirPower([ginga, ginga, ginga, ginga])).toBe(60);
     expect(airStateFor(calculateBaseAirPower([ginga, ginga, ginga, ginga]), 72).key).toBe('parity');
+  });
+
+  test('sums per-slot proficiency bounds before applying the best land recon coefficient', () => {
+    const loadout = [
+      {
+        equipType: 48,
+        isPlane: true,
+        isFighter: true,
+        antiAir: 1,
+        intercept: 0,
+        improvement: 0,
+        proficiency: 6,
+        slotSize: 1,
+      },
+      {
+        equipType: 47,
+        isPlane: true,
+        isAttacker: true,
+        antiAir: 1,
+        intercept: 0,
+        improvement: 0,
+        proficiency: 6,
+        slotSize: 4,
+      },
+      {
+        equipType: 49,
+        isPlane: true,
+        isRecon: true,
+        isLandRecon: true,
+        scout: 8,
+        antiAir: 1,
+        intercept: 0,
+        improvement: 0,
+        proficiency: 0,
+        slotSize: 4,
+      },
+    ];
+
+    expect(calculateBaseAirPowerBounds(loadout)).toEqual({ lower: 26, upper: 28 });
+    expect(calculateBaseAirPower(loadout)).toBe(26);
   });
 
   test('maps visible proficiency to the kc-web internal lower and upper bounds', () => {

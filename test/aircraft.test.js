@@ -68,6 +68,24 @@ describe('Aircraft capabilities', () => {
     }));
   });
 
+  test('does not infer capability sets from unrelated types or stats', () => {
+    const cases = [
+      ['isFighter', { equipType: 47, antiAir: 99 }],
+      ['isAttacker', { equipType: 6, torpedo: 99, bombing: 99 }],
+      ['isRecon', { equipType: 47, scout: 99 }],
+      ['isLandAttacker', { equipType: 7, torpedo: 99 }],
+      ['isHeavyLandAttacker', { equipType: 47 }],
+      ['isAswPatrol', { equipType: 47, asw: 99 }],
+      ['isBakusen', { masterId: 61, equipType: 7 }],
+      ['isJet', { equipType: 56, iconType: 59 }],
+      ['isHeavyJet', { equipType: 57, iconType: 60 }],
+    ];
+
+    for (const [capability, input] of cases) {
+      expect(capabilitiesFor(input)[capability]).toBe(false);
+    }
+  });
+
   test('maps bakusen and jet flags independently from aircraft role', () => {
     expect(capabilitiesFor({ masterId: 487, equipType: 7, iconType: 60 })).toEqual(expect.objectContaining({
       isBakusen: true,

@@ -121,11 +121,24 @@ function calculateSlotAirPowerAtProficiency(plane, slotSize, internalProficiency
 
 /** Calculates total base air power including the best land-recon coefficient. */
 function calculateBaseAirPower(loadout, slotSize) {
-  const rawAirPower = loadout.reduce(
-    (total, plane) => total + calculateSlotAirPower(plane, slotSize),
-    0,
-  );
-  return Math.floor(rawAirPower * landReconCoefficient(loadout));
+  return calculateBaseAirPowerBounds(loadout, slotSize).lower;
+}
+
+/** Sums slot bounds, then applies and floors the best land-recon coefficient. */
+function calculateBaseAirPowerBounds(loadout, slotSize) {
+  const rawBounds = loadout.reduce((total, plane) => {
+    const slotBounds = calculateSlotAirPowerBounds(plane, slotSize);
+    return {
+      lower: total.lower + slotBounds.lower,
+      upper: total.upper + slotBounds.upper,
+    };
+  }, { lower: 0, upper: 0 });
+  const coefficient = landReconCoefficient(loadout);
+
+  return {
+    lower: Math.floor(rawBounds.lower * coefficient),
+    upper: Math.floor(rawBounds.upper * coefficient),
+  };
 }
 
 /** Calculates range from every plane and applies only valid recon extension. */
@@ -254,6 +267,7 @@ module.exports = {
   AIR_STATES,
   airStateFor,
   calculateBaseAirPower,
+  calculateBaseAirPowerBounds,
   calculateEffectiveRadius,
   calculateSlotAirPower,
   calculateSlotAirPowerBounds,
