@@ -39,6 +39,7 @@ describe('simulator calculations', () => {
   });
 });
 
+/** Creates an explicit Ginga capability fixture for simulator calculations. */
 function plane(instanceId) {
   return {
     instanceId,
@@ -50,6 +51,10 @@ function plane(instanceId) {
     radius: 9,
     improvement: 0,
     proficiency: 7,
+    equipType: 47,
+    isPlane: true,
+    isAttacker: true,
+    isLandAttacker: true,
     role: 'attacker',
     isLandBased: true,
     torpedo: 14,

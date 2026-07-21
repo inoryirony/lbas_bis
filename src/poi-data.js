@@ -1,17 +1,11 @@
 'use strict';
 
-const RECON_MASTER_IDS = new Set([138, 178, 311, 312]);
+const {
+  applyAircraftCapabilities,
+  capabilitiesFor,
+} = require('./aircraft');
+
 const LAND_BASED_API_TYPE_ROOTS = new Set([17, 21, 22, 25, 26]);
-const AIRCRAFT_EQUIP_TYPES = new Set([
-  6, 7, 8, 9, 10, 11,
-  25, 26,
-  41, 45, 47, 48, 49,
-  53, 54, 56, 57, 58, 59,
-]);
-const FIGHTER_EQUIP_TYPES = new Set([6, 45, 48]);
-const ATTACKER_EQUIP_TYPES = new Set([7, 8, 11, 47, 53, 57, 58, 59]);
-const RECON_EQUIP_TYPES = new Set([9, 10, 41, 49]);
-const SEAPLANE_BOMBER_EQUIP_TYPES = new Set([11]);
 
 function extractOwnedPlanes(poiState) {
   const masterById = getMasterEquipment(poiState);
@@ -92,25 +86,42 @@ function toPlaneInstance(equip, master, overrides = {}) {
   const torpedo = Number(master.api_raig) || 0;
   const bombing = Number(master.api_baku) || 0;
   const antiAir = Number(master.api_tyku) || 0;
-
-  return {
+  const equipType = getEquipType(master);
+  const iconType = Number(master.api_type?.[3]) || 0;
+  const asw = Number(master.api_tais) || 0;
+  const scout = Number(master.api_saku) || 0;
+  const basePlane = {
     instanceId: equip.api_id,
     masterId: master.api_id || equip.api_slotitem_id,
     name: master.api_name || `Item ${equip.api_slotitem_id}`,
+    equipType,
+    iconType,
     antiAir,
     intercept: Number(master.api_houk) || 0,
     antiBomber: Number(master.api_bakk) || 0,
     radius: Number(master.api_distance) || 0,
     improvement: Number(equip.api_level) || 0,
     proficiency: Number(equip.api_alv) || 0,
-    role: classifyRole(master, { antiAir, torpedo, bombing }),
     isLandBased: isLandBasedMaster(master),
     torpedo,
     bombing,
+    asw,
+    scout,
     available: true,
     missing: false,
     ...overrides,
   };
+
+  if (equip.api_alv_internal != null) {
+    basePlane.internalProficiency = Number(equip.api_alv_internal) || 0;
+  }
+
+  const capabilities = capabilitiesFor(basePlane);
+
+  return applyAircraftCapabilities({
+    ...basePlane,
+    role: classifyRole(equipType, capabilities),
+  });
 }
 
 function isLbasCandidateMaster(master) {
@@ -118,23 +129,21 @@ function isLbasCandidateMaster(master) {
   const equipType = getEquipType(master);
   return (
     (Number(master.api_distance) || 0) > 0 &&
-    (RECON_MASTER_IDS.has(masterId) || AIRCRAFT_EQUIP_TYPES.has(equipType))
+    capabilitiesFor({ masterId, equipType }).isPlane
   );
 }
 
-function classifyRole(master, stats) {
-  const masterId = Number(master.api_id) || 0;
-  const equipType = getEquipType(master);
-  if (RECON_MASTER_IDS.has(masterId) || RECON_EQUIP_TYPES.has(equipType)) {
+function classifyRole(equipType, capabilities) {
+  if (capabilities.isRecon) {
     return 'recon';
   }
-  if (SEAPLANE_BOMBER_EQUIP_TYPES.has(equipType)) {
+  if (equipType === 11) {
     return 'seaplaneBomber';
   }
-  if (ATTACKER_EQUIP_TYPES.has(equipType) || stats.torpedo > 0 || stats.bombing > 0) {
+  if (capabilities.isAttacker) {
     return 'attacker';
   }
-  if (FIGHTER_EQUIP_TYPES.has(equipType) || stats.antiAir > 0) {
+  if (capabilities.isFighter) {
     return 'fighter';
   }
   return 'unknown';

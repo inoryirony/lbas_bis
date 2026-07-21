@@ -345,7 +345,10 @@ describe('LBAS optimizer MVP', () => {
   });
 });
 
+/** Creates a legacy optimizer fixture with explicit aircraft capabilities. */
 function plane(instanceId, overrides = {}) {
+  const role = overrides.role ?? 'attacker';
+  const equipType = role === 'fighter' ? 48 : role === 'recon' ? 49 : 47;
   return {
     instanceId,
     masterId: Number(instanceId.replace(/\D/g, '')) || 1,
@@ -356,7 +359,15 @@ function plane(instanceId, overrides = {}) {
     radius: 0,
     improvement: 0,
     proficiency: 0,
-    role: 'attacker',
+    equipType,
+    isPlane: true,
+    isFighter: role === 'fighter',
+    isAttacker: role === 'attacker',
+    isLandAttacker: role === 'attacker',
+    isRecon: role === 'recon',
+    isLandRecon: role === 'recon',
+    scout: role === 'recon' ? 8 : 0,
+    role,
     torpedo: 0,
     bombing: 0,
     isLandBased: false,
