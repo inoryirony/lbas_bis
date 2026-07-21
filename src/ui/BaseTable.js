@@ -97,12 +97,12 @@ function renderEquipmentSelect(props) {
       onChange: (event) => onSlotPlaneChange(baseIndex, slotIndex, event.target.value),
       style: styles.select,
     },
-    h('option', { value: '' }, t('none')),
+    h('option', { value: '' }, t('emptySlot')),
     options.map((plane) =>
       h(
         'option',
         { key: String(plane.instanceId), value: String(plane.instanceId) },
-        `${plane.name} #${plane.instanceId}${plane.missing ? ' (未持有)' : ''}`,
+        `${plane.name} #${plane.instanceId}${plane.missing ? ` (${t('missing')})` : ''}`,
       ),
     ),
   );

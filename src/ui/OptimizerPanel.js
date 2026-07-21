@@ -11,6 +11,7 @@ function OptimizerPanel(props) {
     theoreticalCount,
     messages,
     results,
+    search,
     onCandidateModeChange,
     onOptimize,
     onImportPlan,
@@ -52,8 +53,20 @@ function OptimizerPanel(props) {
       h('button', { type: 'button', onClick: onOptimize, style: styles.primaryButton }, t('optimize')),
       h('span', { style: styles.meta }, `${t('availablePlanes')}: ${equipmentCount} / ${t('candidatePlanes')}: ${theoreticalCount}`),
     ),
+    renderSearch(search, t, styles),
     renderMessages(messages, styles),
     renderResults({ results, onImportPlan, t, styles }),
+  );
+}
+
+/** Renders exact-search completion and budget metadata. */
+function renderSearch(search, t, styles) {
+  if (!search) return null;
+  return h(
+    'div',
+    { style: styles.searchMeta || styles.meta },
+    h('strong', null, search.provenOptimal ? t('provenOptimal') : t('notProvenOptimal')),
+    ` / ${t(`searchStatus_${search.status}`)} / ${t('searchNodes')} ${search.nodesExplored ?? 0}`,
   );
 }
 
@@ -82,11 +95,12 @@ function renderResults({ results, onImportPlan, t, styles }) {
           h('th', { style: styles.th }, t('plan')),
           h('th', { style: styles.th }, t('sixWaveState')),
           h('th', { style: styles.th }, t('damagePower')),
+          h('th', { style: styles.th }, t('uniformMinimumProficiency')),
           h('th', { style: styles.th }, t('missingEquipment')),
           h('th', { style: styles.th }, t('importToSimulator')),
         ),
       ),
-      h('tbody', null, h('tr', null, h('td', { colSpan: 5, style: styles.emptyCell }, t('noResult')))),
+      h('tbody', null, h('tr', null, h('td', { colSpan: 6, style: styles.emptyCell }, t('noResult')))),
     );
   }
 
@@ -103,6 +117,7 @@ function renderResults({ results, onImportPlan, t, styles }) {
           h('strong', null, `${t('plan')} ${planIndex + 1}`),
           h('span', null, `${t('damagePower')} ${plan.totalDamagePower}`),
           h('span', null, `${t('worstMargin')} ${plan.worstMargin}`),
+          h('span', null, t(plan.calculationMode === 'detailed' ? 'detailedSimulation' : 'staticEstimate')),
           h('button', { type: 'button', onClick: () => onImportPlan(plan), style: styles.button }, t('importToSimulator')),
         ),
         h('div', { style: styles.planSummary }, formatMissing(plan.missingEquipment, t)),
@@ -113,26 +128,55 @@ function renderResults({ results, onImportPlan, t, styles }) {
             h(
               'span',
               { key: wave.waveIndex, style: styles.wave },
-              `${format(t('wave'), { index: wave.waveIndex + 1 })}: ${t(wave.state.key)} / ${t('targetState')} ${t(wave.targetState)} / ${t('airPower')} ${wave.airPower}`,
+              formatWave(wave, t),
             ),
           ),
         ),
-        ...plan.bases.map((base, baseIndex) =>
+        ...plan.bases.flatMap((base, baseIndex) => [
+          h(
+            'div',
+            { key: `base-meta-${baseIndex}`, style: styles.planSummary },
+            `${format(t('base'), { index: baseIndex + 1 })} / ${t('uniformMinimumProficiency')} ${formatProficiency(base.minimumProficiency)}`,
+          ),
           h(
             'ol',
             { key: `base-${baseIndex}`, style: styles.loadout },
-            base.loadout.map((item) =>
-              h(
+            base.loadout.map((item, slotIndex) => item
+              ? h(
                 'li',
-                { key: item.instanceId, style: item.available === false ? styles.missingItem : null },
-                `${item.name} #${item.instanceId} · ${t('airPower')} ${item.antiAir} · ${t('radius')} ${item.radius}`,
+                {
+                  key: item.instanceId ?? `slot-${slotIndex}`,
+                  style: item.available === false ? styles.missingItem : null,
+                },
+                `${item.name} #${item.instanceId} · ${t('airPower')} ${item.antiAir} · ${t('radius')} ${item.radius}${item.missing || item.available === false ? ` · ${t('missing')}` : ''}`,
+              )
+              : h(
+                'li',
+                { key: `empty-${slotIndex}`, style: styles.emptyLoadoutItem || styles.meta },
+                t('emptySlot'),
               ),
             ),
           ),
-        ),
+        ]),
       ),
     ),
   );
+}
+
+/** Formats static or Monte Carlo wave summaries without assuming one shape. */
+function formatWave(wave, t) {
+  const prefix = format(t('wave'), { index: wave.waveIndex + 1 });
+  if (wave.state) {
+    return `${prefix}: ${t(wave.state.key)} / ${t('targetState')} ${t(wave.targetState)} / ${t('airPower')} ${wave.airPower}`;
+  }
+  const probability = Math.round((wave.targetFulfillmentProbability || 0) * 1000) / 10;
+  return `${prefix}: ${t('targetFulfillment')} ${probability}% / ${t('expectedAir')} ${Math.round(wave.expectedOwnAirBefore || 0)}`;
+}
+
+/** Formats one uniform visible-proficiency level. */
+function formatProficiency(level) {
+  if (level == null) return '-';
+  return ['-', '|', '||', '|||', '/', '//', '///', '>>'][level] || String(level);
 }
 
 function formatMissing(missingEquipment, t) {

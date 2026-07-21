@@ -27,10 +27,23 @@ function WaveStatusTable(props) {
             },
             STATE_OPTIONS.map((option) => h('option', { key: option, value: option }, t(option))),
           ),
-          h('strong', { style: wave.fulfilled ? styles.goodState : styles.badState }, t(wave.state.key)),
+          renderWaveResult(wave, t, styles),
         ),
       ),
     ),
+  );
+}
+
+/** Renders deterministic state or Monte Carlo target probability. */
+function renderWaveResult(wave, t, styles) {
+  if (wave.state) {
+    return h('strong', { style: wave.fulfilled ? styles.goodState : styles.badState }, t(wave.state.key));
+  }
+  const probability = Math.round((wave.targetFulfillmentProbability || 0) * 1000) / 10;
+  return h(
+    'strong',
+    { style: probability >= 100 ? styles.goodState : styles.badState },
+    `${probability}%`,
   );
 }
 

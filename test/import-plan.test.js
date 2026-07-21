@@ -32,6 +32,17 @@ describe('import optimizer plan into simulator', () => {
     expect(state.bases[0].slots.map((slot) => slot.plane.instanceId)).toEqual(['a', 'locked', 'c', 'd']);
     expect(state.bases[0].slots[1].locked).toBe(true);
   });
+
+  test('preserves a locked empty slot when importing a plan', () => {
+    const original = setSlotLock(createEmptySimulatorState(), 0, 0, true);
+    const state = applyPlanToSimulator(original, {
+      bases: [{ loadout: [plane('a'), plane('b'), null, null] }],
+    });
+
+    expect(state.bases[0].slots[0].plane).toBeNull();
+    expect(state.bases[0].slots[0].locked).toBe(true);
+    expect(state.bases[0].slots[1].plane.instanceId).toBe('b');
+  });
 });
 
 function plane(instanceId) {

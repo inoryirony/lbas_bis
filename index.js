@@ -5,9 +5,12 @@ const { optimizeLoadouts } = require('./src/optimizer');
 const { extractOptimizationPlanes, extractOwnedPlanes } = require('./src/poi-data');
 const {
   createEmptySimulatorState,
+  addDetailedEnemySlot,
   normalizeSimulatorState,
+  removeDetailedEnemySlot,
   setBaseCount,
   setBaseSlot,
+  setDetailedEnemySlot,
   setSlotLock,
   setWaveTarget,
   simulatorToOptimizerInput,
@@ -56,6 +59,7 @@ const FALLBACK_ZH_CN = {
   role_unknown: '其他',
   theoreticalPlanes: '理论候选',
   minimumProficiency: '最低熟练度',
+  uniformMinimumProficiency: '统一最低可见熟练度',
   missingEquipment: '缺少装备',
   missing: '未持有',
   role_seaplaneBomber: '水爆',
@@ -74,6 +78,28 @@ const FALLBACK_ZH_CN = {
   sixWaveState: '6波状态',
   manualMode: '手动',
   none: '无',
+  emptySlot: '空槽',
+  staticEstimate: '静态估算',
+  detailedSimulation: '详细逐波模拟',
+  provenOptimal: '已证明最优',
+  notProvenOptimal: '未证明最优',
+  searchNodes: '搜索节点',
+  searchStatus_optimal: '搜索完成',
+  searchStatus_infeasible: '确认无解',
+  searchStatus_budget_exhausted: '预算耗尽',
+  searchStatus_invalid_input: '输入无效',
+  enemyPlaneName: '敌机名',
+  sortieAntiAir: '出击对空',
+  currentSlot: '当前搭载',
+  maxSlot: '最大搭载',
+  addEnemySlot: '增加敌机槽',
+  removeEnemySlot: '删除敌机槽',
+  airRaidCell: '空袭格',
+  sampleCount: '采样数',
+  randomSeed: '随机种子',
+  invalidDetailedEnemy: '详细敌机槽输入无效',
+  targetFulfillment: '达标概率',
+  expectedAir: '期望制空',
 };
 
 class LbasOptimizerPanel extends React.Component {
@@ -85,6 +111,7 @@ class LbasOptimizerPanel extends React.Component {
       theoreticalCount: 0,
       messages: [],
       results: [],
+      search: null,
     };
   }
 
@@ -120,6 +147,7 @@ class LbasOptimizerPanel extends React.Component {
       theoreticalCount: equipment.length,
       messages: localizeMessages(result.messages, t),
       results: result.results,
+      search: result.search,
     });
   };
 
@@ -150,6 +178,59 @@ class LbasOptimizerPanel extends React.Component {
           index === 0 ? { ...ship, airPower: enemyAir } : ship,
         ),
       },
+    }));
+  };
+
+  /** Switches between static total air and detailed enemy-slot simulation. */
+  updateEnemyMode = (mode) => {
+    this.updateSimulator((simulator) => ({
+      ...simulator,
+      enemy: mode === 'detailed'
+        ? {
+          ...simulator.enemy,
+          mode: 'detailed',
+          slots: simulator.enemy.slots.length
+            ? simulator.enemy.slots
+            : [createEnemySlot(0)],
+        }
+        : {
+          ...simulator.enemy,
+          mode: 'manual',
+          slots: [],
+        },
+    }));
+  };
+
+  /** Updates one detailed enemy aircraft slot. */
+  updateEnemySlot = (slotIndex, slotPatch) => {
+    this.updateSimulator((simulator) =>
+      setDetailedEnemySlot(simulator, slotIndex, slotPatch));
+  };
+
+  /** Appends one editable detailed enemy aircraft slot. */
+  addEnemySlot = () => {
+    this.updateSimulator((simulator) =>
+      addDetailedEnemySlot(simulator, createEnemySlot(simulator.enemy.slots.length)));
+  };
+
+  /** Removes one detailed enemy aircraft slot. */
+  removeEnemySlot = (slotIndex) => {
+    this.updateSimulator((simulator) => removeDetailedEnemySlot(simulator, slotIndex));
+  };
+
+  /** Toggles air-raid-cell rules for jet assault. */
+  updateAirRaidCell = (isAirRaidCell) => {
+    this.updateSimulator((simulator) => ({
+      ...simulator,
+      enemy: { ...simulator.enemy, isAirRaidCell: Boolean(isAirRaidCell) },
+    }));
+  };
+
+  /** Updates deterministic Monte Carlo controls. */
+  updateSimulationOption = (field, value) => {
+    this.updateSimulator((simulator) => ({
+      ...simulator,
+      simulationOptions: { ...simulator.simulationOptions, [field]: value },
     }));
   };
 
@@ -216,6 +297,12 @@ class LbasOptimizerPanel extends React.Component {
         onBaseCountChange: this.updateBaseCount,
         onTargetRadiusChange: this.updateTargetRadius,
         onEnemyAirChange: this.updateEnemyAir,
+        onEnemyModeChange: this.updateEnemyMode,
+        onEnemySlotChange: this.updateEnemySlot,
+        onEnemySlotAdd: this.addEnemySlot,
+        onEnemySlotRemove: this.removeEnemySlot,
+        onAirRaidCellChange: this.updateAirRaidCell,
+        onSimulationOptionChange: this.updateSimulationOption,
         onSlotPlaneChange: this.updateSlotPlane,
         onSlotLockChange: this.updateSlotLock,
         onWaveTargetChange: this.updateWaveTarget,
@@ -229,6 +316,7 @@ class LbasOptimizerPanel extends React.Component {
         theoreticalCount: this.state.theoreticalCount || ownedEquipment.length,
         messages: this.state.messages,
         results: this.state.results,
+        search: this.state.search,
         onCandidateModeChange: this.updateCandidateMode,
         onOptimize: this.runOptimizer,
         onImportPlan: this.importPlan,
@@ -253,6 +341,17 @@ function findSelectablePlane(equipment, simulator, instanceId) {
   const wanted = String(instanceId);
   const selected = simulator.bases.flatMap((base) => base.slots.map((slot) => slot.plane).filter(Boolean));
   return [...equipment, ...selected].find((plane) => String(plane.instanceId) === wanted) || null;
+}
+
+/** Creates one valid editable detailed enemy aircraft slot. */
+function createEnemySlot(index) {
+  return {
+    instanceId: `enemy-slot-${index}`,
+    name: '',
+    sortieAntiAir: 0,
+    currentSlot: 18,
+    maxSlot: 18,
+  };
 }
 
 function parseTargetStates(value) {
@@ -489,6 +588,22 @@ const styles = {
     flexWrap: 'wrap',
     gap: 10,
     marginBottom: 8,
+  },
+  searchMeta: {
+    margin: '6px 0',
+    fontSize: 12,
+  },
+  iconButton: {
+    minWidth: 28,
+    height: 26,
+    padding: 0,
+    border: border,
+    borderRadius: 3,
+    background: 'transparent',
+    cursor: 'pointer',
+  },
+  emptyLoadoutItem: {
+    opacity: 0.58,
   },
   radioLabel: {
     alignItems: 'center',
