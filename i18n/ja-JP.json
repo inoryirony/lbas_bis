@@ -75,5 +75,8 @@
   "randomSeed": "乱数シード",
   "invalidDetailedEnemy": "敵機スロットの入力が無効です",
   "targetFulfillment": "目標達成確率",
-  "expectedAir": "期待制空値"
+  "expectedAir": "期待制空値",
+  "noTargetAirSolution": "目標制空状態を満たす編成がありません。",
+  "noCombinedConstraintSolution": "航続距離、制空、在庫、固定条件を同時に満たす編成がありません。",
+  "budgetExhaustedMessage": "探索またはシミュレーション予算を使い切り、最適性を証明できませんでした。"
 }

@@ -75,5 +75,8 @@
   "randomSeed": "随机种子",
   "invalidDetailedEnemy": "详细敌机槽输入无效",
   "targetFulfillment": "达标概率",
-  "expectedAir": "期望制空"
+  "expectedAir": "期望制空",
+  "noTargetAirSolution": "没有配装能满足目标制空状态。",
+  "noCombinedConstraintSolution": "没有配装能同时满足航程、制空、库存和锁定约束。",
+  "budgetExhaustedMessage": "搜索或模拟预算已耗尽，尚未证明最优。"
 }

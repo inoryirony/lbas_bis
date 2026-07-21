@@ -832,6 +832,26 @@ describe('LBAS optimizer MVP', () => {
     expect(result.messages).toEqual(['No loadout can satisfy the target air state.']);
   });
 
+  test('does not mislabel global range competition as target-air failure', () => {
+    const result = optimizeLoadouts({
+      equipment: [
+        plane('short-1', { radius: 4, role: 'fighter' }),
+        plane('short-2', { radius: 4, role: 'fighter' }),
+        plane('only-recon', { radius: 8, role: 'recon', equipType: 49 }),
+      ],
+      baseCount: 2,
+      targetRadius: 6,
+      enemyAir: 0,
+      targetStates: ['none', 'none', 'none', 'none'],
+      nodeBudget: Infinity,
+    });
+
+    expect(result.search.status).toBe('infeasible');
+    expect(result.messages).toEqual([
+      'No loadout can satisfy all range, air, inventory, and lock constraints.',
+    ]);
+  });
+
   test('clears exact internal proficiency while finding the minimum visible level', () => {
     const result = optimizeLoadouts({
       equipment: [plane('max-trained-fighter', {

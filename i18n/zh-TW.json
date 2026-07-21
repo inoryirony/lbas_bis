@@ -75,5 +75,8 @@
   "randomSeed": "隨機種子",
   "invalidDetailedEnemy": "詳細敵機槽輸入無效",
   "targetFulfillment": "達標機率",
-  "expectedAir": "期望制空"
+  "expectedAir": "期望制空",
+  "noTargetAirSolution": "沒有配裝能滿足目標制空狀態。",
+  "noCombinedConstraintSolution": "沒有配裝能同時滿足航程、制空、庫存與鎖定限制。",
+  "budgetExhaustedMessage": "搜尋或模擬預算已耗盡，尚未證明最優。"
 }

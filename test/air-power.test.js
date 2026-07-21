@@ -241,14 +241,14 @@ describe('LBAS air power formulas', () => {
   });
 
   test('applies kc-web aircraft improvement air-power rules', () => {
-    const cases = [
+    const cases = /** @type {Array<[Record<string, any>, number]>} */ ([
       [{ masterId: 486, improvement: 10 }, 6],
       [{ isFighter: true, improvement: 10 }, 4],
       [{ equipType: 7, isBakusen: true, improvement: 10 }, 5],
       [{ isLandAttacker: true, improvement: 9 }, 3],
       [{ equipType: 49, isLandRecon: true, improvement: 10 }, 4],
       [{ equipType: 41, isRecon: true, improvement: 10 }, 3],
-    ];
+    ]);
 
     for (const [capabilities, expected] of cases) {
       expect(calculateSlotAirPower({

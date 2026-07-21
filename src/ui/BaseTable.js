@@ -94,7 +94,11 @@ function renderEquipmentSelect(props) {
     'select',
     {
       value: slot.plane ? String(slot.plane.instanceId) : '',
-      onChange: (event) => onSlotPlaneChange(baseIndex, slotIndex, event.target.value),
+      onChange: (event) => onSlotPlaneChange(
+        baseIndex,
+        slotIndex,
+        /** @type {HTMLSelectElement} */ (event.currentTarget).value,
+      ),
       style: styles.select,
     },
     h('option', { value: '' }, t('emptySlot')),

@@ -100,6 +100,9 @@ const FALLBACK_ZH_CN = {
   invalidDetailedEnemy: '详细敌机槽输入无效',
   targetFulfillment: '达标概率',
   expectedAir: '期望制空',
+  noTargetAirSolution: '没有配装能满足目标制空状态。',
+  noCombinedConstraintSolution: '没有配装能同时满足航程、制空、库存和锁定约束。',
+  budgetExhaustedMessage: '搜索或模拟预算已耗尽，尚未证明最优。',
 };
 
 class LbasOptimizerPanel extends React.Component {
@@ -328,10 +331,11 @@ class LbasOptimizerPanel extends React.Component {
 }
 
 function readPoiState() {
-  if (typeof window === 'undefined' || typeof window.getStore !== 'function') {
+  if (typeof window === 'undefined') {
     return null;
   }
-  return window.getStore();
+  const poiWindow = /** @type {Window & { getStore?: () => any }} */ (window);
+  return typeof poiWindow.getStore === 'function' ? poiWindow.getStore() : null;
 }
 
 function findSelectablePlane(equipment, simulator, instanceId) {
@@ -376,12 +380,22 @@ function localizeMessages(messages, t) {
     if (radiusMatch) {
       return format(t('noCandidateRadius'), { radius: radiusMatch[1] });
     }
+    if (message === 'No loadout can satisfy the target air state.') {
+      return t('noTargetAirSolution');
+    }
+    if (message === 'No loadout can satisfy all range, air, inventory, and lock constraints.') {
+      return t('noCombinedConstraintSolution');
+    }
+    if (message === 'Search or simulation work budget exhausted before optimality was proven.') {
+      return t('budgetExhaustedMessage');
+    }
     return message;
   });
 }
 
 function getT() {
   try {
+    // @ts-ignore Poi provides this runtime-only module outside npm resolution.
     const i18next = require('views/env-parts/i18next').default;
     const fixedT = i18next.getFixedT(null, PLUGIN_ID);
     return (key) => fixedT(key);

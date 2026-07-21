@@ -90,7 +90,7 @@ function toPlaneInstance(equip, master, overrides = {}) {
   const iconType = Number(master.api_type?.[3]) || 0;
   const asw = Number(master.api_tais) || 0;
   const scout = Number(master.api_saku) || 0;
-  const basePlane = {
+  const basePlane = /** @type {Record<string, any>} */ ({
     instanceId: equip.api_id,
     masterId: master.api_id || equip.api_slotitem_id,
     name: master.api_name || `Item ${equip.api_slotitem_id}`,
@@ -110,7 +110,7 @@ function toPlaneInstance(equip, master, overrides = {}) {
     available: true,
     missing: false,
     ...overrides,
-  };
+  });
 
   if (equip.api_alv_internal != null) {
     basePlane.internalProficiency = Number(equip.api_alv_internal) || 0;

@@ -75,5 +75,8 @@
   "randomSeed": "Random seed",
   "invalidDetailedEnemy": "Detailed enemy slots are invalid",
   "targetFulfillment": "Target probability",
-  "expectedAir": "Expected air power"
+  "expectedAir": "Expected air power",
+  "noTargetAirSolution": "No loadout satisfies the target air state.",
+  "noCombinedConstraintSolution": "No loadout satisfies the range, air, inventory, and lock constraints together.",
+  "budgetExhaustedMessage": "The search or simulation budget was exhausted before optimality was proven."
 }

@@ -715,9 +715,12 @@ function filterRadiusRelevantEquipment(unlockedEquipment, allEquipment, targetRa
 function infeasibleMessage(prepared, remainingCounts) {
   const radiusFeasible = prepared.baseLocks.every((baseLock) =>
     hasRadiusFeasibleAssignment(baseLock, remainingCounts, prepared.groups, prepared.targetRadius));
-  return radiusFeasible
+  if (!radiusFeasible) {
+    return `No candidate loadout can reach radius ${prepared.targetRadius}.`;
+  }
+  return prepared.baseCount === 1
     ? 'No loadout can satisfy the target air state.'
-    : `No candidate loadout can reach radius ${prepared.targetRadius}.`;
+    : 'No loadout can satisfy all range, air, inventory, and lock constraints.';
 }
 
 /** Finds one radius-feasible grouped assignment without retaining combinations. */
