@@ -18,7 +18,10 @@ function extractOwnedPlanes(poiState) {
 
 function extractOptimizationPlanes(poiState, options = {}) {
   const includeMissing = options.includeMissing === true;
-  const maxCopiesPerMaster = Math.max(1, Number(options.maxCopiesPerMaster) || 4);
+  const missingCopiesPerMaster = Math.max(
+    0,
+    Math.floor(Number(options.missingCopiesPerMaster ?? 1) || 0),
+  );
   const missingProficiency = Math.max(0, Math.min(7, Number(options.missingProficiency ?? 7) || 0));
   const masterById = getMasterEquipment(poiState);
   const ownedPlanes = extractOwnedPlanes(poiState).map((plane) => ({
@@ -31,19 +34,11 @@ function extractOptimizationPlanes(poiState, options = {}) {
     return ownedPlanes;
   }
 
-  const ownedCounts = new Map();
-
-  for (const plane of ownedPlanes) {
-    ownedCounts.set(plane.masterId, (ownedCounts.get(plane.masterId) || 0) + 1);
-  }
-
   const theoreticalPlanes = Object.values(masterById)
     .filter(isLbasCandidateMaster)
     .flatMap((master) => {
       const masterId = Number(master.api_id) || 0;
-      const ownedCount = ownedCounts.get(masterId) || 0;
-      const missingCount = Math.max(0, maxCopiesPerMaster - ownedCount);
-      return Array.from({ length: missingCount }, (_, index) =>
+      return Array.from({ length: missingCopiesPerMaster }, (_, index) =>
         toPlaneInstance(
           {
             api_id: `missing-${masterId}-${index + 1}`,
@@ -56,6 +51,7 @@ function extractOptimizationPlanes(poiState, options = {}) {
             available: false,
             missing: true,
             copyIndex: index + 1,
+            missingQuantityPolicy: missingCopiesPerMaster,
           },
         ),
       );

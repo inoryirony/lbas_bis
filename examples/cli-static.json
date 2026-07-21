@@ -1,0 +1,34 @@
+{
+  "equipment": [
+    {
+      "instanceId": "cli-fighter",
+      "masterId": 1,
+      "name": "CLI fighter",
+      "equipType": 48,
+      "antiAir": 12,
+      "radius": 7,
+      "improvement": 0,
+      "proficiency": 0,
+      "isPlane": true,
+      "isFighter": true,
+      "isLandBased": true,
+      "role": "fighter"
+    }
+  ],
+  "baseCount": 1,
+  "targetRadius": 7,
+  "enemyAir": 20,
+  "targetStates": ["parity", "parity"],
+  "lockedBases": [
+    {
+      "slots": [
+        { "instanceId": "cli-fighter", "kind": "LOCKED_ITEM" },
+        { "kind": "LOCKED_EMPTY" },
+        { "kind": "LOCKED_EMPTY" },
+        { "kind": "LOCKED_EMPTY" }
+      ]
+    }
+  ],
+  "nodeBudget": null,
+  "maxResults": 1
+}

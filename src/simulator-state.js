@@ -155,12 +155,15 @@ function normalizeEnemy(enemy = {}) {
   const slots = slotValidation.valid
     ? slotValidation.slots
     : preserveDetailedSlotInputs(enemy.slots || enemy.enemySlots);
-  const ships = Array.from({ length: 6 }, (_, index) => {
-    const ship = enemy.ships?.[index] || defaults.ships[index];
+  const shipCount = Math.max(6, Array.isArray(enemy.ships) ? enemy.ships.length : 0);
+  const ships = Array.from({ length: shipCount }, (_, index) => {
+    const fallback = defaults.ships[index] || { id: null, name: '', airPower: 0 };
+    const ship = enemy.ships?.[index] || fallback;
     return {
+      ...ship,
       id: ship.id ?? null,
       name: ship.name || '',
-      airPower: nonNegativeNumber(ship.airPower, defaults.ships[index].airPower),
+      airPower: nonNegativeNumber(ship.airPower, fallback.airPower),
     };
   });
   const summedAir = ships.reduce((total, ship) => total + ship.airPower, 0);
@@ -193,6 +196,7 @@ function normalizeEnemy(enemy = {}) {
 function preserveDetailedSlotInputs(slots = []) {
   if (!Array.isArray(slots)) return slots;
   return slots.flatMap((slot, index) => slot ? [{
+    ...slot,
     instanceId: slot.instanceId ?? `enemy-slot-${index}`,
     name: typeof slot.name === 'string' ? slot.name : '',
     sortieAntiAir: slot.sortieAntiAir,

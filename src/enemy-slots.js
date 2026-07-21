@@ -50,6 +50,7 @@ function validateAndNormalizeDetailedEnemySlots(slots = [], options = {}) {
     }
 
     return [{
+      ...slot,
       instanceId: slot.instanceId ?? `enemy-slot-${slotIndex}`,
       name: typeof slot.name === 'string' ? slot.name : '',
       sortieAntiAir: sortie.present ? sortie.value : 0,

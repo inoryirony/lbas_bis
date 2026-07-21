@@ -1,8 +1,11 @@
 'use strict';
 
 const React = require('react');
-const { optimizeLoadouts } = require('./src/optimizer');
 const { extractOptimizationPlanes, extractOwnedPlanes } = require('./src/poi-data');
+const { createSearchRunner } = require('./src/search-runner');
+const { buildEnemyCatalog } = require('./src/enemy-catalog');
+const { buildMapCatalog } = require('./src/map-catalog');
+const { loadMapData } = require('./src/map-cache');
 const {
   createEmptySimulatorState,
   addDetailedEnemySlot,
@@ -75,7 +78,7 @@ const FALLBACK_ZH_CN = {
   ownedOnly: '仅持有装备',
   includeMissing: '包含未持有理论装备',
   importToSimulator: '导入到模拟器',
-  sixWaveState: '6波状态',
+  sixWaveState: '波次状态',
   manualMode: '手动',
   none: '无',
   emptySlot: '空槽',
@@ -103,6 +106,38 @@ const FALLBACK_ZH_CN = {
   noTargetAirSolution: '没有配装能满足目标制空状态。',
   noCombinedConstraintSolution: '没有配装能同时满足航程、制空、库存和锁定约束。',
   budgetExhaustedMessage: '搜索或模拟预算已耗尽，尚未证明最优。',
+  searchCancelledMessage: '搜索已停止；已保留当前最佳方案，但尚未证明全局最优。',
+  cancel: '停止计算',
+  currentBest: '当前最佳',
+  waitingFeasible: '等待可行方案',
+  phase_finding_feasible: '正在寻找可行方案',
+  phase_improving: '正在改进方案',
+  phase_proving_optimal: '正在证明全局最优',
+  phase_cancelling: '正在停止',
+  prunedNodes: '已剪枝',
+  completeCandidates: '完整候选',
+  simulationSamples: '模拟样本',
+  elapsedTime: '耗时',
+  searchStatus_cancelled: '已取消',
+  searchStatus_searching: '搜索中',
+  selectEnemyShip: '选择敌舰',
+  advancedSlotOverrides: '自定义敌机槽位',
+  enemyDataMissing: '该敌舰缺少槽位数据',
+  enemyDataMismatched: '该敌舰槽位数据不完整',
+  unknownEnemyType: '未知舰种',
+  mapPreset: '地图节点预设',
+  mapDataLoading: '正在加载地图数据…',
+  mapArea: '海域',
+  mapNode: '节点',
+  mapDifficulty: '难度',
+  enemyFormation: '敌编成',
+  applyMapPreset: '应用预设',
+  bossNode: 'Boss',
+  difficulty_0: '通常',
+  difficulty_1: '丁',
+  difficulty_2: '丙',
+  difficulty_3: '乙',
+  difficulty_4: '甲',
 };
 
 class LbasOptimizerPanel extends React.Component {
@@ -115,12 +150,40 @@ class LbasOptimizerPanel extends React.Component {
       messages: [],
       results: [],
       search: null,
+      isSearching: false,
+      searchPhase: null,
+      searchProgress: null,
+      mapCatalog: null,
+      mapSelection: { area: null, node: '', difficulty: null, formationId: '' },
+      enemyCatalog: null,
+      noro6Master: null,
+      mapDataError: null,
     };
+    this.searchRunner = props.searchRunner || null;
+    this.readPoiState = props.readPoiState || readPoiState;
+    this.calculateSimulatorSummary = props.calculateSimulatorSummary || calculateSimulatorSummary;
+    this.simulatorRenderCache = null;
+  }
+
+  componentDidMount() {
+    loadMapData()
+      .then((data) => {
+        const poiState = this.readPoiState();
+        this.setState({
+          mapCatalog: buildMapCatalog(data),
+          enemyCatalog: poiState
+            ? buildEnemyCatalog(poiState, { noro6Master: data.master })
+            : null,
+          noro6Master: data.master,
+          mapDataError: null,
+        });
+      })
+      .catch((error) => this.setState({ mapDataError: error.message }));
   }
 
   runOptimizer = () => {
     const t = getT();
-    const poiState = readPoiState();
+    const poiState = this.readPoiState();
     if (!poiState) {
       this.setState({
         messages: [t('noPoiState')],
@@ -136,23 +199,86 @@ class LbasOptimizerPanel extends React.Component {
     const ownedEquipment = extractOwnedPlanes(poiState);
     const equipment = extractOptimizationPlanes(poiState, {
       includeMissing: simulator.candidateMode === 'theoretical',
-      maxCopiesPerMaster: Number(simulator.baseCount) * 4,
+      missingCopiesPerMaster: 1,
     });
-    const result = optimizeLoadouts({
+    const searchOptions = {
       ...optimizerInput,
       equipment,
-      maxResults: 10,
-    });
+      maxResults: 1,
+      nodeBudget: Infinity,
+      simulationWorkBudget: Infinity,
+    };
 
     this.setState({
       simulator,
       equipmentCount: ownedEquipment.length,
       theoreticalCount: equipment.length,
-      messages: localizeMessages(result.messages, t),
-      results: result.results,
-      search: result.search,
+      messages: [],
+      results: [],
+      search: { status: 'searching', provenOptimal: false, nodesExplored: 0 },
+      isSearching: true,
+      searchPhase: 'finding_feasible',
+      searchProgress: null,
     });
+    this.searchRunner ||= createSearchRunner();
+    this.searchRunner.start(searchOptions, this.handleSearchEvent);
   };
+
+  handleSearchEvent = (event) => {
+    const t = getT();
+    if (event.type === 'phase_changed') {
+      this.setState({ searchPhase: event.phase });
+      return;
+    }
+    if (event.type === 'progress') {
+      this.setState({
+        searchPhase: event.phase || this.state.searchPhase,
+        searchProgress: event,
+        search: {
+          ...(this.state.search || {}),
+          status: 'searching',
+          provenOptimal: false,
+          nodesExplored: event.nodesExplored,
+        },
+      });
+      return;
+    }
+    if (event.type === 'incumbent') {
+      this.setState({
+        results: [event.plan],
+        searchPhase: event.phase || this.state.searchPhase,
+      });
+      return;
+    }
+    if (event.type === 'completed' || event.type === 'cancelled') {
+      this.setState({
+        messages: localizeMessages(event.result.messages || [], t),
+        results: event.result.results || [],
+        search: event.result.search,
+        isSearching: false,
+        searchPhase: null,
+      });
+      return;
+    }
+    if (event.type === 'failed') {
+      this.setState({
+        messages: [event.error?.message || 'Search worker failed.'],
+        search: { status: 'invalid_input', provenOptimal: false, nodesExplored: 0 },
+        isSearching: false,
+        searchPhase: null,
+      });
+    }
+  };
+
+  cancelSearch = () => {
+    if (!this.searchRunner?.cancel()) return;
+    this.setState({ searchPhase: 'cancelling' });
+  };
+
+  componentWillUnmount() {
+    this.searchRunner?.dispose();
+    this.searchRunner = null;
+  }
 
   updateSimulator = (updater) => {
     this.setState((state) => ({
@@ -207,13 +333,79 @@ class LbasOptimizerPanel extends React.Component {
   /** Updates one detailed enemy aircraft slot. */
   updateEnemySlot = (slotIndex, slotPatch) => {
     this.updateSimulator((simulator) =>
-      setDetailedEnemySlot(simulator, slotIndex, slotPatch));
+      setDetailedEnemySlot(simulator, slotIndex, { ...slotPatch, overridden: true }));
+  };
+
+  updateEnemyShip = (shipIndex, shipId) => {
+    const catalog = this.state.enemyCatalog || this.currentEnemyCatalog();
+    const selected = shipId == null ? null : catalog.byId.get(Number(shipId));
+    this.updateSimulator((simulator) => {
+      const ships = simulator.enemy.ships.map((ship, index) => index === shipIndex
+        ? selected
+          ? {
+            id: selected.id,
+            name: selected.name,
+            typeName: selected.typeName,
+            airPower: selected.airPower,
+            dataStatus: selected.dataStatus,
+          }
+          : { id: null, name: '', airPower: 0, dataStatus: null }
+        : ship);
+      const retainedSlots = simulator.enemy.slots.filter((slot) =>
+        slot.sourceShipIndex !== shipIndex && !isBlankGeneratedSlot(slot));
+      const generatedSlots = selected ? catalog.slotsForShip(selected.id, shipIndex) : [];
+      return {
+        ...simulator,
+        enemy: {
+          ...simulator.enemy,
+          mode: 'detailed',
+          ships,
+          slots: [...retainedSlots, ...generatedSlots],
+        },
+      };
+    });
+  };
+
+  updateMapSelection = (field, rawValue) => {
+    this.setState((state) => {
+      const current = state.mapSelection;
+      if (field === 'area') {
+        return { mapSelection: { area: rawValue ? Number(rawValue) : null, node: '', difficulty: null, formationId: '' } };
+      }
+      if (field === 'node') {
+        return { mapSelection: { ...current, node: rawValue, difficulty: null, formationId: '' } };
+      }
+      if (field === 'difficulty') {
+        return { mapSelection: { ...current, difficulty: rawValue === '' ? null : Number(rawValue), formationId: '' } };
+      }
+      return { mapSelection: { ...current, formationId: rawValue } };
+    });
+  };
+
+  applyMapPreset = (formation) => {
+    this.updateSimulator((simulator) => ({
+      ...simulator,
+      targetRadius: formation.radius.length
+        ? Math.max(...formation.radius)
+        : simulator.targetRadius,
+      enemy: {
+        ...simulator.enemy,
+        mode: 'detailed',
+        areaId: formation.area,
+        nodeId: formation.node,
+        source: formation.source,
+        ships: Array.from({ length: Math.max(6, formation.ships.length) }, (_, index) => formation.ships[index]
+          ? { ...formation.ships[index] }
+          : { id: null, name: '', airPower: 0 }),
+        slots: formation.enemySlots.map((slot) => ({ ...slot, overridden: false })),
+      },
+    }));
   };
 
   /** Appends one editable detailed enemy aircraft slot. */
   addEnemySlot = () => {
     this.updateSimulator((simulator) =>
-      addDetailedEnemySlot(simulator, createEnemySlot(simulator.enemy.slots.length)));
+      addDetailedEnemySlot(simulator, createEnemySlot(nextEnemySlotIndex(simulator.enemy.slots))));
   };
 
   /** Removes one detailed enemy aircraft slot. */
@@ -279,15 +471,27 @@ class LbasOptimizerPanel extends React.Component {
   };
 
   currentOwnedEquipment() {
-    const poiState = readPoiState();
+    const poiState = this.readPoiState();
     return poiState ? extractOwnedPlanes(poiState) : [];
+  }
+
+  currentEnemyCatalog() {
+    return enemyCatalogFor(this.readPoiState(), this.state.noro6Master);
   }
 
   render() {
     const t = getT();
-    const simulator = normalizeSimulatorState(this.state.simulator);
-    const summary = calculateSimulatorSummary(simulator);
+    if (this.simulatorRenderCache?.source !== this.state.simulator) {
+      const simulator = normalizeSimulatorState(this.state.simulator);
+      this.simulatorRenderCache = {
+        source: this.state.simulator,
+        simulator,
+        summary: this.calculateSimulatorSummary(simulator),
+      };
+    }
+    const { simulator, summary } = this.simulatorRenderCache;
     const ownedEquipment = this.currentOwnedEquipment();
+    const enemyCatalog = this.state.enemyCatalog || this.currentEnemyCatalog();
 
     return h(
       'div',
@@ -297,6 +501,9 @@ class LbasOptimizerPanel extends React.Component {
         simulator,
         summary,
         equipment: ownedEquipment,
+        enemyCatalog,
+        mapCatalog: this.state.mapCatalog,
+        mapSelection: this.state.mapSelection,
         onBaseCountChange: this.updateBaseCount,
         onTargetRadiusChange: this.updateTargetRadius,
         onEnemyAirChange: this.updateEnemyAir,
@@ -304,6 +511,9 @@ class LbasOptimizerPanel extends React.Component {
         onEnemySlotChange: this.updateEnemySlot,
         onEnemySlotAdd: this.addEnemySlot,
         onEnemySlotRemove: this.removeEnemySlot,
+        onEnemyShipChange: this.updateEnemyShip,
+        onMapSelectionChange: this.updateMapSelection,
+        onMapPresetApply: this.applyMapPreset,
         onAirRaidCellChange: this.updateAirRaidCell,
         onSimulationOptionChange: this.updateSimulationOption,
         onSlotPlaneChange: this.updateSlotPlane,
@@ -320,8 +530,12 @@ class LbasOptimizerPanel extends React.Component {
         messages: this.state.messages,
         results: this.state.results,
         search: this.state.search,
+        isSearching: this.state.isSearching,
+        searchPhase: this.state.searchPhase,
+        searchProgress: this.state.searchProgress,
         onCandidateModeChange: this.updateCandidateMode,
         onOptimize: this.runOptimizer,
+        onCancel: this.cancelSearch,
         onImportPlan: this.importPlan,
         t,
         styles,
@@ -358,6 +572,33 @@ function createEnemySlot(index) {
   };
 }
 
+function nextEnemySlotIndex(slots) {
+  const ids = new Set((slots || []).map((slot) => String(slot.instanceId)));
+  let index = (slots || []).length;
+  while (ids.has(`enemy-slot-${index}`)) index += 1;
+  return index;
+}
+
+let cachedCatalogState = null;
+let cachedCatalogMaster = null;
+let cachedEnemyCatalog = null;
+
+function enemyCatalogFor(poiState, noro6Master = null) {
+  if (!poiState) return { ships: [], byId: new Map(), warnings: [], slotsForShip: () => [] };
+  if (cachedCatalogState !== poiState || cachedCatalogMaster !== noro6Master) {
+    cachedCatalogState = poiState;
+    cachedCatalogMaster = noro6Master;
+    cachedEnemyCatalog = buildEnemyCatalog(poiState, { noro6Master });
+  }
+  return cachedEnemyCatalog;
+}
+
+function isBlankGeneratedSlot(slot) {
+  return slot.sourceShipIndex == null &&
+    !slot.name &&
+    Number(slot.sortieAntiAir) === 0;
+}
+
 function parseTargetStates(value) {
   const states = Array.isArray(value)
     ? value
@@ -388,6 +629,9 @@ function localizeMessages(messages, t) {
     }
     if (message === 'Search or simulation work budget exhausted before optimality was proven.') {
       return t('budgetExhaustedMessage');
+    }
+    if (message === 'Search cancelled; the current best plan is preserved but is not proven optimal.') {
+      return t('searchCancelledMessage');
     }
     return message;
   });
@@ -606,6 +850,48 @@ const styles = {
   searchMeta: {
     margin: '6px 0',
     fontSize: 12,
+  },
+  enemyShipGrid: {
+    display: 'grid',
+    gap: 6,
+    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+    marginBottom: 8,
+  },
+  mapPreset: {
+    borderBottom: border,
+    display: 'grid',
+    gap: 6,
+    marginBottom: 8,
+    paddingBottom: 8,
+  },
+  mapPresetGrid: {
+    display: 'grid',
+    gap: 6,
+    gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+  },
+  mapPreview: {
+    fontSize: 12,
+    lineHeight: 1.5,
+  },
+  advancedEnemySlots: {
+    marginTop: 8,
+  },
+  searchProgress: {
+    display: 'grid',
+    fontSize: 12,
+    gap: 5,
+    margin: '8px 0',
+  },
+  progressTrack: {
+    background: 'rgba(128, 128, 128, 0.2)',
+    height: 4,
+    overflow: 'hidden',
+    width: '100%',
+  },
+  progressBar: {
+    background: '#2f7d64',
+    height: 4,
+    width: '38%',
   },
   iconButton: {
     minWidth: 28,

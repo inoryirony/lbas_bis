@@ -4,6 +4,26 @@ import enemySlots from '../src/enemy-slots.js';
 const { validateAndNormalizeDetailedEnemySlots } = enemySlots;
 
 describe('detailed enemy slot validation', () => {
+  test('preserves catalog source metadata through normalization', () => {
+    const result = validateAndNormalizeDetailedEnemySlots([{
+      instanceId: 'catalog-slot',
+      name: 'Enemy fighter',
+      sortieAntiAir: 10,
+      currentSlot: 32,
+      maxSlot: 32,
+      sourceShipIndex: 2,
+      sourceSlotIndex: 1,
+      equipmentMasterId: 1619,
+      overridden: false,
+    }]);
+
+    expect(result.slots[0]).toEqual(expect.objectContaining({
+      sourceShipIndex: 2,
+      sourceSlotIndex: 1,
+      equipmentMasterId: 1619,
+      overridden: false,
+    }));
+  });
   test('keeps an editable empty row and applies documented zero defaults', () => {
     expect(validateAndNormalizeDetailedEnemySlots([{
       instanceId: null,

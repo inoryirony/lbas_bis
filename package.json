@@ -1,8 +1,11 @@
 {
   "name": "poi-plugin-lbas-bis",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Poi 陆航配装优化插件。",
   "main": "index.js",
+  "bin": {
+    "lbas-bis": "bin/lbas-bis.js"
+  },
   "type": "commonjs",
   "scripts": {
     "test": "vitest run",
@@ -16,6 +19,8 @@
   ],
   "files": [
     "index.js",
+    "bin",
+    "examples",
     "i18n",
     "src",
     "README.md",
@@ -34,6 +39,7 @@
     "react": "18.3.1"
   },
   "devDependencies": {
+    "@types/node": "^26.1.1",
     "@types/react": "^18.3.31",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"

@@ -172,20 +172,31 @@ describe('Poi data adapter', () => {
     }));
   });
 
-  test('adds theoretical missing copies only when includeMissing is true', () => {
+  test('defaults theoretical inventory to one visibly missing copy per master', () => {
     const planes = extractOptimizationPlanes(samplePoiStateWithOneGinga(), {
       includeMissing: true,
-      maxCopiesPerMaster: 4,
     });
 
-    expect(planes).toHaveLength(4);
+    expect(planes).toHaveLength(2);
     expect(planes.filter((plane) => plane.masterId === 187 && plane.available)).toHaveLength(1);
-    expect(planes.filter((plane) => plane.masterId === 187 && plane.missing)).toHaveLength(3);
+    expect(planes.filter((plane) => plane.masterId === 187 && plane.missing)).toHaveLength(1);
     expect(planes.find((plane) => plane.missing)).toEqual(expect.objectContaining({
       available: false,
       proficiency: 7,
       instanceId: 'missing-187-1',
+      missingQuantityPolicy: 1,
     }));
+  });
+
+  test('adds more missing copies only when an explicit policy permits them', () => {
+    const planes = extractOptimizationPlanes(samplePoiStateWithOneGinga(), {
+      includeMissing: true,
+      missingCopiesPerMaster: 3,
+    });
+
+    expect(planes.filter((plane) => plane.masterId === 187 && plane.missing)).toHaveLength(3);
+    expect(planes.filter((plane) => plane.missing).every((plane) =>
+      plane.missingQuantityPolicy === 3)).toBe(true);
   });
 });
 

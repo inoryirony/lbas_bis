@@ -245,6 +245,7 @@ describe('LBAS optimizer MVP', () => {
       enemyAir: 72,
       targetStates: ['parity', 'parity', 'parity', 'parity', 'parity', 'parity'],
       maxResults: 1,
+      nodeBudget: 1000,
     });
 
     expect(result.results[0].bases).toHaveLength(3);
@@ -606,21 +607,19 @@ describe('LBAS optimizer MVP', () => {
     }));
   });
 
-  test('bounds default detailed work for a one-base eight-item inventory', () => {
+  test('does not cap default detailed simulation work before proving optimality', () => {
     const result = optimizeLoadouts({
       equipment: distinctFighters(8),
       baseCount: 1,
       targetRadius: 7,
       enemy: detailedEnemy(),
+      simulationOptions: { seed: 'uncapped-default', sampleCount: 8 },
       maxResults: 1,
     });
 
-    expect(Number.isFinite(result.search.simulationBudget)).toBe(true);
-    expect(result.search.simulationSamplesEvaluated).toBeLessThanOrEqual(
-      result.search.simulationBudget,
-    );
-    expect(result.search.status).toBe('budget_exhausted');
-    expect(result.search.provenOptimal).toBe(false);
+    expect(result.search.simulationBudget).toBe(Infinity);
+    expect(result.search.status).toBe('optimal');
+    expect(result.search.provenOptimal).toBe(true);
   });
 
   test('returns invalid_input for invalid detailed enemy slots', () => {
@@ -655,7 +654,7 @@ describe('LBAS optimizer MVP', () => {
     ]));
   });
 
-  test('fully enumerates and ranks detailed plans by all-wave fulfillment first', () => {
+  test('keeps target-feasible detailed plans instead of zero-fulfillment distractions', () => {
     const fighterPlane = plane('fighter', {
       antiAir: 20,
       radius: 7,
@@ -696,11 +695,80 @@ describe('LBAS optimizer MVP', () => {
     }));
     expect(result.results[0].bases[0].loadout[0].instanceId).toBe('fighter');
     expect(result.results[0].calculationMode).toBe('detailed');
-    expect(result.results[0].simulation.allWaveTargetFulfillmentProbability).toBeGreaterThan(
-      result.results[1].simulation.allWaveTargetFulfillmentProbability,
-    );
+    expect(result.results[0].simulation.allWaveTargetFulfillmentProbability).toBeGreaterThan(0);
+    expect(result.results).toHaveLength(1);
     expect(reversed.results.map((plan) => plan.score))
       .toEqual(result.results.map((plan) => plan.score));
+  });
+
+  test('reports detailed target infeasibility after every plan has zero fulfillment', () => {
+    const attacker = plane('zero-air-attacker', {
+      antiAir: 0,
+      radius: 7,
+      role: 'attacker',
+      torpedo: 20,
+      bombing: 20,
+      isLandBased: true,
+    });
+
+    const result = optimizeLoadouts({
+      equipment: [attacker],
+      baseCount: 1,
+      targetRadius: 7,
+      enemy: detailedEnemy(),
+      targetStates: ['superiority', 'superiority'],
+      lockedBases: [{ slots: [
+        { locked: false },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+      ] }],
+      simulationOptions: { seed: 'zero-fulfillment', sampleCount: 16 },
+      nodeBudget: Infinity,
+    });
+
+    expect(result.results).toEqual([]);
+    expect(result.search).toEqual(expect.objectContaining({
+      status: 'infeasible',
+      provenOptimal: true,
+    }));
+  });
+
+  test('does not retain a later zero-fulfillment plan after finding a feasible plan', () => {
+    const fighter = plane('supremacy-fighter', {
+      antiAir: 30,
+      radius: 7,
+      role: 'fighter',
+      isLandBased: true,
+    });
+    const attacker = plane('parity-attacker', {
+      antiAir: 10,
+      radius: 7,
+      role: 'attacker',
+      torpedo: 20,
+      bombing: 20,
+      isLandBased: true,
+    });
+
+    const result = optimizeLoadouts({
+      equipment: [fighter, attacker],
+      baseCount: 1,
+      targetRadius: 7,
+      enemy: detailedEnemy(),
+      targetStates: ['parity', 'supremacy'],
+      lockedBases: [{ slots: [
+        { locked: false },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+      ] }],
+      simulationOptions: { seed: 'late-zero-fulfillment', sampleCount: 16 },
+      nodeBudget: Infinity,
+      maxResults: 2,
+    });
+
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0].allWaveTargetFulfillmentProbability).toBeGreaterThan(0);
   });
 
   test('matches an explicit detailed exhaustive ranking with four equipment choices', () => {
@@ -736,6 +804,58 @@ describe('LBAS optimizer MVP', () => {
     }).results).sort(comparePlansForSort);
 
     expect(production.search.status).toBe('optimal');
+    expect(production.results.map((plan) => plan.canonicalKey))
+      .toEqual(exhaustive.map((plan) => plan.canonicalKey));
+  });
+
+  test('does not prune a second-wave target made feasible by first-wave enemy losses', () => {
+    const fighter = plane('fighter', {
+      antiAir: 20,
+      radius: 7,
+      role: 'fighter',
+      isLandBased: true,
+    });
+    const attacker = plane('attacker', {
+      antiAir: 10,
+      radius: 7,
+      role: 'attacker',
+      torpedo: 20,
+      bombing: 20,
+      isLandBased: true,
+    });
+    const common = {
+      equipment: [fighter, attacker],
+      baseCount: 1,
+      targetRadius: 7,
+      enemy: detailedEnemy(),
+      targetStates: ['parity', 'superiority'],
+      simulationOptions: { seed: 's48', sampleCount: 1 },
+      simulationWorkBudget: Infinity,
+      nodeBudget: Infinity,
+      maxResults: 2,
+    };
+    const production = optimizeLoadouts({
+      ...common,
+      lockedBases: [{ slots: [
+        { locked: false },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+      ] }],
+    });
+    const exhaustive = [fighter, attacker].flatMap((item) => optimizeLoadouts({
+      ...common,
+      maxResults: 1,
+      lockedBases: [{ slots: [
+        { plane: item, locked: true },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+      ] }],
+    }).results).sort(comparePlansForSort);
+
+    expect(exhaustive[0].bases[0].loadout[0].instanceId).toBe('attacker');
+    expect(production.search).toMatchObject({ status: 'optimal', provenOptimal: true });
     expect(production.results.map((plan) => plan.canonicalKey))
       .toEqual(exhaustive.map((plan) => plan.canonicalKey));
   });

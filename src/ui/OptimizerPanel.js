@@ -12,8 +12,12 @@ function OptimizerPanel(props) {
     messages,
     results,
     search,
+    isSearching,
+    searchPhase,
+    searchProgress,
     onCandidateModeChange,
     onOptimize,
+    onCancel,
     onImportPlan,
     t,
     styles,
@@ -50,12 +54,42 @@ function OptimizerPanel(props) {
         }),
         t('includeMissing'),
       ),
-      h('button', { type: 'button', onClick: onOptimize, style: styles.primaryButton }, t('optimize')),
+      h(
+        'button',
+        {
+          type: 'button',
+          onClick: isSearching ? onCancel : onOptimize,
+          style: styles.primaryButton,
+        },
+        t(isSearching ? 'cancel' : 'optimize'),
+      ),
       h('span', { style: styles.meta }, `${t('availablePlanes')}: ${equipmentCount} / ${t('candidatePlanes')}: ${theoreticalCount}`),
     ),
-    renderSearch(search, t, styles),
+    isSearching
+      ? renderLiveSearch(searchPhase, searchProgress, results, t, styles)
+      : renderSearch(search, t, styles),
     renderMessages(messages, styles),
     renderResults({ results, onImportPlan, t, styles }),
+  );
+}
+
+function renderLiveSearch(phase, progress = {}, results, t, styles) {
+  const elapsedSeconds = Math.round((progress?.elapsedMs || 0) / 100) / 10;
+  return h(
+    'div',
+    { style: styles.searchProgress || styles.searchMeta },
+    h('strong', null, t(`phase_${phase || 'finding_feasible'}`)),
+    h('span', null, `${t('currentBest')}: ${results.length ? t('plan') : t('waitingFeasible')}`),
+    h(
+      'div',
+      { style: styles.progressTrack },
+      h('div', { style: styles.progressBar }),
+    ),
+    h(
+      'span',
+      null,
+      `${t('searchNodes')} ${progress?.nodesExplored || 0} / ${t('prunedNodes')} ${progress?.nodesPruned || 0} / ${t('completeCandidates')} ${progress?.candidatesEvaluated || 0} / ${t('simulationSamples')} ${progress?.simulationSamplesEvaluated || 0} / ${t('elapsedTime')} ${elapsedSeconds}s`,
+    ),
   );
 }
 

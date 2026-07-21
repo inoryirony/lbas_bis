@@ -1,6 +1,8 @@
 'use strict';
 
 const React = require('react');
+const EnemyShipPicker = require('./EnemyShipPicker');
+const MapPresetPicker = require('./MapPresetPicker');
 
 const h = React.createElement;
 
@@ -10,11 +12,17 @@ function EnemyPanel(props) {
     enemy,
     lines,
     simulationOptions,
+    enemyCatalog,
+    mapCatalog,
+    mapSelection,
     onEnemyModeChange,
     onEnemyAirChange,
     onEnemySlotChange,
     onEnemySlotAdd,
     onEnemySlotRemove,
+    onEnemyShipChange,
+    onMapSelectionChange,
+    onMapPresetApply,
     onAirRaidCellChange,
     onSimulationOptionChange,
     t,
@@ -26,6 +34,14 @@ function EnemyPanel(props) {
     'section',
     { style: styles.enemyPanel },
     h('h3', { style: styles.sectionTitle }, t('enemyFleet')),
+    h(MapPresetPicker, {
+      catalog: mapCatalog,
+      selection: mapSelection,
+      onSelectionChange: onMapSelectionChange,
+      onApply: onMapPresetApply,
+      t,
+      styles,
+    }),
     h(
       'div',
       { style: styles.enemyControls },
@@ -48,9 +64,11 @@ function EnemyPanel(props) {
       ? renderDetailedEnemy({
         enemy,
         simulationOptions,
+        enemyCatalog,
         onEnemySlotChange,
         onEnemySlotAdd,
         onEnemySlotRemove,
+        onEnemyShipChange,
         onSimulationOptionChange,
         t,
         styles,
@@ -108,9 +126,11 @@ function renderDetailedEnemy(props) {
   const {
     enemy,
     simulationOptions,
+    enemyCatalog,
     onEnemySlotChange,
     onEnemySlotAdd,
     onEnemySlotRemove,
+    onEnemyShipChange,
     onSimulationOptionChange,
     t,
     styles,
@@ -118,6 +138,13 @@ function renderDetailedEnemy(props) {
   return h(
     React.Fragment,
     null,
+    h(EnemyShipPicker, {
+      catalog: enemyCatalog,
+      ships: enemy.ships,
+      onChange: onEnemyShipChange,
+      t,
+      styles,
+    }),
     h(
       'div',
       { style: styles.enemyControls },
@@ -126,8 +153,12 @@ function renderDetailedEnemy(props) {
       h('span', { style: styles.meta }, `${t('enemyAir')}: ${enemy.enemyAir}`),
     ),
     h(
-      'table',
-      { style: styles.table },
+      'details',
+      { style: styles.advancedEnemySlots },
+      h('summary', null, t('advancedSlotOverrides')),
+      h(
+        'table',
+        { style: styles.table },
       h(
         'thead',
         null,
@@ -165,13 +196,14 @@ function renderDetailedEnemy(props) {
           ),
         ),
       ),
+      ),
+      h('button', {
+        type: 'button',
+        onClick: onEnemySlotAdd,
+        style: styles.iconButton || styles.button,
+        title: t('addEnemySlot'),
+      }, '+'),
     ),
-    h('button', {
-      type: 'button',
-      onClick: onEnemySlotAdd,
-      style: styles.iconButton || styles.button,
-      title: t('addEnemySlot'),
-    }, '+'),
     enemy.errors?.length
       ? h('div', { style: styles.badState }, t('invalidDetailedEnemy'))
       : null,

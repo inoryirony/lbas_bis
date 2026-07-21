@@ -27,7 +27,7 @@ const SLOTS_PER_BASE = 4;
 const WAVES_PER_BASE = 2;
 const DEFAULT_MAX_RESULTS = 10;
 const DEFAULT_NODE_BUDGET = 100000;
-const DEFAULT_SIMULATION_WORK_BUDGET = 10000;
+const DEFAULT_SIMULATION_WORK_BUDGET = Number.POSITIVE_INFINITY;
 const SLOT_KINDS = Object.freeze({
   LOCKED_ITEM: 'LOCKED_ITEM',
   LOCKED_EMPTY: 'LOCKED_EMPTY',
@@ -67,11 +67,34 @@ function optimizeLoadouts(options = {}) {
   const selected = [];
   const retained = [];
   const retainedByKey = new Map();
-  const budgetState = createBudgetState(budget);
   const simulationBudgetState = createSimulationBudgetState(prepared.simulationBudget);
+  let candidatesEvaluated = 0;
+  let hasFeasibleIncumbent = false;
+  let cancelled = false;
+  let currentPhase = 'finding_feasible';
+  const startedAt = Date.now();
+  const progressSnapshot = () => ({
+    phase: currentPhase,
+    nodesExplored: budgetState.nodesExplored,
+    nodesPruned: budgetState.nodesPruned,
+    candidatesEvaluated,
+    simulationSamplesEvaluated: simulationBudgetState.samplesEvaluated,
+    elapsedMs: Date.now() - startedAt,
+    completedWork: null,
+    totalWork: null,
+  });
+  const budgetState = createBudgetState(budget, () => {
+    options.onProgress?.(progressSnapshot());
+  });
+  prepared.canPruneZeroFulfillment = () => hasFeasibleIncumbent;
+  prepared.isCancelled = () => {
+    if (!cancelled && options.isCancelled?.()) cancelled = true;
+    return cancelled;
+  };
 
   /** Visits one partial allocation and proves or bounds all descendants. */
   function visit(baseIndex) {
+    if (prepared.isCancelled()) return;
     if (simulationBudgetState.exhausted) return;
     if (!consumeBudget(budgetState)) return;
 
@@ -80,7 +103,30 @@ function optimizeLoadouts(options = {}) {
         simulationBudgetState,
         prepared.simulationOptions.sampleCount,
       )) return;
-      retainPlan(materializePlan(selected, prepared), retained, retainedByKey, maxResults);
+      const plan = materializePlan(selected, prepared);
+      candidatesEvaluated += 1;
+      const targetFeasible = isTargetFeasibleIncumbent(plan, detailed);
+      if (targetFeasible && !hasFeasibleIncumbent) {
+        hasFeasibleIncumbent = true;
+        removeZeroFulfillmentPlans(retained, retainedByKey);
+        currentPhase = 'improving';
+        options.onPhaseChange?.(currentPhase);
+      }
+      const changedRankOne = detailed && hasFeasibleIncumbent && !targetFeasible
+        ? false
+        : retainPlan(plan, retained, retainedByKey, maxResults);
+      if (changedRankOne && targetFeasible) {
+        options.onIncumbent?.(plan, {
+          phase: currentPhase,
+          nodesExplored: budgetState.nodesExplored,
+          candidatesEvaluated,
+          simulationSamplesEvaluated: simulationBudgetState.samplesEvaluated,
+        });
+      }
+      if (hasFeasibleIncumbent && currentPhase === 'improving') {
+        currentPhase = 'proving_optimal';
+        options.onPhaseChange?.(currentPhase);
+      }
       return;
     }
 
@@ -127,9 +173,15 @@ function optimizeLoadouts(options = {}) {
   }
 
   visit(0);
+  if (detailed && !hasFeasibleIncumbent) {
+    removeZeroFulfillmentPlans(retained, retainedByKey);
+  }
   retained.sort(comparePlansForSort);
+  options.onProgress?.(progressSnapshot());
   const exhausted = budgetState.exhausted || simulationBudgetState.exhausted;
-  const status = exhausted
+  const status = cancelled
+    ? 'cancelled'
+    : exhausted
     ? 'budget_exhausted'
     : retained.length
       ? 'optimal'
@@ -141,6 +193,9 @@ function optimizeLoadouts(options = {}) {
   if (status === 'budget_exhausted') {
     messages.push('Search or simulation work budget exhausted before optimality was proven.');
   }
+  if (status === 'cancelled') {
+    messages.push('Search cancelled; the current best plan is preserved but is not proven optimal.');
+  }
 
   return {
     messages,
@@ -151,8 +206,9 @@ function optimizeLoadouts(options = {}) {
       nodesExplored: budgetState.nodesExplored,
       budget,
       simulationSamplesEvaluated: simulationBudgetState.samplesEvaluated,
+      candidatesEvaluated,
       simulationBudget: simulationBudgetState.budget,
-      provenOptimal: !exhausted,
+      provenOptimal: status === 'optimal' || status === 'infeasible',
     },
   };
 }
@@ -365,8 +421,12 @@ function prepareSearch(options) {
     },
     waveTargets: normalizeWaveTargets(options.targetStates, baseCount),
     maxResults: Math.max(1, Math.floor(Number(options.maxResults) || DEFAULT_MAX_RESULTS)),
-    budget: normalizeBudget(options.nodeBudget),
+    budget: normalizeBudget(
+      options.nodeBudget,
+      detailed ? Number.POSITIVE_INFINITY : DEFAULT_NODE_BUDGET,
+    ),
     simulationBudget,
+    isCancelled: typeof options.isCancelled === 'function' ? options.isCancelled : null,
   };
 }
 
@@ -477,16 +537,18 @@ function walkBaseAssignments(
   const lockedAirPower = baseLock.slots
     .filter((slot) => slot.kind === SLOT_KINDS.LOCKED_ITEM)
     .reduce((total, slot) => total + calculateSlotAirPower(slot.plane), 0);
-  const requiredAir = prepared.detailed
-    ? 0
-    : requiredAirForState(
-      prepared.enemyAir,
-      targetStateForBase(prepared.waveTargets, baseIndex),
-    );
-  const searchOrder = orderedGroupIndices(prepared, baseIndex);
+  const requiredAir = requiredAirForState(
+    prepared.enemyAir,
+    targetStateForBase(prepared.waveTargets, baseIndex),
+  );
+  const firstWaveRequiredAir = baseIndex === 0
+    ? requiredAirForState(prepared.enemyAir, prepared.waveTargets[0] || 'parity')
+    : 0;
+  const searchOrder = orderedGroupIndices(prepared, baseIndex, requiredAir);
 
   /** Recurses in shared-score order while leaving unused open slots empty. */
   function enumerate(orderIndex, slotsLeft, selectedAirPower) {
+    if (prepared.isCancelled?.()) return false;
     if (budgetState.exhausted) return false;
     if (prepared.detailed && orderIndex < searchOrder.length &&
         !consumeBudget(budgetState)) return false;
@@ -497,8 +559,11 @@ function walkBaseAssignments(
       selectedAirPower + lockedAirPower,
       remainingCounts,
       prepared.groups,
-      requiredAir,
+      prepared.detailed
+        ? (prepared.canPruneZeroFulfillment?.() ? firstWaveRequiredAir : 0)
+        : requiredAir,
     )) {
+      budgetState.nodesPruned += 1;
       return consumeBudget(budgetState);
     }
     if (orderIndex === searchOrder.length) {
@@ -532,7 +597,13 @@ function walkBaseAssignments(
 
     const groupIndex = searchOrder[orderIndex];
     const maximum = Math.min(remainingCounts[groupIndex], slotsLeft);
-    const countOrder = orderedCounts(maximum, prepared.groups[groupIndex], requiredAir);
+    const countOrder = prepared.detailed
+      ? orderedDetailedCounts(
+        maximum,
+        prepared.groups[groupIndex],
+        Math.max(0, requiredAir - selectedAirPower - lockedAirPower),
+      )
+      : orderedCounts(maximum, prepared.groups[groupIndex], requiredAir);
     for (const count of countOrder) {
       counts[groupIndex] = count;
       const completed = enumerate(
@@ -581,7 +652,16 @@ function calculateBaseEnvelope(baseLock, remainingCounts, prepared, baseIndex, b
 }
 
 /** Orders group branches by the same score used for complete plans. */
-function orderedGroupIndices(prepared, baseIndex) {
+function orderedGroupIndices(prepared, baseIndex, requiredAir) {
+  if (prepared.detailed) {
+    return prepared.groups
+      .map((_group, index) => index)
+      .sort((left, right) => compareDetailedGroups(
+        prepared.groups[left],
+        prepared.groups[right],
+        requiredAir,
+      ));
+  }
   const targetState = targetStateForBase(prepared.waveTargets, baseIndex);
   const scores = prepared.groups.map((group) => {
     const summary = summarizeBase(
@@ -602,6 +682,35 @@ function orderedGroupIndices(prepared, baseIndex) {
   return prepared.groups
     .map((_group, index) => index)
     .sort((left, right) => -comparePlanScores(scores[left], scores[right]));
+}
+
+/** Prioritizes target feasibility and range before detailed damage. */
+function compareDetailedGroups(left, right, requiredAir) {
+  const fields = [
+    Math.min(requiredAir, right.slotAirPower) - Math.min(requiredAir, left.slotAirPower),
+    (Number(right.representative.radius) || 0) - (Number(left.representative.radius) || 0),
+    right.damagePower - left.damagePower,
+    (1 / Math.max(1, left.instances.length)) - (1 / Math.max(1, right.instances.length)),
+  ];
+  return fields.find((value) => value !== 0) || left.key.localeCompare(right.key);
+}
+
+/** Tries the smallest count that closes the remaining air deficit before damage-only choices. */
+function orderedDetailedCounts(maximum, group, remainingRequiredAir) {
+  const resource = Math.max(
+    0,
+    Number(group.representative.slotSize ?? defaultSlotSizeForPlane(group.representative)) || 0,
+  );
+  return Array.from({ length: maximum + 1 }, (_unused, count) => count)
+    .sort((left, right) => {
+      const feasibility = Math.min(remainingRequiredAir, right * group.slotAirPower) -
+        Math.min(remainingRequiredAir, left * group.slotAirPower);
+      if (feasibility) return feasibility;
+      const damage = right * group.damagePower - left * group.damagePower;
+      if (damage) return damage;
+      const resourceDifference = left * resource - right * resource;
+      return resourceDifference || left - right;
+    });
 }
 
 /** Orders count choices by an optimistic shared-score contribution. */
@@ -631,11 +740,13 @@ function orderedCounts(maximum, group, requiredAir) {
 }
 
 /** Creates mutable budget accounting shared by visits and envelope work. */
-function createBudgetState(budget) {
+function createBudgetState(budget, onProgress = null) {
   return {
     budget,
     nodesExplored: 0,
+    nodesPruned: 0,
     exhausted: false,
+    onProgress,
   };
 }
 
@@ -646,6 +757,7 @@ function consumeBudget(state) {
     return false;
   }
   state.nodesExplored += 1;
+  if (state.nodesExplored % 2048 === 0) state.onProgress?.();
   return true;
 }
 
@@ -816,9 +928,10 @@ function materializePlan(selected, prepared) {
 
 /** Retains a deduplicated Top K without limiting the search itself. */
 function retainPlan(plan, retained, retainedByKey, maxResults) {
+  const previousRankOne = retained[0];
   const existing = retainedByKey.get(plan.canonicalKey);
   if (existing && comparePlanScores(plan, existing) <= 0) {
-    return;
+    return false;
   }
   if (existing) {
     retained.splice(retained.indexOf(existing), 1);
@@ -829,6 +942,23 @@ function retainPlan(plan, retained, retainedByKey, maxResults) {
   if (retained.length > maxResults) {
     const removed = retained.pop();
     retainedByKey.delete(removed.canonicalKey);
+  }
+  return retained[0] !== previousRankOne;
+}
+
+/** Emits only a target-feasible plan as a useful live incumbent. */
+function isTargetFeasibleIncumbent(plan, detailed) {
+  return detailed
+    ? plan.allWaveTargetFulfillmentProbability > 0
+    : plan.fulfilled === true;
+}
+
+/** Drops zero-fulfillment detailed plans once a strictly better feasible plan exists. */
+function removeZeroFulfillmentPlans(retained, retainedByKey) {
+  for (let index = retained.length - 1; index >= 0; index -= 1) {
+    if (retained[index].allWaveTargetFulfillmentProbability > 0) continue;
+    retainedByKey.delete(retained[index].canonicalKey);
+    retained.splice(index, 1);
   }
 }
 
@@ -978,11 +1108,11 @@ function normalizeWaveTargets(targetStates, baseCount) {
 }
 
 /** Normalizes a finite nonnegative node budget or keeps Infinity explicit. */
-function normalizeBudget(value) {
+function normalizeBudget(value, fallback = DEFAULT_NODE_BUDGET) {
   if (value === Number.POSITIVE_INFINITY) {
     return Number.POSITIVE_INFINITY;
   }
-  if (value == null) return DEFAULT_NODE_BUDGET;
+  if (value == null) return fallback;
   const number = Number(value);
   return Number.isFinite(number) ? Math.max(0, Math.floor(number)) : Number.POSITIVE_INFINITY;
 }
