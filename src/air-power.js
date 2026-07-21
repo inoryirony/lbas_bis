@@ -106,7 +106,10 @@ function proficiencyBoundsForPlane(plane) {
 
 /** Calculates one slot's air power at an exact internal proficiency value. */
 function calculateSlotAirPowerAtProficiency(plane, slotSize, internalProficiency) {
-  const size = Math.max(0, Number(plane.slotSize ?? slotSize ?? defaultSlotSizeForPlane(plane)) || 0);
+  const size = Math.max(
+    0,
+    Number(plane.currentSlot ?? slotSize ?? plane.slotSize ?? defaultSlotSizeForPlane(plane)) || 0,
+  );
   if (size === 0) {
     return 0;
   }
@@ -127,14 +130,15 @@ function calculateBaseAirPower(loadout, slotSize) {
 
 /** Sums slot bounds, then applies and floors the best land-recon coefficient. */
 function calculateBaseAirPowerBounds(loadout, slotSize) {
-  const rawBounds = loadout.reduce((total, plane) => {
+  const planes = (loadout || []).filter(Boolean);
+  const rawBounds = planes.reduce((total, plane) => {
     const slotBounds = calculateSlotAirPowerBounds(plane, slotSize);
     return {
       lower: total.lower + slotBounds.lower,
       upper: total.upper + slotBounds.upper,
     };
   }, { lower: 0, upper: 0 });
-  const coefficient = landReconCoefficient(loadout);
+  const coefficient = landReconCoefficient(planes);
 
   return {
     lower: Math.floor(rawBounds.lower * coefficient),
@@ -275,5 +279,6 @@ module.exports = {
   defaultSlotSizeForPlane,
   internalProficiencyBounds,
   isRangeExtender,
+  landReconCoefficient,
   requiredAirForState,
 };

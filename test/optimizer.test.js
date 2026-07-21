@@ -504,6 +504,75 @@ describe('LBAS optimizer MVP', () => {
     }));
   });
 
+  test('does not claim optimality when a detailed search exhausts its budget', () => {
+    const result = optimizeLoadouts({
+      equipment: [
+        plane('fighter', { antiAir: 12, radius: 7, role: 'fighter' }),
+        plane('attacker', { antiAir: 2, radius: 7, role: 'attacker', torpedo: 14 }),
+      ],
+      baseCount: 1,
+      targetRadius: 7,
+      enemy: detailedEnemy(),
+      targetStates: ['superiority', 'superiority'],
+      simulationOptions: { seed: 'budget', sampleCount: 8 },
+      nodeBudget: 1,
+    });
+
+    expect(result.search).toEqual(expect.objectContaining({
+      status: 'budget_exhausted',
+      provenOptimal: false,
+    }));
+    expect(result.messages.join(' ')).not.toMatch(/infeasible/i);
+  });
+
+  test('fully enumerates and ranks detailed plans by all-wave fulfillment first', () => {
+    const fighterPlane = plane('fighter', {
+      antiAir: 20,
+      radius: 7,
+      role: 'fighter',
+      isLandBased: true,
+    });
+    const attackerPlane = plane('attacker', {
+      antiAir: 0,
+      radius: 7,
+      role: 'attacker',
+      torpedo: 20,
+      bombing: 20,
+      isLandBased: true,
+    });
+    const options = {
+      equipment: [fighterPlane, attackerPlane],
+      baseCount: 1,
+      targetRadius: 7,
+      enemy: detailedEnemy(),
+      targetStates: ['superiority', 'superiority'],
+      lockedBases: [{ slots: [
+        { locked: false },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+      ] }],
+      simulationOptions: { seed: 'ranking', sampleCount: 32 },
+      nodeBudget: Infinity,
+      maxResults: 3,
+    };
+
+    const result = optimizeLoadouts(options);
+    const reversed = optimizeLoadouts({ ...options, equipment: [...options.equipment].reverse() });
+
+    expect(result.search).toEqual(expect.objectContaining({
+      status: 'optimal',
+      provenOptimal: true,
+    }));
+    expect(result.results[0].bases[0].loadout[0].instanceId).toBe('fighter');
+    expect(result.results[0].calculationMode).toBe('detailed');
+    expect(result.results[0].simulation.allWaveTargetFulfillmentProbability).toBeGreaterThan(
+      result.results[1].simulation.allWaveTargetFulfillmentProbability,
+    );
+    expect(reversed.results.map((plan) => plan.score))
+      .toEqual(result.results.map((plan) => plan.score));
+  });
+
   test('honors a finite budget before enumerating 45 distinct groups', () => {
     const result = optimizeLoadouts({
       equipment: distinctFighters(45),
@@ -686,4 +755,18 @@ function distinctFighters(count) {
     radius: 7,
     role: 'fighter',
   }));
+}
+
+/** Creates a detailed enemy fleet for optimizer simulation tests. */
+function detailedEnemy() {
+  return {
+    mode: 'detailed',
+    slots: [{
+      instanceId: 'enemy-fighter',
+      name: 'Enemy fighter',
+      sortieAntiAir: 10,
+      currentSlot: 18,
+      maxSlot: 18,
+    }],
+  };
 }

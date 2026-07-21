@@ -2,7 +2,15 @@ import { describe, expect, test } from 'vitest';
 import stateModule from '../src/simulator-state.js';
 import calcModule from '../src/simulator-calc.js';
 
-const { createEmptySimulatorState, setBaseSlot, setWaveTarget } = stateModule;
+const {
+  addDetailedEnemySlot,
+  createEmptySimulatorState,
+  normalizeDetailedEnemySlots,
+  removeDetailedEnemySlot,
+  setBaseSlot,
+  setDetailedEnemySlot,
+  setWaveTarget,
+} = stateModule;
 const { calculateEnemyAirLines, calculateSimulatorSummary } = calcModule;
 
 describe('simulator calculations', () => {
@@ -36,6 +44,78 @@ describe('simulator calculations', () => {
       baseIndex: 0,
       targetState: 'parity',
     }));
+    expect(summary.calculationMode).toBe('static');
+    expect(summary.mode).toBe('static');
+    expect(summary.limitations).toContain('STATIC_ENEMY_AIR');
+  });
+
+  test('normalizes and edits detailed enemy slots immutably', () => {
+    const source = [{
+      instanceId: 'enemy-1',
+      name: 'Enemy fighter',
+      sortieAntiAir: Number.POSITIVE_INFINITY,
+      currentSlot: -4,
+      maxSlot: 18,
+    }];
+    const normalized = normalizeDetailedEnemySlots(source);
+    expect(normalized).toEqual([{
+      instanceId: 'enemy-1',
+      name: 'Enemy fighter',
+      sortieAntiAir: 0,
+      currentSlot: 0,
+      maxSlot: 18,
+    }]);
+    expect(source[0].currentSlot).toBe(-4);
+
+    let state = createEmptySimulatorState();
+    state = addDetailedEnemySlot(state, {
+      instanceId: 'enemy-1',
+      name: 'Enemy fighter',
+      sortieAntiAir: 10,
+      currentSlot: 18,
+      maxSlot: 18,
+    });
+    const added = state;
+    state = setDetailedEnemySlot(state, 0, { currentSlot: 12 });
+    expect(added.enemy.slots[0].currentSlot).toBe(18);
+    expect(state.enemy.slots[0].currentSlot).toBe(12);
+    expect(removeDetailedEnemySlot(state, 0).enemy.slots).toEqual([]);
+  });
+
+  test('delegates detailed enemies to Monte Carlo without mutating slots', () => {
+    let state = /** @type {any} */ (createEmptySimulatorState());
+    state = setBaseSlot(state, 0, 0, { plane: plane('fighter', {
+      antiAir: 12,
+      isFighter: true,
+      isAttacker: false,
+      role: 'fighter',
+    }) });
+    state = {
+      ...state,
+      enemy: {
+        mode: 'detailed',
+        slots: [{
+          instanceId: 'enemy-1',
+          name: 'Enemy fighter',
+          sortieAntiAir: 10,
+          currentSlot: 18,
+          maxSlot: 18,
+        }],
+      },
+      simulationOptions: { seed: 'summary', sampleCount: 16 },
+    };
+    const snapshot = structuredClone(state);
+
+    const summary = calculateSimulatorSummary(state);
+
+    expect(state).toEqual(snapshot);
+    expect(summary.calculationMode).toBe('detailed');
+    expect(summary.simulation.sampleCount).toBe(16);
+    expect(summary.simulation.waves).toHaveLength(2);
+    expect(summary.limitations).toEqual(expect.arrayContaining([
+      'ENEMY_STAGE2_OMITTED',
+      'JET_STAGE2_OMITTED',
+    ]));
   });
 
   test('reports NONE for an empty base but supremacy for a real zero-air-power plane', () => {

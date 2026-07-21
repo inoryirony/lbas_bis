@@ -41,6 +41,35 @@ describe('LBAS air power formulas', () => {
     expect(airPowerValue).toBe(107);
   });
 
+  test('prefers currentSlot over an explicit slot argument and preserves zero', () => {
+    const fighter = {
+      antiAir: 10,
+      intercept: 0,
+      internalProficiency: 0,
+      isPlane: true,
+      isFighter: true,
+      slotSize: 18,
+      currentSlot: 4,
+    };
+
+    expect(calculateSlotAirPower(fighter, 1)).toBe(20);
+    expect(calculateSlotAirPower({ ...fighter, currentSlot: 0 }, 18)).toBe(0);
+  });
+
+  test('ignores null slots when calculating base air power and bounds', () => {
+    const fighter = {
+      antiAir: 10,
+      intercept: 0,
+      internalProficiency: 0,
+      isPlane: true,
+      isFighter: true,
+      slotSize: 4,
+    };
+
+    expect(calculateBaseAirPower([null, fighter, null])).toBe(20);
+    expect(calculateBaseAirPowerBounds([null, fighter, null])).toEqual({ lower: 20, upper: 20 });
+  });
+
   test('provides bounds when only visible proficiency is known', () => {
     const ginga = {
       antiAir: 3,

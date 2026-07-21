@@ -46,6 +46,7 @@ function optimizeLoadouts(options = {}) {
     baseCount,
     baseLocks,
     budget,
+    detailed,
     enemyAir,
     groups,
     inventoryCounts,
@@ -68,7 +69,7 @@ function optimizeLoadouts(options = {}) {
       return;
     }
 
-    if (retained.length >= maxResults) {
+    if (!detailed && retained.length >= maxResults) {
       const envelopes = [];
       for (let index = baseIndex; index < baseCount; index += 1) {
         const envelope = calculateBaseEnvelope(
@@ -146,7 +147,7 @@ function optimizeLoadouts(options = {}) {
  */
 function optimisticScoreForPartial(options = {}, partialLoadouts = []) {
   const prepared = prepareSearch(options);
-  if (!prepared.valid || partialLoadouts.length > prepared.baseCount) {
+  if (!prepared.valid || prepared.detailed || partialLoadouts.length > prepared.baseCount) {
     return null;
   }
 
@@ -265,6 +266,18 @@ function prepareSearch(options) {
     Math.max(0, Number(options.targetRadius) || 0),
   );
   const groups = groupEquipment(relevantEquipment);
+  const enemyFleets = Array.isArray(options.enemyFleets)
+    ? options.enemyFleets
+    : Array.isArray(options.targets) ? options.targets : null;
+  const detailed = isDetailedEnemy(options.enemy) ||
+    Array.isArray(options.enemySlots) ||
+    Boolean(enemyFleets?.length);
+  const enemy = detailed && !enemyFleets
+    ? normalizeDetailedEnemy(options.enemy, options.enemySlots)
+    : options.enemy;
+  const detailedEnemyAir = detailed
+    ? initialDetailedEnemyAir(enemyFleets?.[0] || enemy)
+    : Math.max(0, Number(options.enemyAir) || 0);
   return {
     valid: true,
     equipment,
@@ -275,7 +288,18 @@ function prepareSearch(options) {
     groups,
     groupIndexByKey: new Map(groups.map((group, index) => [group.key, index])),
     targetRadius: Math.max(0, Number(options.targetRadius) || 0),
-    enemyAir: Math.max(0, Number(options.enemyAir) || 0),
+    enemyAir: detailedEnemyAir,
+    enemy,
+    enemyFleets,
+    detailed,
+    simulationOptions: {
+      ...(options.simulation || {}),
+      ...(options.simulationOptions || {}),
+      dispatchMode: options.dispatchMode ||
+        options.simulationOptions?.dispatchMode ||
+        options.simulation?.dispatchMode ||
+        (enemyFleets ? 'separate' : 'concentrated'),
+    },
     waveTargets: normalizeWaveTargets(options.targetStates, baseCount),
     maxResults: Math.max(1, Math.floor(Number(options.maxResults) || DEFAULT_MAX_RESULTS)),
     budget: normalizeBudget(options.nodeBudget),
@@ -368,15 +392,18 @@ function walkBaseAssignments(
   const lockedAirPower = baseLock.slots
     .filter((slot) => slot.kind === SLOT_KINDS.LOCKED_ITEM)
     .reduce((total, slot) => total + calculateSlotAirPower(slot.plane), 0);
-  const requiredAir = requiredAirForState(
-    prepared.enemyAir,
-    targetStateForBase(prepared.waveTargets, baseIndex),
-  );
+  const requiredAir = prepared.detailed
+    ? 0
+    : requiredAirForState(
+      prepared.enemyAir,
+      targetStateForBase(prepared.waveTargets, baseIndex),
+    );
   const searchOrder = orderedGroupIndices(prepared, baseIndex);
 
   /** Recurses in shared-score order while leaving unused open slots empty. */
   function enumerate(orderIndex, slotsLeft, selectedAirPower) {
     if (budgetState.exhausted) return false;
+    if (prepared.detailed && !consumeBudget(budgetState)) return false;
     if (!canReachRequiredAir(
       searchOrder,
       orderIndex,
@@ -399,7 +426,10 @@ function walkBaseAssignments(
         prepared.inventoryCounts,
         { details: false },
       );
-      if (!isBaseFeasible(summary, prepared.targetRadius)) return consumeBudget(budgetState);
+      const feasible = prepared.detailed
+        ? summary.radius >= prepared.targetRadius
+        : isBaseFeasible(summary, prepared.targetRadius);
+      if (!feasible) return prepared.detailed ? true : consumeBudget(budgetState);
       const candidate = {
         counts: [...counts],
         summary,
@@ -761,7 +791,51 @@ function candidateFromFixedLoadout(loadout, prepared, baseIndex, remainingCounts
     prepared.inventoryCounts,
     { details: false },
   );
-  return isBaseFeasible(summary, prepared.targetRadius) ? { counts, summary } : null;
+  const feasible = prepared.detailed
+    ? summary.radius >= prepared.targetRadius
+    : isBaseFeasible(summary, prepared.targetRadius);
+  return feasible ? { counts, summary } : null;
+}
+
+/** Detects an explicit detailed enemy shape without reinterpreting static totals. */
+function isDetailedEnemy(enemy) {
+  return enemy?.mode === 'detailed' ||
+    (Array.isArray(enemy?.slots) && enemy.slots.length > 0) ||
+    Array.isArray(enemy?.enemySlots);
+}
+
+/** Normalizes detailed optimizer enemy input while preserving only required slot fields. */
+function normalizeDetailedEnemy(enemy = {}, enemySlots) {
+  const slots = enemySlots || enemy.slots || enemy.enemySlots || [];
+  return {
+    ...enemy,
+    mode: 'detailed',
+    slots: slots.filter(Boolean).map((slot, index) => {
+      const maxSlot = safeNonNegative(slot.maxSlot ?? slot.currentSlot);
+      return {
+        instanceId: slot.instanceId ?? `enemy-slot-${index}`,
+        name: typeof slot.name === 'string' ? slot.name : '',
+        sortieAntiAir: safeNonNegative(slot.sortieAntiAir),
+        currentSlot: Math.min(safeNonNegative(slot.currentSlot ?? maxSlot), maxSlot),
+        maxSlot,
+      };
+    }),
+  };
+}
+
+/** Calculates the initial detailed enemy air power for traversal ordering only. */
+function initialDetailedEnemyAir(enemy = {}) {
+  const normalized = normalizeDetailedEnemy(enemy);
+  return normalized.slots.reduce(
+    (total, slot) => total + Math.floor(slot.sortieAntiAir * Math.sqrt(slot.currentSlot)),
+    0,
+  );
+}
+
+/** Converts arbitrary numeric input to a finite nonnegative optimizer value. */
+function safeNonNegative(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : 0;
 }
 
 /** Subtracts a candidate's group usage from remaining inventory. */

@@ -10,17 +10,20 @@ const DEFAULT_TARGET_STATE = 'parity';
 const STATE_OPTIONS = new Set(['denial', 'parity', 'superiority', 'supremacy']);
 const BASE_NAMES = ['第一基地', '第二基地', '第三基地'];
 
+/** Creates a normalized simulator state with legacy static-enemy defaults. */
 function createEmptySimulatorState(baseCount = 1) {
   return normalizeSimulatorState({
     targetRadius: DEFAULT_TARGET_RADIUS,
     baseCount,
     candidateMode: 'owned',
     enemy: createDefaultEnemy(),
+    simulationOptions: createDefaultSimulationOptions(),
     bases: [],
     waves: [],
   });
 }
 
+/** Normalizes legacy and detailed simulator shapes into one immutable state. */
 function normalizeSimulatorState(state = {}) {
   const baseCount = clampBaseCount(state.baseCount);
   return {
@@ -28,6 +31,7 @@ function normalizeSimulatorState(state = {}) {
     baseCount,
     candidateMode: state.candidateMode === 'theoretical' ? 'theoretical' : 'owned',
     enemy: normalizeEnemy(state.enemy),
+    simulationOptions: normalizeSimulationOptions(state.simulationOptions || state.simulation),
     bases: normalizeBases(state.bases, baseCount),
     waves: normalizeWaves(state.waves, baseCount),
   };
@@ -92,7 +96,7 @@ function setWaveTarget(state, waveIndex, targetState) {
 /** Exports legacy slot objects while preserving locked null as a real constraint. */
 function simulatorToOptimizerInput(state) {
   const normalized = normalizeSimulatorState(state);
-  return {
+  const input = {
     baseCount: normalized.baseCount,
     targetRadius: normalized.targetRadius,
     enemyAir: normalized.enemy.enemyAir,
@@ -104,14 +108,23 @@ function simulatorToOptimizerInput(state) {
       })),
     })),
   };
+  if (normalized.enemy.mode !== 'detailed') return input;
+  return {
+    ...input,
+    enemy: normalized.enemy,
+    enemySlots: normalized.enemy.slots,
+    simulationOptions: normalized.simulationOptions,
+  };
 }
 
+/** Creates the backward-compatible manual total-air enemy shape. */
 function createDefaultEnemy() {
   return {
     mode: 'manual',
     enemyAir: DEFAULT_ENEMY_AIR,
     areaId: null,
     nodeId: null,
+    slots: [],
     ships: Array.from({ length: 6 }, (_, index) => ({
       id: null,
       name: '',
@@ -120,8 +133,13 @@ function createDefaultEnemy() {
   };
 }
 
+/** Normalizes manual total air or detailed aircraft slots without mutating input. */
 function normalizeEnemy(enemy = {}) {
   const defaults = createDefaultEnemy();
+  const detailed = enemy.mode === 'detailed' ||
+    Array.isArray(enemy.enemySlots) ||
+    (Array.isArray(enemy.slots) && enemy.slots.length > 0);
+  const slots = normalizeDetailedEnemySlots(enemy.slots || enemy.enemySlots);
   const ships = Array.from({ length: 6 }, (_, index) => {
     const ship = enemy.ships?.[index] || defaults.ships[index];
     return {
@@ -135,12 +153,88 @@ function normalizeEnemy(enemy = {}) {
     ? summedAir
     : nonNegativeNumber(enemy.enemyAir, DEFAULT_ENEMY_AIR);
 
+  const detailedAir = slots.reduce(
+    (total, slot) => total + Math.floor(slot.sortieAntiAir * Math.sqrt(slot.currentSlot)),
+    0,
+  );
   return {
-    mode: enemy.mode || 'manual',
-    enemyAir,
+    mode: detailed ? 'detailed' : enemy.mode || 'manual',
+    enemyAir: detailed ? detailedAir : enemyAir,
     areaId: enemy.areaId ?? null,
     nodeId: enemy.nodeId ?? null,
     ships,
+    slots,
+  };
+}
+
+/** Safely normalizes detailed enemy aircraft slots without mutating the input. */
+function normalizeDetailedEnemySlots(slots = []) {
+  return (Array.isArray(slots) ? slots : []).filter(Boolean).map((slot, index) => {
+    const maxSlot = nonNegativeNumber(slot.maxSlot ?? slot.currentSlot, 0);
+    return {
+      instanceId: slot.instanceId ?? `enemy-slot-${index}`,
+      name: typeof slot.name === 'string' ? slot.name : '',
+      sortieAntiAir: nonNegativeNumber(slot.sortieAntiAir, 0),
+      currentSlot: Math.min(nonNegativeNumber(slot.currentSlot ?? maxSlot, 0), maxSlot),
+      maxSlot,
+    };
+  });
+}
+
+/** Replaces one detailed enemy slot immutably. */
+function setDetailedEnemySlot(state, slotIndex, slotPatch) {
+  const normalized = normalizeSimulatorState(state);
+  if (slotIndex < 0 || slotIndex >= normalized.enemy.slots.length) return normalized;
+  const slots = normalized.enemy.slots.map((slot, index) =>
+    index === slotIndex ? { ...slot, ...slotPatch } : slot);
+  return normalizeSimulatorState({
+    ...normalized,
+    enemy: { ...normalized.enemy, mode: 'detailed', slots },
+  });
+}
+
+/** Appends one detailed enemy slot immutably and switches the enemy to detailed mode. */
+function addDetailedEnemySlot(state, slot) {
+  const normalized = normalizeSimulatorState(state);
+  return normalizeSimulatorState({
+    ...normalized,
+    enemy: {
+      ...normalized.enemy,
+      mode: 'detailed',
+      slots: [...normalized.enemy.slots, slot],
+    },
+  });
+}
+
+/** Removes one detailed enemy slot immutably. */
+function removeDetailedEnemySlot(state, slotIndex) {
+  const normalized = normalizeSimulatorState(state);
+  if (slotIndex < 0 || slotIndex >= normalized.enemy.slots.length) return normalized;
+  return normalizeSimulatorState({
+    ...normalized,
+    enemy: {
+      ...normalized.enemy,
+      mode: 'detailed',
+      slots: normalized.enemy.slots.filter((_slot, index) => index !== slotIndex),
+    },
+  });
+}
+
+/** Returns stable simulation defaults while preserving an explicit zero-like seed. */
+function createDefaultSimulationOptions() {
+  return { seed: 0, sampleCount: 1000, dispatchMode: 'concentrated' };
+}
+
+/** Normalizes Monte Carlo controls used by simulator and optimizer callers. */
+function normalizeSimulationOptions(options = {}) {
+  const defaults = createDefaultSimulationOptions();
+  const sampleCount = Number(options?.sampleCount);
+  return {
+    seed: options?.seed ?? defaults.seed,
+    sampleCount: Number.isFinite(sampleCount) && sampleCount > 0
+      ? Math.floor(sampleCount)
+      : defaults.sampleCount,
+    dispatchMode: options?.dispatchMode === 'separate' ? 'separate' : 'concentrated',
   };
 }
 
@@ -209,10 +303,15 @@ function nonNegativeNumber(value, fallback) {
 module.exports = {
   SLOTS_PER_BASE,
   WAVES_PER_BASE,
+  addDetailedEnemySlot,
   createEmptySimulatorState,
+  normalizeDetailedEnemySlots,
   normalizeSimulatorState,
+  normalizeSimulationOptions,
+  removeDetailedEnemySlot,
   setBaseCount,
   setBaseSlot,
+  setDetailedEnemySlot,
   setSlotLock,
   setWaveTarget,
   simulatorToOptimizerInput,

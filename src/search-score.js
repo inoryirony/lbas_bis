@@ -10,6 +10,7 @@ const {
 } = require('./air-power');
 const { aircraftEquivalenceKey } = require('./aircraft');
 const { calculateBaseDamagePower } = require('./damage');
+const { monteCarloWaveSequence } = require('./wave-simulator');
 const INVENTORY_KEY_CACHE = Symbol('inventoryKeyCache');
 
 /**
@@ -21,9 +22,21 @@ function scorePlan(plan) {
   if (isPlanScore(plan)) {
     return plan;
   }
+  if (plan?.calculationMode === 'detailed' ||
+      plan?.allWaveTargetFulfillmentProbability != null) {
+    return {
+      fulfillment: finiteNumber(plan.allWaveTargetFulfillmentProbability, 0),
+      damage: finiteNumber(plan?.totalDamagePower, 0),
+      loss: -finiteNumber(plan?.totalExpectedLoss, 0),
+      resource: -finiteNumber(plan?.totalResourceCost, 0),
+      margin: finiteNumber(plan?.worstMargin, Number.NEGATIVE_INFINITY),
+      scarcity: -finiteNumber(plan?.scarcityCost, 0),
+      canonicalKey: plan?.canonicalKey ?? canonicalPlanKey(plan),
+    };
+  }
   return {
     damage: finiteNumber(plan?.totalDamagePower, 0),
-    resource: -finiteNumber(plan?.totalResourceCost ?? plan?.totalExpectedLoss, 0),
+    resource: -finiteNumber(plan?.totalResourceCost, 0),
     margin: finiteNumber(plan?.worstMargin, Number.NEGATIVE_INFINITY),
     scarcity: -finiteNumber(plan?.scarcityCost, 0),
     canonicalKey: plan?.canonicalKey ?? canonicalPlanKey(plan),
@@ -39,8 +52,18 @@ function scorePlan(plan) {
 function comparePlanScores(left, right) {
   const leftScore = scorePlan(left);
   const rightScore = scorePlan(right);
+  const detailed = isDetailedScore(leftScore) || isDetailedScore(rightScore);
   const numeric = (
+    (detailed
+      ? compareNumber(
+        finiteNumber(leftScore.fulfillment, 0),
+        finiteNumber(rightScore.fulfillment, 0),
+      )
+      : 0) ||
     compareNumber(leftScore.damage, rightScore.damage) ||
+    (detailed
+      ? compareNumber(finiteNumber(leftScore.loss, 0), finiteNumber(rightScore.loss, 0))
+      : 0) ||
     compareNumber(leftScore.resource, rightScore.resource) ||
     compareNumber(leftScore.margin, rightScore.margin) ||
     compareNumber(leftScore.scarcity, rightScore.scarcity)
@@ -138,7 +161,37 @@ function summarizePlan(loadouts, context) {
     totalResourceCost: bases.reduce((total, base) => total + base.resourceCost, 0),
     scarcityCost: bases.reduce((total, base) => total + base.scarcityCost, 0),
     worstMargin: Math.min(...bases.map((base) => base.marginToTarget)),
+    calculationMode: 'static',
+    mode: 'static',
+    simulation: null,
+    limitations: ['STATIC_ENEMY_AIR'],
   };
+  if (context.detailed) {
+    const simulation = monteCarloWaveSequence({
+      bases: loadouts,
+      enemy: context.enemy,
+      enemyFleets: context.enemyFleets,
+      targetStates: waveTargets,
+      ...context.simulationOptions,
+    });
+    plan.fulfilled = simulation.allWaveTargetFulfillmentProbability === 1;
+    plan.waves = simulation.waves;
+    plan.totalDamagePower = simulation.expectedDamage;
+    plan.totalExpectedLoss = simulation.expectedOwnSlotLoss;
+    plan.totalResourceCost = simulation.expectedResourceCost;
+    plan.worstMargin = Math.min(...simulation.waves.map((wave) =>
+      wave.expectedOwnAirBefore - requiredAirForState(
+        wave.expectedEnemyAirBefore,
+        wave.targetState,
+      )));
+    plan.allWaveTargetFulfillmentProbability =
+      simulation.allWaveTargetFulfillmentProbability;
+    plan.simulation = simulation;
+    plan.calculationMode = 'detailed';
+    plan.mode = 'detailed';
+    plan.limitations = simulation.limitations;
+    plan.limitationNotes = simulation.limitationNotes;
+  }
   plan.canonicalKey = canonicalPlanKey(plan);
   plan.score = scorePlan(plan);
   return plan;
@@ -277,6 +330,13 @@ function isPlanScore(value) {
     Number.isFinite(value.damage) &&
     Number.isFinite(value.resource) &&
     typeof value.canonicalKey === 'string';
+}
+
+/** Detects the extended detailed score without changing the legacy static shape. */
+function isDetailedScore(value) {
+  return value != null &&
+    (Object.prototype.hasOwnProperty.call(value, 'fulfillment') ||
+      Object.prototype.hasOwnProperty.call(value, 'loss'));
 }
 
 /** Compares finite and infinite numeric score fields. */
