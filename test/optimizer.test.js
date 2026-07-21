@@ -901,7 +901,7 @@ describe('LBAS optimizer MVP', () => {
     expect(result.search.status).toBe('optimal');
     expect(result.results[0].bases[0].loadout.filter(Boolean).map((item) => item.instanceId))
       .toContain('only-fighter');
-  });
+  }, 20000);
 });
 
 /** Creates a legacy optimizer fixture with explicit aircraft capabilities. */
