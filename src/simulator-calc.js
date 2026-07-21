@@ -26,7 +26,7 @@ function calculateSimulatorSummary(state) {
     const airPower = calculateBaseAirPower(loadout);
     const radius = calculateEffectiveRadius(loadout);
     const damagePower = calculateBaseDamagePower(loadout);
-    const stateForBase = airStateFor(airPower, enemyAir);
+    const stateForBase = airStateFor(airPower, enemyAir, loadout.length > 0);
 
     return {
       baseIndex,
@@ -40,7 +40,7 @@ function calculateSimulatorSummary(state) {
   });
   const waves = normalized.waves.map((wave, waveIndex) => {
     const base = bases[wave.baseIndex] || bases[0] || emptyBaseSummary();
-    const stateForWave = airStateFor(base.airPower, enemyAir);
+    const stateForWave = airStateFor(base.airPower, enemyAir, base.loadout.length > 0);
     return {
       waveIndex,
       baseIndex: wave.baseIndex,
@@ -66,7 +66,7 @@ function emptyBaseSummary() {
     airPower: 0,
     radius: 0,
     damagePower: 0,
-    state: airStateFor(0, 0),
+    state: airStateFor(0, 0, false),
     loadout: [],
   };
 }

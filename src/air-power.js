@@ -96,8 +96,9 @@ function calculateSlotAirPowerBounds(plane, slotSize) {
 
 /** Returns an exact internal proficiency or the range implied by visible proficiency. */
 function proficiencyBoundsForPlane(plane) {
-  if (plane.internalProficiency != null) {
-    const value = Math.max(0, Math.min(120, Number(plane.internalProficiency) || 0));
+  const internalProficiency = Number(plane.internalProficiency);
+  if (plane.internalProficiency != null && Number.isFinite(internalProficiency)) {
+    const value = Math.max(0, Math.min(120, internalProficiency));
     return { lower: value, upper: value };
   }
   return internalProficiencyBounds(plane.proficiency);

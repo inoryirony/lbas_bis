@@ -1,7 +1,13 @@
 import { describe, expect, test } from 'vitest';
 import damage from '../src/damage.js';
 
-const { calculateBaseDamagePower, calculatePlaneDamagePower } = damage;
+const {
+  calculateBaseDamagePower,
+  calculateBaseSurfaceTargetPowerProxy,
+  calculatePlaneDamagePower,
+  calculatePlaneSurfaceTargetPowerProxy,
+  landBasedReconDamageModifier,
+} = damage;
 
 describe('LBAS damage estimates', () => {
   test('calculates anti-ship attack power for a land-based attacker', () => {
@@ -19,7 +25,7 @@ describe('LBAS damage estimates', () => {
     expect(power).toBe(149);
   });
 
-  test('applies Type 2 land-based recon damage modifier to attacker power', () => {
+  test('applies ordinary land-based recon damage modifier to attacker power', () => {
     const power = calculateBaseDamagePower([
       plane('ginga', {
         role: 'attacker',
@@ -36,7 +42,7 @@ describe('LBAS damage estimates', () => {
       }),
     ]);
 
-    expect(power).toBe(167);
+    expect(power).toBe(169);
   });
 
   test('uses the stronger anti-ship stat when torpedo and bombing differ', () => {
@@ -111,6 +117,40 @@ describe('LBAS damage estimates', () => {
     });
 
     expect(calculatePlaneDamagePower(attacker)).toBe(167);
+  });
+
+  test('exports explicit surface-target proxy names with compatibility aliases', () => {
+    const attacker = plane('proxy-ginga', {
+      equipType: 47,
+      isAttacker: true,
+      isLandAttacker: true,
+      torpedo: 14,
+    });
+
+    expect(calculatePlaneSurfaceTargetPowerProxy(attacker)).toBe(149);
+    expect(calculateBaseSurfaceTargetPowerProxy([attacker])).toBe(149);
+    expect(calculatePlaneDamagePower).toBe(calculatePlaneSurfaceTargetPowerProxy);
+    expect(calculateBaseDamagePower).toBe(calculateBaseSurfaceTargetPowerProxy);
+  });
+
+  test('uses 1.125 for ordinary land recon and 1.15 for skilled land recon', () => {
+    expect(landBasedReconDamageModifier([{ masterId: 311 }])).toBe(1.125);
+    expect(landBasedReconDamageModifier([{ masterId: 480 }])).toBe(1.125);
+    expect(landBasedReconDamageModifier([{ masterId: 312 }])).toBe(1.15);
+  });
+
+  test('applies ordinary land recon before the LBAS soft cap near its threshold', () => {
+    const attacker = plane('near-cap-attacker', {
+      equipType: 47,
+      isAttacker: true,
+      isLandAttacker: true,
+      torpedo: 164,
+    });
+
+    expect(calculateBaseSurfaceTargetPowerProxy(
+      [attacker, plane('ordinary-recon', { masterId: 311, isAttacker: false })],
+      { slotSize: 1 },
+    )).toBe(396);
   });
 });
 

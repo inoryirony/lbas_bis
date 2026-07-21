@@ -63,9 +63,9 @@ function aircraftEquivalenceKey(plane) {
     normalized.scout,
     normalized.improvement,
     normalized.proficiency,
-    normalized.internalProficiency,
-    normalized.slotSize,
-    normalized.currentSlot,
+    internalProficiencyKey(normalized.internalProficiency),
+    slotSizeKey(normalized.slotSize),
+    currentSlotKey(normalized.currentSlot),
     normalized.isLandBased,
     normalized.role,
     normalized.available,
@@ -86,6 +86,33 @@ function aircraftEquivalenceKey(plane) {
     normalized.isJet,
     normalized.isHeavyJet,
   ]);
+}
+
+/** Canonicalizes exact proficiency while preserving the visible-only fallback. */
+function internalProficiencyKey(value) {
+  const number = Number(value);
+  if (value == null || !Number.isFinite(number)) {
+    return 'unknown';
+  }
+  return Math.max(0, Math.min(120, number));
+}
+
+/** Canonicalizes slot size according to the air-power and damage formulas. */
+function slotSizeKey(value) {
+  if (value == null) {
+    return 'missing';
+  }
+  const number = Number(value);
+  return number === Number.POSITIVE_INFINITY ? 'infinity' : Math.max(0, number || 0);
+}
+
+/** Canonicalizes current slot according to the damage formula. */
+function currentSlotKey(value) {
+  if (value == null) {
+    return 'missing';
+  }
+  const number = Number(value);
+  return Math.max(0, Number.isFinite(number) ? number : 0);
 }
 
 module.exports = {

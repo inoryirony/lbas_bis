@@ -142,4 +142,51 @@ describe('Aircraft capabilities', () => {
     expect(aircraftEquivalenceKey({ ...base, available: false, missing: true }))
       .not.toBe(aircraftEquivalenceKey(base));
   });
+
+  test('canonicalizes formula inputs without collapsing behaviorally different values', () => {
+    const known = applyAircraftCapabilities({
+      instanceId: 1,
+      masterId: 187,
+      equipType: 47,
+      proficiency: 7,
+      internalProficiency: 0,
+      available: true,
+      missing: false,
+    });
+    const { internalProficiency: ignored, ...unknown } = known;
+
+    expect(aircraftEquivalenceKey({ ...unknown, internalProficiency: undefined }))
+      .toBe(aircraftEquivalenceKey({ ...unknown, internalProficiency: Number.NaN }));
+    expect(aircraftEquivalenceKey({ ...unknown, internalProficiency: Number.POSITIVE_INFINITY }))
+      .toBe(aircraftEquivalenceKey(unknown));
+    expect(aircraftEquivalenceKey(known)).not.toBe(aircraftEquivalenceKey(unknown));
+
+    expect(aircraftEquivalenceKey({ ...unknown, currentSlot: Number.NaN }))
+      .toBe(aircraftEquivalenceKey({ ...unknown, currentSlot: 0 }));
+    expect(aircraftEquivalenceKey(unknown))
+      .not.toBe(aircraftEquivalenceKey({ ...unknown, currentSlot: 0 }));
+    expect(aircraftEquivalenceKey({ ...unknown, slotSize: Number.NaN }))
+      .toBe(aircraftEquivalenceKey({ ...unknown, slotSize: 0 }));
+    expect(aircraftEquivalenceKey(unknown))
+      .not.toBe(aircraftEquivalenceKey({ ...unknown, slotSize: 0 }));
+  });
+
+  test('keeps infinite slot inputs distinct when their formula fallbacks differ', () => {
+    const plane = applyAircraftCapabilities({
+      masterId: 187,
+      equipType: 47,
+      proficiency: 7,
+      available: true,
+      missing: false,
+    });
+
+    expect(aircraftEquivalenceKey({ ...plane, currentSlot: Number.POSITIVE_INFINITY }))
+      .toBe(aircraftEquivalenceKey({ ...plane, currentSlot: 0 }));
+    expect(aircraftEquivalenceKey({ ...plane, currentSlot: Number.POSITIVE_INFINITY }))
+      .not.toBe(aircraftEquivalenceKey(plane));
+    expect(aircraftEquivalenceKey({ ...plane, slotSize: Number.POSITIVE_INFINITY }))
+      .not.toBe(aircraftEquivalenceKey(plane));
+    expect(aircraftEquivalenceKey({ ...plane, slotSize: Number.POSITIVE_INFINITY }))
+      .not.toBe(aircraftEquivalenceKey({ ...plane, slotSize: 0 }));
+  });
 });

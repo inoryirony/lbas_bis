@@ -37,10 +37,31 @@ describe('simulator calculations', () => {
       targetState: 'parity',
     }));
   });
+
+  test('reports NONE for an empty base but supremacy for a real zero-air-power plane', () => {
+    const initial = createEmptySimulatorState();
+    const zeroEnemyState = {
+      ...initial,
+      enemy: { ...initial.enemy, enemyAir: 0 },
+    };
+
+    const emptySummary = calculateSimulatorSummary(zeroEnemyState);
+    expect(emptySummary.bases[0].state.key).toBe('none');
+    expect(emptySummary.waves.every((wave) => wave.state.key === 'none')).toBe(true);
+    expect(emptySummary.statusKey).toBe('none');
+
+    const occupiedState = setBaseSlot(zeroEnemyState, 0, 0, {
+      plane: plane('zero-air-power', { antiAir: 0, proficiency: 0 }),
+    });
+    const occupiedSummary = calculateSimulatorSummary(occupiedState);
+    expect(occupiedSummary.bases[0].airPower).toBe(0);
+    expect(occupiedSummary.bases[0].state.key).toBe('supremacy');
+    expect(occupiedSummary.statusKey).toBe('supremacy');
+  });
 });
 
 /** Creates an explicit Ginga capability fixture for simulator calculations. */
-function plane(instanceId) {
+function plane(instanceId, overrides = {}) {
   return {
     instanceId,
     masterId: 187,
@@ -61,5 +82,6 @@ function plane(instanceId) {
     bombing: 14,
     available: true,
     missing: false,
+    ...overrides,
   };
 }

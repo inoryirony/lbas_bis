@@ -58,6 +58,12 @@ describe('LBAS air power formulas', () => {
     expect(calculateSlotAirPower({ ...ginga, internalProficiency: 120 })).toBe(16);
     expect(calculateSlotAirPowerBounds({ ...ginga, internalProficiency: 120 }))
       .toEqual({ lower: 16, upper: 16 });
+    expect(calculateSlotAirPowerBounds({ ...ginga, internalProficiency: Number.NaN }))
+      .toEqual({ lower: 15, upper: 16 });
+    expect(calculateSlotAirPowerBounds({ ...ginga, internalProficiency: Number.POSITIVE_INFINITY }))
+      .toEqual({ lower: 15, upper: 16 });
+    expect(calculateSlotAirPowerBounds({ ...ginga, internalProficiency: 0 }))
+      .toEqual({ lower: 12, upper: 12 });
     expect(calculateBaseAirPower([ginga, ginga, ginga, ginga])).toBe(60);
     expect(airStateFor(calculateBaseAirPower([ginga, ginga, ginga, ginga]), 72).key).toBe('parity');
   });

@@ -5,13 +5,13 @@ const { defaultSlotSizeForPlane } = require('./air-power');
 
 const DAMAGE_CAP = 220;
 const LAND_BASED_RECON_DAMAGE_COEFFICIENTS = new Map([
-  [311, 1.12],
+  [311, 1.125],
   [312, 1.15],
-  [480, 1.12],
+  [480, 1.125],
 ]);
 
-/** Estimates normal-target LBAS anti-ship power for one attacking plane. */
-function calculatePlaneDamagePower(plane, options = {}) {
+/** Calculates a surface-target attack-power proxy for one LBAS plane. */
+function calculatePlaneSurfaceTargetPowerProxy(plane, options = {}) {
   if (!isAttacker(plane)) {
     return 0;
   }
@@ -37,14 +37,20 @@ function calculatePlaneDamagePower(plane, options = {}) {
   return Math.floor(postCapPower * attack.postCapMultiplier);
 }
 
-/** Sums plane damage using the strongest land-recon damage modifier. */
-function calculateBaseDamagePower(loadout, options = {}) {
+/** Calculates a base surface-target power proxy with the strongest land-recon modifier. */
+function calculateBaseSurfaceTargetPowerProxy(loadout, options = {}) {
   const reconModifier = options.reconModifier ?? landBasedReconDamageModifier(loadout);
   return loadout.reduce(
-    (total, plane) => total + calculatePlaneDamagePower(plane, { ...options, reconModifier }),
+    (total, plane) => total + calculatePlaneSurfaceTargetPowerProxy(
+      plane,
+      { ...options, reconModifier },
+    ),
     0,
   );
 }
+
+const calculatePlaneDamagePower = calculatePlaneSurfaceTargetPowerProxy;
+const calculateBaseDamagePower = calculateBaseSurfaceTargetPowerProxy;
 
 /** Returns attack parameters for the equipment type in LBAS mode. */
 function attackParameters(plane) {
@@ -148,6 +154,8 @@ function finiteNumber(value, fallback) {
 
 module.exports = {
   calculateBaseDamagePower,
+  calculateBaseSurfaceTargetPowerProxy,
   calculatePlaneDamagePower,
+  calculatePlaneSurfaceTargetPowerProxy,
   landBasedReconDamageModifier,
 };
