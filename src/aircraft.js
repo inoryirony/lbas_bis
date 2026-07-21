@@ -48,7 +48,10 @@ function applyAircraftCapabilities(plane) {
 
 /** Builds a stable grouping key from every property that affects search results. */
 function aircraftEquivalenceKey(plane) {
-  const normalized = applyAircraftCapabilities(plane);
+  const normalized = {
+    ...applyAircraftCapabilities(plane),
+    ...effectiveFormulaCapabilities(plane),
+  };
   return JSON.stringify([
     normalized.masterId,
     normalized.equipType,
@@ -86,6 +89,15 @@ function aircraftEquivalenceKey(plane) {
     normalized.isJet,
     normalized.isHeavyJet,
   ]);
+}
+
+/** Mirrors formula hasCapability semantics without changing API type classification. */
+function effectiveFormulaCapabilities(plane) {
+  const derived = capabilitiesFor(plane);
+  return Object.fromEntries(Object.keys(derived).map((capability) => [
+    capability,
+    plane?.[capability] === true || derived[capability] === true,
+  ]));
 }
 
 /** Canonicalizes exact proficiency while preserving the visible-only fallback. */

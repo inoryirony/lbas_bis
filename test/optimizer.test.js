@@ -359,6 +359,7 @@ describe('LBAS optimizer MVP', () => {
     });
 
     expect(result.search.status).toBe('optimal');
+    expect(Number.isFinite(result.search.budget)).toBe(true);
     expect(result.results[0].bases[0].loadout.filter(Boolean)).toHaveLength(3);
     expect(result.results[0].bases[0].loadout[3]).toBeNull();
   });
@@ -503,6 +504,43 @@ describe('LBAS optimizer MVP', () => {
     }));
   });
 
+  test('honors a finite budget before enumerating 45 distinct groups', () => {
+    const result = optimizeLoadouts({
+      equipment: distinctFighters(45),
+      baseCount: 1,
+      targetRadius: 7,
+      enemyAir: 40,
+      targetStates: ['parity', 'parity'],
+      nodeBudget: 1,
+      maxResults: 1,
+    });
+
+    expect(result.results).toEqual([]);
+    expect(result.search).toEqual(expect.objectContaining({
+      status: 'budget_exhausted',
+      provenOptimal: false,
+      budget: 1,
+    }));
+  }, 2000);
+
+  test('streams a complete 45-group search without retaining every candidate', () => {
+    const result = optimizeLoadouts({
+      equipment: distinctFighters(45),
+      baseCount: 1,
+      targetRadius: 7,
+      enemyAir: 40,
+      targetStates: ['parity', 'parity'],
+      nodeBudget: Infinity,
+      maxResults: 1,
+    });
+
+    expect(result.results).toHaveLength(1);
+    expect(result.search).toEqual(expect.objectContaining({
+      status: 'optimal',
+      provenOptimal: true,
+    }));
+  }, 20000);
+
   test('does not exhaust a budget that ends exactly on the only leaf', () => {
     const fighter = plane('only-locked', { antiAir: 12, radius: 7, role: 'fighter' });
     const result = optimizeLoadouts({
@@ -542,6 +580,40 @@ describe('LBAS optimizer MVP', () => {
       status: 'infeasible',
       provenOptimal: true,
     }));
+  });
+
+  test('reports target-air infeasibility when radius is reachable', () => {
+    const result = optimizeLoadouts({
+      equipment: [plane('reachable-but-weak', { antiAir: 0, radius: 7, role: 'fighter' })],
+      baseCount: 1,
+      targetRadius: 7,
+      enemyAir: 999,
+      targetStates: ['supremacy', 'supremacy'],
+      nodeBudget: Infinity,
+    });
+
+    expect(result.search.status).toBe('infeasible');
+    expect(result.messages).toEqual(['No loadout can satisfy the target air state.']);
+  });
+
+  test('clears exact internal proficiency while finding the minimum visible level', () => {
+    const result = optimizeLoadouts({
+      equipment: [plane('max-trained-fighter', {
+        antiAir: 4,
+        radius: 7,
+        role: 'fighter',
+        proficiency: 7,
+        internalProficiency: 120,
+      })],
+      baseCount: 1,
+      targetRadius: 7,
+      enemyAir: 50,
+      targetStates: ['parity', 'parity'],
+      nodeBudget: Infinity,
+      maxResults: 1,
+    });
+
+    expect(result.results[0].bases[0].minimumProficiency).toBe(7);
   });
 
   test('does not truncate the only feasible target-air combination after 72 distractions', () => {
@@ -604,4 +676,14 @@ function plane(instanceId, overrides = {}) {
     isLandBased: false,
     ...overrides,
   };
+}
+
+/** Creates formula-distinct fighter groups for streaming search probes. */
+function distinctFighters(count) {
+  return Array.from({ length: count }, (_, index) => plane(`distinct-${index}`, {
+    masterId: 1000 + index,
+    antiAir: 8 + (index % 5),
+    radius: 7,
+    role: 'fighter',
+  }));
 }

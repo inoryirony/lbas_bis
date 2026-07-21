@@ -143,6 +143,15 @@ describe('Aircraft capabilities', () => {
       .not.toBe(aircraftEquivalenceKey(base));
   });
 
+  test('distinguishes explicit true formula capabilities without reclassifying API types', () => {
+    const plain = { masterId: 700, equipType: 54, antiAir: 5, improvement: 10 };
+    const explicitFighter = { ...plain, isFighter: true };
+
+    expect(capabilitiesFor(plain).isPlane).toBe(false);
+    expect(capabilitiesFor(explicitFighter).isPlane).toBe(false);
+    expect(aircraftEquivalenceKey(plain)).not.toBe(aircraftEquivalenceKey(explicitFighter));
+  });
+
   test('canonicalizes formula inputs without collapsing behaviorally different values', () => {
     const known = applyAircraftCapabilities({
       instanceId: 1,

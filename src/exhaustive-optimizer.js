@@ -1,6 +1,6 @@
 'use strict';
 
-const { AIR_STATES } = require('./air-power');
+const { AIR_STATES, calculateEffectiveRadius } = require('./air-power');
 const { aircraftEquivalenceKey } = require('./aircraft');
 const {
   comparePlanScores,
@@ -17,7 +17,11 @@ const WAVES_PER_BASE = 2;
 const DEFAULT_MAX_RESULTS = 10;
 const DEFAULT_ITEM_LIMIT = 12;
 
-/** Independently enumerates concrete instance subsets for small optimizer cases. */
+/**
+ * Independently enumerates concrete instance subsets for small optimizer cases.
+ * @param {Record<string, any>} [options] Inventory, targets, locks, and oracle limits.
+ * @returns {Record<string, any>} Messages, ranked plans, and exhaustive search metadata.
+ */
 function exhaustiveOptimize(options = {}) {
   const prepared = prepareExhaustive(options);
   if (!prepared.valid) {
@@ -76,7 +80,7 @@ function exhaustiveOptimize(options = {}) {
       : 'infeasible';
   return {
     messages: status === 'infeasible'
-      ? [`No candidate loadout can reach radius ${prepared.targetRadius}.`]
+      ? [exhaustiveInfeasibleMessage(prepared)]
       : status === 'budget_exhausted'
         ? ['Search node budget exhausted before optimality was proven.']
         : [],
@@ -89,6 +93,19 @@ function exhaustiveOptimize(options = {}) {
       provenOptimal: !budgetExhausted,
     },
   };
+}
+
+/** Distinguishes relaxed radius impossibility from target-air infeasibility. */
+function exhaustiveInfeasibleMessage(prepared) {
+  const radiusFeasible = prepared.baseLocks.every((lock) => {
+    const openCount = lock.slots.filter((slot) => slot.kind === 'OPEN').length;
+    return enumerateInstanceSubsets(prepared.available, openCount).some((choice) =>
+      calculateEffectiveRadius(materializeConcreteLoadout(lock, choice.selected).filter(Boolean)) >=
+        prepared.targetRadius);
+  });
+  return radiusFeasible
+    ? 'No loadout can satisfy the target air state.'
+    : `No candidate loadout can reach radius ${prepared.targetRadius}.`;
 }
 
 /** Validates exhaustive input and reserves locked instances independently. */

@@ -12,7 +12,11 @@ const { aircraftEquivalenceKey } = require('./aircraft');
 const { calculateBaseDamagePower } = require('./damage');
 const INVENTORY_KEY_CACHE = Symbol('inventoryKeyCache');
 
-/** Builds the shared lexicographic score for a complete or optimistic plan. */
+/**
+ * Builds the shared lexicographic score for a complete or optimistic plan.
+ * @param {Record<string, any>} plan Complete plan totals or an existing score.
+ * @returns {Record<string, any>} Canonical lexicographic score fields.
+ */
 function scorePlan(plan) {
   if (isPlanScore(plan)) {
     return plan;
@@ -26,7 +30,12 @@ function scorePlan(plan) {
   };
 }
 
-/** Compares scores positively when the left score is lexicographically better. */
+/**
+ * Compares scores positively when the left score is lexicographically better.
+ * @param {Record<string, any>} left Left plan or score.
+ * @param {Record<string, any>} right Right plan or score.
+ * @returns {number} Positive, zero, or negative ordering value.
+ */
 function comparePlanScores(left, right) {
   const leftScore = scorePlan(left);
   const rightScore = scorePlan(right);
@@ -42,7 +51,13 @@ function comparePlanScores(left, right) {
   return compareCanonicalKeys(leftScore.canonicalKey, rightScore.canonicalKey);
 }
 
-/** Combines exact partial totals with independently optimistic base envelopes. */
+/**
+ * Combines exact partial totals with independently optimistic base envelopes.
+ * @param {Record<string, any>} partial Exact totals for selected bases.
+ * @param {Array<Record<string, any>>} remainingGroups Remaining production groups.
+ * @param {Record<string, any>} [context] Independently relaxed base envelopes.
+ * @returns {Record<string, any> | null} Optimistic score, or null if any envelope is infeasible.
+ */
 function optimisticPlanScore(partial, remainingGroups, context = {}) {
   void remainingGroups;
   const envelopes = context.envelopes || [];
@@ -72,7 +87,11 @@ function optimisticPlanScore(partial, remainingGroups, context = {}) {
   };
 }
 
-/** Creates a permutation- and instance-insensitive key from per-base group counts. */
+/**
+ * Creates a permutation- and instance-insensitive key from per-base group counts.
+ * @param {Record<string, any>} plan Plan containing four-slot base loadouts.
+ * @returns {string} Stable equivalence-count key.
+ */
 function canonicalPlanKey(plan) {
   const bases = plan?.bases || [];
   return JSON.stringify(bases.map((base) => {
@@ -206,7 +225,11 @@ function scarcityCostForPlane(plane, inventoryCounts) {
 function minimumProficiencyForTarget(loadout, enemyAir, targetState) {
   const requiredRank = AIR_STATES[targetState]?.rank ?? AIR_STATES.parity.rank;
   for (let level = 0; level <= 7; level += 1) {
-    const adjusted = loadout.map((plane) => ({ ...plane, proficiency: level }));
+    const adjusted = loadout.map((plane) => ({
+      ...plane,
+      proficiency: level,
+      internalProficiency: undefined,
+    }));
     if (airStateFor(calculateBaseAirPower(adjusted), enemyAir, adjusted.length > 0).rank >= requiredRank) {
       return level;
     }

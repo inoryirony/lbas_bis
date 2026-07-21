@@ -36,6 +36,37 @@ describe('exhaustive optimizer oracle', () => {
       .toContain('strong');
   });
 
+  test('keeps explicit formula capabilities in separate equivalence groups', () => {
+    const plain = plane('plain-type-54', {
+      masterId: 700,
+      equipType: 54,
+      role: 'other',
+      isPlane: false,
+      isFighter: false,
+      isAttacker: false,
+      isLandAttacker: false,
+      antiAir: 5,
+      improvement: 10,
+    });
+    const explicitFighter = { ...plain, instanceId: 'explicit-fighter', isFighter: true };
+    const options = {
+      equipment: [plain, explicitFighter],
+      baseCount: 1,
+      targetRadius: 7,
+      enemyAir: 36,
+      targetStates: ['parity', 'parity'],
+      maxResults: 1,
+      nodeBudget: Infinity,
+    };
+
+    const production = optimizeLoadouts(options);
+    const exhaustive = exhaustiveOptimize(options);
+
+    expect(resultSignatures(production)).toEqual(resultSignatures(exhaustive));
+    expect(production.results[0].bases[0].loadout.filter(Boolean).map((item) => item.instanceId))
+      .toEqual(['explicit-fighter']);
+  });
+
   test('deduplicates slot permutations and interchangeable instance IDs by counts', () => {
     const equipment = Array.from({ length: 5 }, (_, index) => plane(`equivalent-${index}`, {
       masterId: 900,
@@ -56,6 +87,47 @@ describe('exhaustive optimizer oracle', () => {
     expect(new Set(result.results.map(canonicalPlanKey)).size).toBe(5);
     expect(result.results[0].bases[0].loadout.filter(Boolean).map((item) => item.instanceId))
       .toEqual(['equivalent-0', 'equivalent-1', 'equivalent-2', 'equivalent-3']);
+  });
+
+  test('uses independently fixed score and empty-plan key expectations', () => {
+    expect(scorePlan({
+      totalDamagePower: 50,
+      totalResourceCost: 18,
+      worstMargin: 7,
+      scarcityCost: 2,
+      canonicalKey: 'fixed-key',
+    })).toEqual({
+      damage: 50,
+      resource: -18,
+      margin: 7,
+      scarcity: -2,
+      canonicalKey: 'fixed-key',
+    });
+    expect(canonicalPlanKey({
+      bases: [{ loadout: [null, null, null, null] }],
+    })).toBe('[{"empty":4,"groups":[]}]');
+  });
+
+  test('reports the same target-air infeasibility as production', () => {
+    const options = {
+      equipment: [plane('reachable-but-weak', { antiAir: 0, radius: 7, role: 'fighter' })],
+      baseCount: 1,
+      targetRadius: 7,
+      enemyAir: 999,
+      targetStates: ['supremacy', 'supremacy'],
+      maxResults: 1,
+      nodeBudget: Infinity,
+    };
+
+    expect(exhaustiveOptimize(options).messages)
+      .toEqual(['No loadout can satisfy the target air state.']);
+    expect(exhaustiveOptimize({
+      ...options,
+      equipment: [plane('too-short', { antiAir: 20, radius: 2, role: 'fighter' })],
+      targetRadius: 9,
+      enemyAir: 72,
+      targetStates: ['parity', 'parity'],
+    }).messages).toEqual(['No candidate loadout can reach radius 9.']);
   });
 
   test('matches complete Top K scores and canonical keys on 120 seeded small inventories', () => {
@@ -166,6 +238,7 @@ function randomEquipment(random, count, namespace) {
       role,
       torpedo: role === 'attacker' ? randomInt(random, 8, 15) : 0,
       improvement: randomInt(random, 0, 3),
+      isFighter: role === 'fighter' || random() < 0.2,
       missing: random() < 0.08,
     };
   });
