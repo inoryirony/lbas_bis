@@ -176,7 +176,7 @@ Expected: regressions and 100 randomized oracle comparisons pass.
 
 - [ ] **Step 1: Add failing deterministic simulation tests**
 
-Create a detailed enemy with two slots and fixed random samples. Assert the first wave changes enemy slot counts and enemy air power before wave two, a concentrated base does not lose its own aircraft until its second wave, a separately dispatched base loses aircraft after each wave, the same seed reproduces exactly, and total-air-only input returns `mode: 'static'` without slot mutation.
+Create a detailed enemy with two slots and fixed random samples. Assert the first wave changes enemy slot counts and enemy air power before wave two, a concentrated base does not sample ordinary own loss until its second wave and samples it only once using the second-wave state, separate dispatch uses independent enemy fleets while carrying own losses between targets, the same seed reproduces exactly, and total-air-only input returns `mode: 'static'` without slot mutation. Add a current-slot regression proving a plane with `slotSize: 18` and `currentSlot: 1` uses one aircraft for air power. Add a jet fixture proving the assault phase is distinct from the ordinary wave.
 
 ```js
 expect(result.mode).toBe('detailed');
@@ -203,11 +203,13 @@ function simulateWaveSequence(options)
 function monteCarloWaveSequence(options)
 ```
 
-Use the reference formulas from `noro6/kc-web`: player constants `[1,3,5,7,10]` and enemy constants `[10,8,6,4,1]`, explicitly mapped from supremacy through loss rather than using rank as an array index. Player loss uses the reference 0.001-discrete random draw, jets multiply raw loss by 0.6, and non-attacking ASW patrol planes multiply it by 0.91. Clamp slots at zero and recompute air power from current slots after each wave. Enemy loss always occurs after a wave; own loss timing follows concentrated/separate dispatch semantics.
+Use the reference formulas from `noro6/kc-web`: player constants `[1,3,5,7,10]` and enemy constants `[10,8,6,4,1]`, explicitly mapped from supremacy through loss rather than using rank as an array index. Player loss draws `floor(U * (1000 * c / 3 + 1)) / 1000`, applies jet `0.6` or non-attacking ASW-patrol `0.91` to the unrounded raw loss as mutually exclusive modifiers, and floors once at the end. Enemy loss uses two independent uniform integers in `[0,c]` weighted `0.65` and `0.35`. Clamp slots at zero and recompute air power from each plane's `currentSlot` after every applicable phase. The current-slot value must override a master/default `slotSize`, and null slots contribute zero.
+
+Enemy loss always occurs after each wave. A concentrated first wave does not sample ordinary own loss; its second wave samples it once using the second-wave state. Separate dispatch requires distinct enemy fleets, samples own loss after each target, and carries only own losses forward. Implement the separate jet-assault phase and disclose that its Stage 2 loss is not modeled.
 
 - [ ] **Step 4: Extend enemy state and summaries**
 
-Detailed enemy slots use `{ instanceId, name, antiAir, currentSlot, maxSlot }`. Normalization validates finite nonnegative values. `calculateSimulatorSummary` delegates detailed mode to Monte Carlo and static mode to existing thresholds, always returning `calculationMode` and `limitations`.
+Detailed enemy slots use `{ instanceId, name, sortieAntiAir, currentSlot, maxSlot }`; `sortieAntiAir` is the already-effective value used for enemy slot air power. Normalization validates finite nonnegative values. `calculateSimulatorSummary` delegates detailed mode to Monte Carlo and static mode to existing thresholds, always returning `calculationMode` and `limitations`. Detailed limitations explicitly include omitted enemy-fleet Stage 2 and jet-assault Stage 2, because ship/equipment anti-air, formation/fleet context, and aircraft avoidance categories are unavailable.
 
 - [ ] **Step 5: Integrate simulation metadata into plan summaries**
 

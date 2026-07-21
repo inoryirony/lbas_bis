@@ -34,7 +34,9 @@ Visible proficiency is stored separately from internal proficiency. If Poi suppl
 Enemy input supports two modes:
 
 - `static`: only total enemy air power is known. Every wave uses the same value and the UI labels all output as a static estimate.
-- `detailed`: enemy slots contain plane anti-air, current count, and optional identity. A seeded Monte Carlo simulation evaluates waves in actual order. Each wave calculates current air powers, determines state, applies enemy stage-one losses, updates slot counts, and advances to the next wave. When a base concentrates both waves on this enemy, its own stage-one loss is applied only after the second wave; a separately dispatched base applies it after each wave. The first implementation excludes enemy fleet anti-air stage two unless the required enemy anti-air data is present, and reports that limitation in simulation metadata.
+- `detailed`: enemy slots contain effective sortie anti-air, current count, and optional identity. A seeded Monte Carlo simulation evaluates waves in actual order. Each wave calculates current air powers, determines state, applies enemy stage-one losses, updates slot counts, and advances to the next wave. When a base concentrates both waves on this enemy, the first wave does not sample ordinary own stage-one loss; the second wave samples it once using the second-wave state. Separate dispatch means two different targets: own loss is sampled after each target, while enemy losses never carry from one enemy fleet to the other. A single-enemy input therefore uses concentrated semantics only.
+
+Jet assault is a distinct phase and is simulated explicitly when jet aircraft are present. The first implementation excludes enemy fleet anti-air stage two and jet-assault stage two because detailed enemy anti-air equipment, formation, fleet context, and aircraft avoidance categories are unavailable. Simulation metadata states that own remaining slots, resource loss, and damage can therefore be optimistic.
 
 The simulator returns state probabilities, expected remaining slots, expected enemy air power, expected own air power, expected damage proxy, and the seed/sample count used.
 
