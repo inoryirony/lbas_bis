@@ -402,6 +402,23 @@ describe('LBAS optimizer MVP', () => {
     expect(result.results[0].bases[0].loadout.filter(Boolean)).toHaveLength(3);
   });
 
+  test('treats a directly null legacy slot constraint as open', () => {
+    const result = optimizeLoadouts({
+      equipment: [
+        plane('fighter', { antiAir: 12, radius: 7, role: 'fighter', isLandBased: true }),
+      ],
+      baseCount: 1,
+      targetRadius: 7,
+      enemyAir: 0,
+      targetStates: ['supremacy', 'supremacy'],
+      lockedBases: [{ slots: [null] }],
+      maxResults: 1,
+    });
+
+    expect(result.search.status).toBe('optimal');
+    expect(result.results[0].bases[0].loadout[0]?.instanceId).toBe('fighter');
+  });
+
   test('globally reserves an item locked in a later base', () => {
     const reserved = plane('reserved-later', {
       antiAir: 14,

@@ -281,6 +281,7 @@ function normalizeLockedBases(lockedBases, baseCount, inventoryById) {
 
 /** Normalizes current and legacy slot constraint shapes. */
 function normalizeSlotConstraint(slot = {}) {
+  slot = slot ?? {};
   const explicitKind = slot.kind || slot.state || slot.type;
   if (explicitKind === SLOT_KINDS.LOCKED_EMPTY) {
     return { kind: SLOT_KINDS.LOCKED_EMPTY, plane: null };
