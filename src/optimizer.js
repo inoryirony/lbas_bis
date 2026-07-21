@@ -10,6 +10,7 @@ const {
 const { aircraftEquivalenceKey, capabilitiesFor } = require('./aircraft');
 const { calculateBaseDamagePower } = require('./damage');
 const { validateAndNormalizeDetailedEnemySlots } = require('./enemy-slots');
+const { validateSampleCount } = require('./simulation-options');
 const {
   comparePlanScores,
   comparePlansForSort,
@@ -26,6 +27,7 @@ const SLOTS_PER_BASE = 4;
 const WAVES_PER_BASE = 2;
 const DEFAULT_MAX_RESULTS = 10;
 const DEFAULT_NODE_BUDGET = 100000;
+const DEFAULT_SIMULATION_WORK_BUDGET = 10000;
 const SLOT_KINDS = Object.freeze({
   LOCKED_ITEM: 'LOCKED_ITEM',
   LOCKED_EMPTY: 'LOCKED_EMPTY',
@@ -40,7 +42,13 @@ const SLOT_KINDS = Object.freeze({
 function optimizeLoadouts(options = {}) {
   const prepared = prepareSearch(options);
   if (!prepared.valid) {
-    return invalidResult('branch-and-bound', prepared.budget, prepared.message, prepared.errors);
+    return invalidResult(
+      'branch-and-bound',
+      prepared.budget,
+      prepared.message,
+      prepared.errors,
+      prepared.simulationBudget,
+    );
   }
 
   const {
@@ -60,12 +68,18 @@ function optimizeLoadouts(options = {}) {
   const retained = [];
   const retainedByKey = new Map();
   const budgetState = createBudgetState(budget);
+  const simulationBudgetState = createSimulationBudgetState(prepared.simulationBudget);
 
   /** Visits one partial allocation and proves or bounds all descendants. */
   function visit(baseIndex) {
+    if (simulationBudgetState.exhausted) return;
     if (!consumeBudget(budgetState)) return;
 
     if (baseIndex === baseCount) {
+      if (detailed && !reserveSimulationSamples(
+        simulationBudgetState,
+        prepared.simulationOptions.sampleCount,
+      )) return;
       retainPlan(materializePlan(selected, prepared), retained, retainedByKey, maxResults);
       return;
     }
@@ -107,14 +121,15 @@ function optimizeLoadouts(options = {}) {
         visit(baseIndex + 1);
         selected.pop();
         addCounts(remainingCounts, candidate.counts);
-        return !budgetState.exhausted;
+        return !budgetState.exhausted && !simulationBudgetState.exhausted;
       },
     );
   }
 
   visit(0);
   retained.sort(comparePlansForSort);
-  const status = budgetState.exhausted
+  const exhausted = budgetState.exhausted || simulationBudgetState.exhausted;
+  const status = exhausted
     ? 'budget_exhausted'
     : retained.length
       ? 'optimal'
@@ -124,7 +139,7 @@ function optimizeLoadouts(options = {}) {
     messages.push(infeasibleMessage(prepared, remainingCounts));
   }
   if (status === 'budget_exhausted') {
-    messages.push('Search node budget exhausted before optimality was proven.');
+    messages.push('Search or simulation work budget exhausted before optimality was proven.');
   }
 
   return {
@@ -135,7 +150,9 @@ function optimizeLoadouts(options = {}) {
       status,
       nodesExplored: budgetState.nodesExplored,
       budget,
-      provenOptimal: !budgetState.exhausted,
+      simulationSamplesEvaluated: simulationBudgetState.samplesEvaluated,
+      simulationBudget: simulationBudgetState.budget,
+      provenOptimal: !exhausted,
     },
   };
 }
@@ -273,6 +290,40 @@ function prepareSearch(options) {
   const detailed = isDetailedEnemy(options.enemy) ||
     Array.isArray(options.enemySlots) ||
     Boolean(enemyFleetInputs?.length);
+  const rawSimulationOptions = {
+    ...(options.simulation || {}),
+    ...(options.simulationOptions || {}),
+  };
+  const dispatchMode = options.dispatchMode ||
+    rawSimulationOptions.dispatchMode ||
+    (enemyFleetInputs ? 'separate' : 'concentrated');
+  const simulationBudget = detailed
+    ? normalizeWorkBudget(options.simulationWorkBudget, DEFAULT_SIMULATION_WORK_BUDGET)
+    : 0;
+  if (enemyFleetInputs && (
+    enemyFleetInputs.length !== 2 || enemyFleetInputs[0] === enemyFleetInputs[1]
+  )) {
+    const error = separateEnemyValidationError('enemyFleets', enemyFleetInputs.length);
+    return invalidPreparation(options, error.message, [error], simulationBudget);
+  }
+  if (detailed && dispatchMode === 'separate' && !enemyFleetInputs) {
+    const error = separateEnemyValidationError('enemyFleets', 0);
+    return invalidPreparation(options, error.message, [error], simulationBudget);
+  }
+  const sampleValidation = detailed
+    ? validateSampleCount(
+      options.sampleCount ?? rawSimulationOptions.sampleCount,
+      { path: 'simulationOptions.sampleCount' },
+    )
+    : { valid: true, sampleCount: null, errors: [] };
+  if (!sampleValidation.valid) {
+    return invalidPreparation(
+      options,
+      sampleValidation.errors[0].message,
+      sampleValidation.errors,
+      simulationBudget,
+    );
+  }
   let enemy = options.enemy;
   let enemyFleets = enemyFleetInputs;
   if (detailed) {
@@ -308,26 +359,44 @@ function prepareSearch(options) {
     enemyFleets,
     detailed,
     simulationOptions: {
-      ...(options.simulation || {}),
-      ...(options.simulationOptions || {}),
-      dispatchMode: options.dispatchMode ||
-        options.simulationOptions?.dispatchMode ||
-        options.simulation?.dispatchMode ||
-        (enemyFleets ? 'separate' : 'concentrated'),
+      ...rawSimulationOptions,
+      ...(detailed ? { sampleCount: sampleValidation.sampleCount } : {}),
+      dispatchMode,
     },
     waveTargets: normalizeWaveTargets(options.targetStates, baseCount),
     maxResults: Math.max(1, Math.floor(Number(options.maxResults) || DEFAULT_MAX_RESULTS)),
     budget: normalizeBudget(options.nodeBudget),
+    simulationBudget,
   };
 }
 
 /** Returns a minimal invalid preparation record with normalized budget. */
-function invalidPreparation(options, message, errors = []) {
+function invalidPreparation(
+  options,
+  message,
+  errors = [],
+  simulationBudget = normalizeWorkBudget(
+    options.simulationWorkBudget,
+    DEFAULT_SIMULATION_WORK_BUDGET,
+  ),
+) {
   return {
     valid: false,
     message,
     errors,
     budget: normalizeBudget(options.nodeBudget),
+    simulationBudget,
+  };
+}
+
+/** Creates the structured optimizer error for an invalid separate target list. */
+function separateEnemyValidationError(path, count) {
+  return {
+    code: 'INVALID_SEPARATE_ENEMY_FLEETS',
+    path,
+    field: 'enemyFleets',
+    value: count,
+    message: 'Separate dispatch requires exactly two independent enemy fleets.',
   };
 }
 
@@ -419,7 +488,8 @@ function walkBaseAssignments(
   /** Recurses in shared-score order while leaving unused open slots empty. */
   function enumerate(orderIndex, slotsLeft, selectedAirPower) {
     if (budgetState.exhausted) return false;
-    if (prepared.detailed && !consumeBudget(budgetState)) return false;
+    if (prepared.detailed && orderIndex < searchOrder.length &&
+        !consumeBudget(budgetState)) return false;
     if (!canReachRequiredAir(
       searchOrder,
       orderIndex,
@@ -432,7 +502,6 @@ function walkBaseAssignments(
       return consumeBudget(budgetState);
     }
     if (orderIndex === searchOrder.length) {
-      if (!ensureBudgetCapacity(budgetState)) return false;
       const loadout = materializeRepresentativeLoadout(baseLock, counts, prepared.groups);
       const targetState = targetStateForBase(prepared.waveTargets, baseIndex);
       const summary = summarizeBase(
@@ -445,7 +514,7 @@ function walkBaseAssignments(
       const feasible = prepared.detailed
         ? summary.radius >= prepared.targetRadius
         : isBaseFeasible(summary, prepared.targetRadius);
-      if (!feasible) return prepared.detailed ? true : consumeBudget(budgetState);
+      if (!feasible) return consumeBudget(budgetState);
       const candidate = {
         counts: [...counts],
         summary,
@@ -580,11 +649,19 @@ function consumeBudget(state) {
   return true;
 }
 
-/** Marks exhaustion before inspecting an assignment that lacks a budget unit. */
-function ensureBudgetCapacity(state) {
-  if (state.nodesExplored < state.budget) return true;
-  state.exhausted = true;
-  return false;
+/** Creates independent detailed-simulation sample accounting. */
+function createSimulationBudgetState(budget) {
+  return { budget, samplesEvaluated: 0, exhausted: false };
+}
+
+/** Atomically reserves all samples required by one complete detailed plan. */
+function reserveSimulationSamples(state, sampleCount) {
+  if (state.samplesEvaluated + sampleCount > state.budget) {
+    state.exhausted = true;
+    return false;
+  }
+  state.samplesEvaluated += sampleCount;
+  return true;
 }
 
 /** Proves an air target impossible using a recon-relaxed slot-air upper bound. */
@@ -907,8 +984,16 @@ function normalizeBudget(value) {
   return Number.isFinite(number) ? Math.max(0, Math.floor(number)) : Number.POSITIVE_INFINITY;
 }
 
+/** Normalizes a nonnegative work budget with an explicit finite default. */
+function normalizeWorkBudget(value, fallback) {
+  if (value === Number.POSITIVE_INFINITY) return Number.POSITIVE_INFINITY;
+  if (value == null) return fallback;
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(0, Math.floor(number)) : fallback;
+}
+
 /** Returns the common invalid-input result shape. */
-function invalidResult(mode, budget, message, errors = []) {
+function invalidResult(mode, budget, message, errors = [], simulationBudget = 0) {
   return {
     messages: [message],
     errors,
@@ -918,6 +1003,8 @@ function invalidResult(mode, budget, message, errors = []) {
       status: 'invalid_input',
       nodesExplored: 0,
       budget,
+      simulationSamplesEvaluated: 0,
+      simulationBudget,
       provenOptimal: false,
     },
   };

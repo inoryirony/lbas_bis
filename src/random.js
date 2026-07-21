@@ -1,25 +1,22 @@
 'use strict';
 
-/** Creates a repeatable sequential pseudo-random number generator. */
+const UINT64_MASK = 0xffffffffffffffffn;
+const SPLITMIX_INCREMENT = 0x9e3779b97f4a7c15n;
+const TWO_POW_53 = 0x20000000000000;
+
+/** Creates a repeatable SplitMix64 generator with a full 64-bit state. */
 function createSeededRandom(seed) {
-  let state = hashString(String(seed));
+  let state = hashString64(String(seed));
   return function seededRandom() {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let value = state;
-    value = Math.imul(value ^ (value >>> 15), value | 1);
-    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
-    return ((value ^ (value >>> 14)) >>> 0) / 0x100000000;
+    state = (state + SPLITMIX_INCREMENT) & UINT64_MASK;
+    return uint64ToUnitFloat(splitMix64(state));
   };
 }
 
-/**
- * Returns one common-random-number draw identified only by its simulation coordinates.
- */
+/** Returns one CRN draw identified only by its complete simulation coordinates. */
 function commonRandomNumber(seed, sample, wave, side, slot, draw) {
-  const key = [seed, sample, wave, side, slot, draw]
-    .map((value) => `${String(value).length}:${String(value)}`)
-    .join('|');
-  return createSeededRandom(key)();
+  const key = coordinateKey64(seed, sample, wave, side, slot, draw);
+  return uint64ToUnitFloat(splitMix64((key + SPLITMIX_INCREMENT) & UINT64_MASK));
 }
 
 /** Creates a coordinate-addressed common-random-number helper for one seed. */
@@ -28,22 +25,49 @@ function createCommonRandom(seed) {
     commonRandomNumber(seed, sample, wave, side, slot, draw);
 }
 
-/** Hashes text to a stable unsigned 32-bit seed. */
-function hashString(value) {
-  let hash = 0x811c9dc5;
+/** Hashes a length-delimited coordinate tuple to a stable unsigned 64-bit key. */
+function coordinateKey64(seed, sample, wave, side, slot, draw) {
+  const serialized = [seed, sample, wave, side, slot, draw]
+    .map((value) => {
+      const text = String(value);
+      return `${text.length}:${text}`;
+    })
+    .join('|');
+  return hashString64(serialized);
+}
+
+/** Hashes UTF-16 text with FNV-1a and a SplitMix64 finalizer. */
+function hashString64(value) {
+  let hash = 0xcbf29ce484222325n;
   for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
+    const codeUnit = value.charCodeAt(index);
+    hash ^= BigInt(codeUnit & 0xff);
+    hash = (hash * 0x100000001b3n) & UINT64_MASK;
+    hash ^= BigInt(codeUnit >>> 8);
+    hash = (hash * 0x100000001b3n) & UINT64_MASK;
   }
-  hash ^= hash >>> 16;
-  hash = Math.imul(hash, 0x7feb352d);
-  hash ^= hash >>> 15;
-  hash = Math.imul(hash, 0x846ca68b);
-  return (hash ^ (hash >>> 16)) >>> 0;
+  return splitMix64(hash);
+}
+
+/** Applies the SplitMix64 avalanche permutation to one unsigned integer. */
+function splitMix64(value) {
+  let mixed = BigInt(value) & UINT64_MASK;
+  mixed = ((mixed ^ (mixed >> 30n)) * 0xbf58476d1ce4e5b9n) & UINT64_MASK;
+  mixed = ((mixed ^ (mixed >> 27n)) * 0x94d049bb133111ebn) & UINT64_MASK;
+  return (mixed ^ (mixed >> 31n)) & UINT64_MASK;
+}
+
+/** Converts the high 53 random bits to a deterministic uniform in [0, 1). */
+function uint64ToUnitFloat(value) {
+  return Number((BigInt(value) & UINT64_MASK) >> 11n) / TWO_POW_53;
 }
 
 module.exports = {
   commonRandomNumber,
+  coordinateKey64,
   createCommonRandom,
   createSeededRandom,
+  hashString64,
+  splitMix64,
+  uint64ToUnitFloat,
 };

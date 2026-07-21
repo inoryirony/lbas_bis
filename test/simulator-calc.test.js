@@ -153,6 +153,34 @@ describe('simulator calculations', () => {
     expect(summary.simulation).toBeUndefined();
   });
 
+  test.each([0, 0.5, -1, Number.NaN, Number.POSITIVE_INFINITY, 10001])(
+    'returns structured invalid for sampleCount %s without running Monte Carlo',
+    (sampleCount) => {
+      const summary = calculateSimulatorSummary(detailedState({ sampleCount }));
+
+      expect(summary).toEqual(expect.objectContaining({
+        calculationMode: 'invalid',
+        mode: 'invalid',
+        errors: expect.arrayContaining([
+          expect.objectContaining({ code: 'INVALID_SAMPLE_COUNT' }),
+        ]),
+      }));
+      expect(summary.simulation).toBeUndefined();
+    },
+  );
+
+  test('returns structured invalid when the single-enemy state requests separate dispatch', () => {
+    const summary = calculateSimulatorSummary(detailedState({ dispatchMode: 'separate' }));
+
+    expect(summary).toEqual(expect.objectContaining({
+      calculationMode: 'invalid',
+      errors: expect.arrayContaining([
+        expect.objectContaining({ code: 'INVALID_SEPARATE_ENEMY_FLEETS' }),
+      ]),
+    }));
+    expect(summary.simulation).toBeUndefined();
+  });
+
   test('reports NONE for an empty base but supremacy for a real zero-air-power plane', () => {
     const initial = createEmptySimulatorState();
     const zeroEnemyState = {
@@ -174,6 +202,28 @@ describe('simulator calculations', () => {
     expect(occupiedSummary.statusKey).toBe('supremacy');
   });
 });
+
+/** Creates one valid detailed simulator state with overridable simulation controls. */
+function detailedState(simulationOptions = {}) {
+  const initial = createEmptySimulatorState();
+  return {
+    ...initial,
+    enemy: {
+      mode: 'detailed',
+      slots: [{
+        instanceId: 'enemy-1',
+        name: 'Enemy fighter',
+        sortieAntiAir: 10,
+        currentSlot: 18,
+        maxSlot: 18,
+      }],
+    },
+    simulationOptions: {
+      ...initial.simulationOptions,
+      ...simulationOptions,
+    },
+  };
+}
 
 /** Creates an explicit Ginga capability fixture for simulator calculations. */
 function plane(instanceId, overrides = {}) {

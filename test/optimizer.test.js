@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'vitest';
 import optimizer from '../src/optimizer.js';
+import scoreModule from '../src/search-score.js';
 
 const { optimizeLoadouts } = optimizer;
+const { comparePlansForSort } = scoreModule;
 
 describe('LBAS optimizer MVP', () => {
   test('finds a valid base plan without reusing the same equipment instance', () => {
@@ -525,6 +527,102 @@ describe('LBAS optimizer MVP', () => {
     expect(result.messages.join(' ')).not.toMatch(/infeasible/i);
   });
 
+  test.each([0, 0.5, -1, Number.NaN, Number.POSITIVE_INFINITY, 10001])(
+    'returns invalid_input for detailed sampleCount %s',
+    (sampleCount) => {
+      const result = optimizeLoadouts({
+        equipment: [plane('fighter', { antiAir: 12, radius: 7, role: 'fighter' })],
+        baseCount: 1,
+        targetRadius: 7,
+        enemy: detailedEnemy(),
+        simulationOptions: { sampleCount },
+      });
+
+      expect(result.search).toEqual(expect.objectContaining({
+        status: 'invalid_input',
+        provenOptimal: false,
+      }));
+      expect(result.errors).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'INVALID_SAMPLE_COUNT' }),
+      ]));
+    },
+  );
+
+  test.each([1, 3])('returns invalid_input for %s separate enemy fleets', (fleetCount) => {
+    const enemyFleets = Array.from({ length: fleetCount }, () => detailedEnemy());
+    const result = optimizeLoadouts({
+      equipment: [plane('fighter', { antiAir: 12, radius: 7, role: 'fighter' })],
+      baseCount: 1,
+      targetRadius: 7,
+      enemyFleets,
+      simulationOptions: { dispatchMode: 'separate', sampleCount: 2 },
+    });
+
+    expect(result.search).toEqual(expect.objectContaining({
+      status: 'invalid_input',
+      provenOptimal: false,
+    }));
+    expect(result.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'INVALID_SEPARATE_ENEMY_FLEETS' }),
+    ]));
+  });
+
+  test('accounts for detailed simulation samples and skips a leaf atomically when short', () => {
+    const options = lockedDetailedOptions(4);
+    const short = optimizeLoadouts({ ...options, simulationWorkBudget: 3 });
+    const exact = optimizeLoadouts({ ...options, simulationWorkBudget: 4 });
+
+    expect(short.results).toEqual([]);
+    expect(short.search).toEqual(expect.objectContaining({
+      status: 'budget_exhausted',
+      provenOptimal: false,
+      simulationSamplesEvaluated: 0,
+      simulationBudget: 3,
+    }));
+    expect(exact.search).toEqual(expect.objectContaining({
+      status: 'optimal',
+      provenOptimal: true,
+      simulationSamplesEvaluated: 4,
+      simulationBudget: 4,
+    }));
+  });
+
+  test('completes the unique detailed terminal at exact node budget and exhausts at one less', () => {
+    const options = { ...lockedDetailedOptions(2), simulationWorkBudget: 2 };
+    const exact = optimizeLoadouts({ ...options, nodeBudget: 2 });
+    const short = optimizeLoadouts({ ...options, nodeBudget: 1 });
+
+    expect(exact.search).toEqual(expect.objectContaining({
+      status: 'optimal',
+      nodesExplored: 2,
+      provenOptimal: true,
+      simulationSamplesEvaluated: 2,
+    }));
+    expect(short.search).toEqual(expect.objectContaining({
+      status: 'budget_exhausted',
+      nodesExplored: 1,
+      provenOptimal: false,
+      simulationSamplesEvaluated: 0,
+    }));
+  });
+
+  test('bounds default detailed work for a one-base eight-item inventory', () => {
+    const result = optimizeLoadouts({
+      equipment: distinctFighters(8),
+      baseCount: 1,
+      targetRadius: 7,
+      enemy: detailedEnemy(),
+      maxResults: 1,
+    });
+
+    expect(Number.isFinite(result.search.simulationBudget)).toBe(true);
+    expect(result.search.simulationSamplesEvaluated).toBeLessThanOrEqual(
+      result.search.simulationBudget,
+    );
+    expect(result.search.status).toBe('budget_exhausted');
+    expect(result.search.provenOptimal).toBe(false);
+  });
+
   test('returns invalid_input for invalid detailed enemy slots', () => {
     const result = optimizeLoadouts({
       equipment: [plane('fighter', { antiAir: 12, radius: 7, role: 'fighter' })],
@@ -603,6 +701,43 @@ describe('LBAS optimizer MVP', () => {
     );
     expect(reversed.results.map((plan) => plan.score))
       .toEqual(result.results.map((plan) => plan.score));
+  });
+
+  test('matches an explicit detailed exhaustive ranking with four equipment choices', () => {
+    const equipment = distinctFighters(4);
+    const common = {
+      equipment,
+      baseCount: 1,
+      targetRadius: 7,
+      enemy: detailedEnemy(),
+      simulationOptions: { seed: 'four-way', sampleCount: 8 },
+      simulationWorkBudget: Infinity,
+      nodeBudget: Infinity,
+      maxResults: 5,
+    };
+    const production = optimizeLoadouts({
+      ...common,
+      lockedBases: [{ slots: [
+        { locked: false },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+      ] }],
+    });
+    const exhaustive = [null, ...equipment].flatMap((item) => optimizeLoadouts({
+      ...common,
+      maxResults: 1,
+      lockedBases: [{ slots: [
+        { plane: item, locked: true },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+      ] }],
+    }).results).sort(comparePlansForSort);
+
+    expect(production.search.status).toBe('optimal');
+    expect(production.results.map((plan) => plan.canonicalKey))
+      .toEqual(exhaustive.map((plan) => plan.canonicalKey));
   });
 
   test('honors a finite budget before enumerating 45 distinct groups', () => {
@@ -800,5 +935,29 @@ function detailedEnemy() {
       currentSlot: 18,
       maxSlot: 18,
     }],
+  };
+}
+
+/** Creates a unique all-locked detailed plan for exact budget tests. */
+function lockedDetailedOptions(sampleCount) {
+  const fighter = plane('locked-detailed', {
+    antiAir: 12,
+    radius: 7,
+    role: 'fighter',
+  });
+  return {
+    equipment: [fighter],
+    baseCount: 1,
+    targetRadius: 7,
+    enemy: detailedEnemy(),
+    lockedBases: [{ slots: [
+      { plane: fighter, locked: true },
+      { plane: null, locked: true },
+      { plane: null, locked: true },
+      { plane: null, locked: true },
+    ] }],
+    simulationOptions: { seed: 'exact-budget', sampleCount },
+    nodeBudget: Infinity,
+    maxResults: 1,
   };
 }

@@ -10,8 +10,10 @@ const { calculateBaseDamagePower } = require('./damage');
 const { normalizeSimulatorState } = require('./simulator-state');
 const { monteCarloWaveSequence } = require('./wave-simulator');
 const { INVALID_SLOT_LIMITATION } = require('./enemy-slots');
+const { INVALID_SIMULATION_LIMITATION } = require('./simulation-options');
 
 const STATIC_LIMITATIONS = Object.freeze(['STATIC_ENEMY_AIR']);
+const INVALID_SEPARATE_LIMITATION = 'INVALID_SEPARATE_ENEMY_FLEETS';
 
 function calculateEnemyAirLines(enemyAir) {
   return {
@@ -30,7 +32,27 @@ function calculateEnemyAirLines(enemyAir) {
 function calculateSimulatorSummary(state) {
   const normalized = normalizeSimulatorState(state);
   if (normalized.enemy.mode === 'detailed' && normalized.enemy.valid === false) {
-    return invalidDetailedSummary(normalized.enemy.errors);
+    return invalidSimulatorSummary(
+      normalized.enemy.errors,
+      INVALID_SLOT_LIMITATION,
+      'Detailed enemy slots must be corrected before simulation.',
+    );
+  }
+  if (normalized.simulationOptions.valid === false) {
+    return invalidSimulatorSummary(
+      normalized.simulationOptions.errors,
+      INVALID_SIMULATION_LIMITATION,
+      'Simulation options must be corrected before simulation.',
+    );
+  }
+  if (normalized.simulationOptions.dispatchMode === 'separate') {
+    return invalidSimulatorSummary([{
+      code: INVALID_SEPARATE_LIMITATION,
+      path: 'simulationOptions.dispatchMode',
+      field: 'dispatchMode',
+      value: 'separate',
+      message: 'Separate dispatch requires exactly two independent enemy fleets.',
+    }], INVALID_SEPARATE_LIMITATION, 'The simulator state contains only one enemy target.');
   }
   const enemyAir = normalized.enemy.enemyAir;
   const bases = normalized.bases.map((base, baseIndex) => {
@@ -100,15 +122,15 @@ function calculateSimulatorSummary(state) {
   };
 }
 
-/** Returns a non-simulated structured result for invalid detailed enemy slots. */
-function invalidDetailedSummary(errors) {
+/** Returns a non-simulated structured result for invalid simulator input. */
+function invalidSimulatorSummary(errors, limitation, note) {
   return {
     calculationMode: 'invalid',
     mode: 'invalid',
     errors: [...errors],
-    limitations: [INVALID_SLOT_LIMITATION],
+    limitations: [limitation],
     limitationNotes: {
-      [INVALID_SLOT_LIMITATION]: 'Detailed enemy slots must be corrected before simulation.',
+      [limitation]: note,
     },
     bases: [],
     waves: [],

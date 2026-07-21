@@ -15,6 +15,7 @@ const {
   validateAndNormalizeDetailedEnemySlots,
 } = require('./enemy-slots');
 const { commonRandomNumber } = require('./random');
+const { requireSampleCount } = require('./simulation-options');
 
 const PLAYER_STAGE_ONE_CONSTANTS = Object.freeze({
   supremacy: 1,
@@ -36,7 +37,6 @@ const DETAILED_LIMITATIONS = Object.freeze([
   'PLAYER_STAGE2_OMITTED',
   'DAMAGE_LOSS_RESOURCE_OPTIMISTIC',
 ]);
-const DEFAULT_SAMPLE_COUNT = 1000;
 
 /**
  * Calculates player Stage 1 losses with the kc-web state constants and one final floor.
@@ -197,44 +197,41 @@ function simulateWaveSequence(options = {}) {
 
 /** Runs coordinate-addressed common-random-number samples and aggregates every wave. */
 function monteCarloWaveSequence(options = {}) {
-  const sampleCount = normalizeSampleCount(options.sampleCount ?? options.simulationOptions?.sampleCount);
+  const sampleCount = requireSampleCount(
+    options.sampleCount ?? options.simulationOptions?.sampleCount,
+  );
   const seed = options.seed ?? options.simulationOptions?.seed ?? 0;
-  const samples = [];
+  let accumulator = null;
   for (let sample = 0; sample < sampleCount; sample += 1) {
-    samples.push(simulateWaveSequence({
+    const result = simulateWaveSequence({
       ...options,
       random: (wave, side, slot, draw) =>
         commonRandomNumber(seed, sample, wave, side, slot, draw),
-    }));
+    });
+    accumulator = accumulator || createSimulationAccumulator(result);
+    addSimulationSample(accumulator, result);
   }
 
-  const first = samples[0];
-  const waves = first.waves.map((wave, waveIndex) => aggregateWave(samples, waveIndex, wave));
+  const first = accumulator.template;
   return {
     calculationMode: 'detailed',
     mode: 'detailed',
     dispatchMode: first.dispatchMode,
     seed,
     sampleCount,
-    waves,
-    allWaveTargetFulfillmentProbability: average(
-      samples.map((sample) => sample.allWaveTargetsFulfilled ? 1 : 0),
-    ),
-    expectedDamage: average(samples.map((sample) => sample.totalDamage)),
-    expectedOwnSlotLoss: average(samples.map((sample) => sample.totalOwnSlotLoss)),
-    expectedEnemySlotLoss: average(samples.map((sample) => sample.totalEnemySlotLoss)),
-    expectedUsedSteel: average(samples.map((sample) => sample.totalUsedSteel)),
-    expectedSupplyFuel: average(samples.map((sample) => sample.totalSupplyFuel)),
-    expectedSupplyBauxite: average(samples.map((sample) => sample.totalSupplyBauxite)),
-    expectedResourceCost: average(samples.map((sample) => sample.totalResourceCost)),
-    expectedFinalOwnSlots: averageNestedArrays(
-      samples.map((sample) => sample.finalBases.map((base) => slotsForPlanes(base))),
-    ),
-    expectedFinalOwnAir: averageArrays(samples.map((sample) => sample.finalOwnAir)),
-    expectedFinalEnemySlots: averageNestedArrays(
-      samples.map((sample) => sample.enemyFleets.map((enemy) => slotsForEnemy(enemy))),
-    ),
-    expectedFinalEnemyAir: averageArrays(samples.map((sample) => sample.finalEnemyAir)),
+    waves: accumulator.waves.map((wave) => finalizeWaveAccumulator(wave, sampleCount)),
+    allWaveTargetFulfillmentProbability: accumulator.allWaveTargetsFulfilled / sampleCount,
+    expectedDamage: accumulator.totalDamage / sampleCount,
+    expectedOwnSlotLoss: accumulator.totalOwnSlotLoss / sampleCount,
+    expectedEnemySlotLoss: accumulator.totalEnemySlotLoss / sampleCount,
+    expectedUsedSteel: accumulator.totalUsedSteel / sampleCount,
+    expectedSupplyFuel: accumulator.totalSupplyFuel / sampleCount,
+    expectedSupplyBauxite: accumulator.totalSupplyBauxite / sampleCount,
+    expectedResourceCost: accumulator.totalResourceCost / sampleCount,
+    expectedFinalOwnSlots: divideNested(accumulator.finalOwnSlots, sampleCount),
+    expectedFinalOwnAir: divideNested(accumulator.finalOwnAir, sampleCount),
+    expectedFinalEnemySlots: divideNested(accumulator.finalEnemySlots, sampleCount),
+    expectedFinalEnemyAir: divideNested(accumulator.finalEnemyAir, sampleCount),
     limitations: [...DETAILED_LIMITATIONS],
     limitationNotes: first.limitationNotes,
   };
@@ -274,7 +271,7 @@ function applyEnemyStageOne(enemy, stateKey, waveIndex, random) {
     const loss = enemyStageOneLoss(
       stateKey,
       before,
-      () => random(waveIndex, 'enemy', slotIndex, draw++),
+      () => random(waveIndex, 'enemy', slot.instanceId ?? slotIndex, draw++),
     );
     slot.currentSlot = Math.max(0, before - loss);
     return { slotIndex, instanceId: slot.instanceId, before, loss, after: slot.currentSlot };
@@ -324,34 +321,105 @@ function simulateJetAssault(base, waveIndex, random) {
   };
 }
 
-/** Aggregates one wave across all Monte Carlo samples. */
-function aggregateWave(samples, waveIndex, template) {
-  const waves = samples.map((sample) => sample.waves[waveIndex]);
-  const counts = Object.fromEntries(Object.keys(AIR_STATES).map((key) => [key, 0]));
-  waves.forEach((wave) => {
-    counts[wave.state.key] += 1;
-  });
+/** Creates scalar and nested-array accumulators from the first sample shape. */
+function createSimulationAccumulator(template) {
   return {
-    waveIndex,
+    template,
+    waves: template.waves.map(createWaveAccumulator),
+    allWaveTargetsFulfilled: 0,
+    totalDamage: 0,
+    totalOwnSlotLoss: 0,
+    totalEnemySlotLoss: 0,
+    totalUsedSteel: 0,
+    totalSupplyFuel: 0,
+    totalSupplyBauxite: 0,
+    totalResourceCost: 0,
+    finalOwnSlots: zeroNested(template.finalBases.map((base) => slotsForPlanes(base))),
+    finalOwnAir: zeroNested(template.finalOwnAir),
+    finalEnemySlots: zeroNested(template.enemyFleets.map((enemy) => slotsForEnemy(enemy))),
+    finalEnemyAir: zeroNested(template.finalEnemyAir),
+  };
+}
+
+/** Adds one simulation result without retaining the sample object. */
+function addSimulationSample(accumulator, sample) {
+  accumulator.allWaveTargetsFulfilled += sample.allWaveTargetsFulfilled ? 1 : 0;
+  accumulator.totalDamage += sample.totalDamage;
+  accumulator.totalOwnSlotLoss += sample.totalOwnSlotLoss;
+  accumulator.totalEnemySlotLoss += sample.totalEnemySlotLoss;
+  accumulator.totalUsedSteel += sample.totalUsedSteel;
+  accumulator.totalSupplyFuel += sample.totalSupplyFuel;
+  accumulator.totalSupplyBauxite += sample.totalSupplyBauxite;
+  accumulator.totalResourceCost += sample.totalResourceCost;
+  addNested(accumulator.finalOwnSlots, sample.finalBases.map((base) => slotsForPlanes(base)));
+  addNested(accumulator.finalOwnAir, sample.finalOwnAir);
+  addNested(accumulator.finalEnemySlots, sample.enemyFleets.map((enemy) => slotsForEnemy(enemy)));
+  addNested(accumulator.finalEnemyAir, sample.finalEnemyAir);
+  sample.waves.forEach((wave, index) => addWaveSample(accumulator.waves[index], wave));
+}
+
+/** Creates one online wave accumulator. */
+function createWaveAccumulator(template) {
+  return {
+    template,
+    stateCounts: Object.fromEntries(Object.keys(AIR_STATES).map((key) => [key, 0])),
+    fulfilled: 0,
+    enemyAirBefore: 0,
+    enemyAirAfter: 0,
+    ownAirBefore: 0,
+    ownAirAfter: 0,
+    enemySlotsBefore: zeroNested(template.enemySlotsBefore),
+    enemySlotsAfter: zeroNested(template.enemySlotsAfter),
+    ownSlotsBefore: zeroNested(template.ownSlotsBefore),
+    ownSlotsAfter: zeroNested(template.ownSlotsAfter),
+    damage: 0,
+    ownSlotLoss: 0,
+    enemySlotLoss: 0,
+  };
+}
+
+/** Adds one exact wave result to its online accumulator. */
+function addWaveSample(accumulator, wave) {
+  accumulator.stateCounts[wave.state.key] += 1;
+  accumulator.fulfilled += wave.fulfilled ? 1 : 0;
+  accumulator.enemyAirBefore += wave.enemyAirBefore;
+  accumulator.enemyAirAfter += wave.enemyAirAfter;
+  accumulator.ownAirBefore += wave.ownAirBefore;
+  accumulator.ownAirAfter += wave.ownAirAfter;
+  addNested(accumulator.enemySlotsBefore, wave.enemySlotsBefore);
+  addNested(accumulator.enemySlotsAfter, wave.enemySlotsAfter);
+  addNested(accumulator.ownSlotsBefore, wave.ownSlotsBefore);
+  addNested(accumulator.ownSlotsAfter, wave.ownSlotsAfter);
+  accumulator.damage += wave.damage;
+  accumulator.ownSlotLoss += wave.ownSlotLoss;
+  accumulator.enemySlotLoss += wave.enemySlotLoss;
+}
+
+/** Finalizes one wave accumulator to the public Monte Carlo summary shape. */
+function finalizeWaveAccumulator(accumulator, sampleCount) {
+  const template = accumulator.template;
+  return {
+    waveIndex: template.waveIndex,
     baseIndex: template.baseIndex,
     waveInBase: template.waveInBase,
     targetIndex: template.targetIndex,
     targetState: template.targetState,
     stateProbabilities: Object.fromEntries(
-      Object.entries(counts).map(([key, count]) => [key, count / samples.length]),
+      Object.entries(accumulator.stateCounts)
+        .map(([key, count]) => [key, count / sampleCount]),
     ),
-    targetFulfillmentProbability: average(waves.map((wave) => wave.fulfilled ? 1 : 0)),
-    expectedEnemyAirBefore: average(waves.map((wave) => wave.enemyAirBefore)),
-    expectedEnemyAirAfter: average(waves.map((wave) => wave.enemyAirAfter)),
-    expectedOwnAirBefore: average(waves.map((wave) => wave.ownAirBefore)),
-    expectedOwnAirAfter: average(waves.map((wave) => wave.ownAirAfter)),
-    expectedEnemySlotsBefore: averageArrays(waves.map((wave) => wave.enemySlotsBefore)),
-    expectedEnemySlotsAfter: averageArrays(waves.map((wave) => wave.enemySlotsAfter)),
-    expectedOwnSlotsBefore: averageArrays(waves.map((wave) => wave.ownSlotsBefore)),
-    expectedOwnSlotsAfter: averageArrays(waves.map((wave) => wave.ownSlotsAfter)),
-    expectedDamage: average(waves.map((wave) => wave.damage)),
-    expectedOwnSlotLoss: average(waves.map((wave) => wave.ownSlotLoss)),
-    expectedEnemySlotLoss: average(waves.map((wave) => wave.enemySlotLoss)),
+    targetFulfillmentProbability: accumulator.fulfilled / sampleCount,
+    expectedEnemyAirBefore: accumulator.enemyAirBefore / sampleCount,
+    expectedEnemyAirAfter: accumulator.enemyAirAfter / sampleCount,
+    expectedOwnAirBefore: accumulator.ownAirBefore / sampleCount,
+    expectedOwnAirAfter: accumulator.ownAirAfter / sampleCount,
+    expectedEnemySlotsBefore: divideNested(accumulator.enemySlotsBefore, sampleCount),
+    expectedEnemySlotsAfter: divideNested(accumulator.enemySlotsAfter, sampleCount),
+    expectedOwnSlotsBefore: divideNested(accumulator.ownSlotsBefore, sampleCount),
+    expectedOwnSlotsAfter: divideNested(accumulator.ownSlotsAfter, sampleCount),
+    expectedDamage: accumulator.damage / sampleCount,
+    expectedOwnSlotLoss: accumulator.ownSlotLoss / sampleCount,
+    expectedEnemySlotLoss: accumulator.enemySlotLoss / sampleCount,
   };
 }
 
@@ -374,7 +442,9 @@ function normalizeEnemyInputs(options, dispatchMode) {
   const source = options.enemyFleets || options.targets || (options.enemy ? [options.enemy] : []);
   if (dispatchMode === 'separate') {
     if (!Array.isArray(source) || source.length !== 2 || source[0] === source[1]) {
-      throw new Error('Separate dispatch requires two independent enemy fleets or targets.');
+      throw new RangeError(
+        'Separate dispatch requires exactly two independent enemy fleets or targets.',
+      );
     }
     return source.map(normalizeEnemyFleet);
   }
@@ -471,30 +541,29 @@ function nonNegativeFinite(value, fallback) {
   return Number.isFinite(number) && number >= 0 ? number : fallback;
 }
 
-/** Normalizes a positive integer sample count. */
-function normalizeSampleCount(value) {
-  const number = Number(value ?? DEFAULT_SAMPLE_COUNT);
-  return Number.isFinite(number) && number > 0 ? Math.floor(number) : DEFAULT_SAMPLE_COUNT;
-}
-
 /** Sums one slot vector. */
 function sumSlots(slots) {
   return slots.reduce((total, slot) => total + slot, 0);
 }
 
-/** Averages one numeric vector. */
-function average(values) {
-  return values.reduce((total, value) => total + value, 0) / values.length;
+/** Creates a zero-filled numeric structure with the same nested array shape. */
+function zeroNested(values) {
+  return values.map((value) => Array.isArray(value) ? zeroNested(value) : 0);
 }
 
-/** Averages equal-length numeric arrays by index. */
-function averageArrays(arrays) {
-  return arrays[0].map((_value, index) => average(arrays.map((values) => values[index])));
+/** Adds one nested numeric structure into another in place. */
+function addNested(total, values) {
+  values.forEach((value, index) => {
+    if (Array.isArray(value)) addNested(total[index], value);
+    else total[index] += value;
+  });
 }
 
-/** Averages equal-shaped nested numeric arrays. */
-function averageNestedArrays(arrays) {
-  return arrays[0].map((_value, index) => averageArrays(arrays.map((values) => values[index])));
+/** Divides a nested numeric accumulator without mutating it. */
+function divideNested(total, divisor) {
+  return total.map((value) => Array.isArray(value)
+    ? divideNested(value, divisor)
+    : value / divisor);
 }
 
 module.exports = {

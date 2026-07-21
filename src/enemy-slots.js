@@ -26,7 +26,8 @@ function validateAndNormalizeDetailedEnemySlots(slots = [], options = {}) {
     };
   }
 
-  const normalized = source.filter(Boolean).map((slot, slotIndex) => {
+  const normalized = source.flatMap((slot, slotIndex) => {
+    if (!slot) return [];
     const sortie = parseOptionalNumber(slot.sortieAntiAir, slotIndex, 'sortieAntiAir', pathPrefix, errors);
     const current = parseOptionalNumber(slot.currentSlot, slotIndex, 'currentSlot', pathPrefix, errors);
     const maximum = parseOptionalNumber(slot.maxSlot, slotIndex, 'maxSlot', pathPrefix, errors);
@@ -48,13 +49,13 @@ function validateAndNormalizeDetailedEnemySlots(slots = [], options = {}) {
       }));
     }
 
-    return {
+    return [{
       instanceId: slot.instanceId ?? `enemy-slot-${slotIndex}`,
       name: typeof slot.name === 'string' ? slot.name : '',
       sortieAntiAir: sortie.present ? sortie.value : 0,
       currentSlot,
       maxSlot,
-    };
+    }];
   });
 
   return { valid: errors.length === 0, slots: normalized, errors };

@@ -12,6 +12,8 @@ const { aircraftEquivalenceKey } = require('./aircraft');
 const { calculateBaseDamagePower } = require('./damage');
 const { monteCarloWaveSequence } = require('./wave-simulator');
 const INVENTORY_KEY_CACHE = Symbol('inventoryKeyCache');
+const MIN_SCORE = -Number.MAX_VALUE;
+const MAX_SCORE = Number.MAX_VALUE;
 
 /**
  * Builds the shared lexicographic score for a complete or optimistic plan.
@@ -19,8 +21,21 @@ const INVENTORY_KEY_CACHE = Symbol('inventoryKeyCache');
  * @returns {Record<string, any>} Canonical lexicographic score fields.
  */
 function scorePlan(plan) {
-  if (isPlanScore(plan)) {
-    return plan;
+  if (isPlanScoreShape(plan)) {
+    const detailedScore = isDetailedScore(plan);
+    return {
+      ...(detailedScore ? {
+        fulfillment: finiteNumber(plan.fulfillment, 0),
+      } : {}),
+      damage: finiteNumber(plan.damage, 0),
+      ...(detailedScore ? {
+        loss: finiteNumber(plan.loss, 0),
+      } : {}),
+      resource: finiteNumber(plan.resource, 0),
+      margin: finiteNumber(plan.margin, MIN_SCORE),
+      scarcity: finiteNumber(plan.scarcity, 0),
+      canonicalKey: String(plan.canonicalKey ?? ''),
+    };
   }
   if (plan?.calculationMode === 'detailed' ||
       plan?.allWaveTargetFulfillmentProbability != null) {
@@ -29,17 +44,17 @@ function scorePlan(plan) {
       damage: finiteNumber(plan?.totalDamagePower, 0),
       loss: -finiteNumber(plan?.totalExpectedLoss, 0),
       resource: -finiteNumber(plan?.totalResourceCost, 0),
-      margin: finiteNumber(plan?.worstMargin, Number.NEGATIVE_INFINITY),
+      margin: finiteNumber(plan?.worstMargin, MIN_SCORE),
       scarcity: -finiteNumber(plan?.scarcityCost, 0),
-      canonicalKey: plan?.canonicalKey ?? canonicalPlanKey(plan),
+      canonicalKey: String(plan?.canonicalKey ?? canonicalPlanKey(plan)),
     };
   }
   return {
     damage: finiteNumber(plan?.totalDamagePower, 0),
     resource: -finiteNumber(plan?.totalResourceCost, 0),
-    margin: finiteNumber(plan?.worstMargin, Number.NEGATIVE_INFINITY),
+    margin: finiteNumber(plan?.worstMargin, MIN_SCORE),
     scarcity: -finiteNumber(plan?.scarcityCost, 0),
-    canonicalKey: plan?.canonicalKey ?? canonicalPlanKey(plan),
+    canonicalKey: String(plan?.canonicalKey ?? canonicalPlanKey(plan)),
   };
 }
 
@@ -89,8 +104,8 @@ function optimisticPlanScore(partial, remainingGroups, context = {}) {
   }
 
   const partialMargin = partial?.bases?.length
-    ? finiteNumber(partial.worstMargin, Number.NEGATIVE_INFINITY)
-    : Number.POSITIVE_INFINITY;
+    ? finiteNumber(partial.worstMargin, MIN_SCORE)
+    : MAX_SCORE;
   return {
     damage: finiteNumber(partial?.totalDamagePower, 0) +
       envelopes.reduce((total, envelope) => total + envelope.maxDamage, 0),
@@ -325,11 +340,11 @@ function planeAttackScore(plane) {
 }
 
 /** Detects a score object without recursively rescoring it. */
-function isPlanScore(value) {
+function isPlanScoreShape(value) {
   return value != null &&
-    Number.isFinite(value.damage) &&
-    Number.isFinite(value.resource) &&
-    typeof value.canonicalKey === 'string';
+    Object.prototype.hasOwnProperty.call(value, 'damage') &&
+    Object.prototype.hasOwnProperty.call(value, 'resource') &&
+    Object.prototype.hasOwnProperty.call(value, 'canonicalKey');
 }
 
 /** Detects the extended detailed score without changing the legacy static shape. */
@@ -341,7 +356,7 @@ function isDetailedScore(value) {
 
 /** Compares finite and infinite numeric score fields. */
 function compareNumber(left, right) {
-  if (Object.is(left, right)) return 0;
+  if (left === right) return 0;
   return left > right ? 1 : -1;
 }
 
@@ -351,10 +366,11 @@ function compareCanonicalKeys(left = '', right = '') {
   return left < right ? 1 : -1;
 }
 
-/** Converts numeric input while preserving explicit infinities. */
+/** Converts numeric input to a finite value and canonicalizes signed zero. */
 function finiteNumber(value, fallback) {
   const number = Number(value);
-  return Number.isNaN(number) ? fallback : number;
+  const normalized = Number.isFinite(number) ? number : fallback;
+  return normalized === 0 ? 0 : normalized;
 }
 
 /** Reads a per-search key cache without leaking stale keys across optimizer calls. */

@@ -4,6 +4,10 @@ const {
   detailedEnemyValidationError,
   validateAndNormalizeDetailedEnemySlots,
 } = require('./enemy-slots');
+const {
+  DEFAULT_SAMPLE_COUNT,
+  validateSampleCount,
+} = require('./simulation-options');
 
 const SLOTS_PER_BASE = 4;
 const WAVES_PER_BASE = 2;
@@ -188,13 +192,13 @@ function normalizeEnemy(enemy = {}) {
 /** Preserves invalid UI inputs so repeated normalization cannot erase errors. */
 function preserveDetailedSlotInputs(slots = []) {
   if (!Array.isArray(slots)) return slots;
-  return slots.filter(Boolean).map((slot, index) => ({
+  return slots.flatMap((slot, index) => slot ? [{
     instanceId: slot.instanceId ?? `enemy-slot-${index}`,
     name: typeof slot.name === 'string' ? slot.name : '',
     sortieAntiAir: slot.sortieAntiAir,
     currentSlot: slot.currentSlot,
     maxSlot: slot.maxSlot,
-  }));
+  }] : []);
 }
 
 /** Strictly normalizes valid detailed enemy slots and throws for explicit bad values. */
@@ -245,19 +249,23 @@ function removeDetailedEnemySlot(state, slotIndex) {
 
 /** Returns stable simulation defaults while preserving an explicit zero-like seed. */
 function createDefaultSimulationOptions() {
-  return { seed: 0, sampleCount: 1000, dispatchMode: 'concentrated' };
+  return { seed: 0, sampleCount: DEFAULT_SAMPLE_COUNT, dispatchMode: 'concentrated' };
 }
 
 /** Normalizes Monte Carlo controls used by simulator and optimizer callers. */
 function normalizeSimulationOptions(options = {}) {
   const defaults = createDefaultSimulationOptions();
-  const sampleCount = Number(options?.sampleCount);
+  const validation = validateSampleCount(options?.sampleCount, {
+    path: 'simulationOptions.sampleCount',
+  });
   return {
     seed: options?.seed ?? defaults.seed,
-    sampleCount: Number.isFinite(sampleCount) && sampleCount > 0
-      ? Math.floor(sampleCount)
-      : defaults.sampleCount,
+    sampleCount: validation.valid ? validation.sampleCount : options?.sampleCount,
     dispatchMode: options?.dispatchMode === 'separate' ? 'separate' : 'concentrated',
+    ...(validation.valid ? {} : {
+      valid: false,
+      errors: validation.errors,
+    }),
   };
 }
 

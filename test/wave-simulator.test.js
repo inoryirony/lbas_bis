@@ -69,7 +69,16 @@ describe('wave simulator', () => {
       bases: [[fighter('fighter')]],
       enemy: enemyFleet('one', 18),
       dispatchMode: 'separate',
-    })).toThrow(/two independent/i);
+    })).toThrow(RangeError);
+    expect(() => simulateWaveSequence({
+      bases: [[fighter('fighter')]],
+      enemyFleets: [
+        enemyFleet('one', 18),
+        enemyFleet('two', 18),
+        enemyFleet('three', 18),
+      ],
+      dispatchMode: 'separate',
+    })).toThrow(/exactly two independent/i);
 
     const result = simulateWaveSequence({
       bases: [[fighter('fighter')]],
@@ -193,6 +202,17 @@ describe('wave simulator', () => {
     expect(monteCarloWaveSequence({ ...options, seed: 'different' }))
       .not.toEqual(result);
   });
+
+  test.each([0, 0.5, -1, Number.NaN, Number.POSITIVE_INFINITY, 10001])(
+    'rejects invalid direct Monte Carlo sampleCount %s',
+    (sampleCount) => {
+      expect(() => monteCarloWaveSequence({
+        bases: [[fighter('fighter')]],
+        enemy: enemyFleet('same-node', 18),
+        sampleCount,
+      })).toThrow(RangeError);
+    },
+  );
 
   test('keeps physical slot indices stable when a loadout contains null slots', () => {
     const calls = [];

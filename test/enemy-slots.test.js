@@ -77,4 +77,20 @@ describe('detailed enemy slot validation', () => {
       field: 'currentSlot',
     }));
   });
+
+  test('retains original sparse indices for errors and generated identities', () => {
+    const result = validateAndNormalizeDetailedEnemySlots([
+      null,
+      { sortieAntiAir: 9, currentSlot: 18, maxSlot: 18 },
+      undefined,
+      { sortieAntiAir: -1, currentSlot: 4, maxSlot: 4 },
+    ]);
+
+    expect(result.slots[0].instanceId).toBe('enemy-slot-1');
+    expect(result.slots[1].instanceId).toBe('enemy-slot-3');
+    expect(result.errors).toContainEqual(expect.objectContaining({
+      path: 'enemy.slots[3].sortieAntiAir',
+      slotIndex: 3,
+    }));
+  });
 });
