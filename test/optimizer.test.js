@@ -30,7 +30,7 @@ describe('LBAS optimizer MVP', () => {
     expect(result.results[0].bases).toHaveLength(2);
 
     const usedIds = result.results[0].bases.flatMap((base) =>
-      base.loadout.map((item) => item.instanceId),
+      base.loadout.filter(Boolean).map((item) => item.instanceId),
     );
     expect(new Set(usedIds).size).toBe(usedIds.length);
   });
@@ -342,6 +342,220 @@ describe('LBAS optimizer MVP', () => {
       base.loadout.map((item) => item.instanceId),
     );
     expect(usedIds.filter((id) => id === 'locked-fighter')).toHaveLength(1);
+  });
+
+  test('allows a three-plane optimum and preserves the fourth slot as null', () => {
+    const result = optimizeLoadouts({
+      equipment: [
+        plane('fighter', { antiAir: 12, radius: 7, role: 'fighter', isLandBased: true }),
+        plane('attacker-1', { antiAir: 2, radius: 8, role: 'attacker', torpedo: 14, isLandBased: true }),
+        plane('attacker-2', { antiAir: 2, radius: 8, role: 'attacker', torpedo: 13, isLandBased: true }),
+      ],
+      baseCount: 1,
+      targetRadius: 7,
+      enemyAir: 60,
+      targetStates: ['parity', 'parity'],
+      maxResults: 1,
+    });
+
+    expect(result.search.status).toBe('optimal');
+    expect(result.results[0].bases[0].loadout.filter(Boolean)).toHaveLength(3);
+    expect(result.results[0].bases[0].loadout[3]).toBeNull();
+  });
+
+  test('allows a zero-plane base when the static target and radius permit it', () => {
+    const result = optimizeLoadouts({
+      equipment: [],
+      baseCount: 1,
+      targetRadius: 0,
+      enemyAir: 0,
+      targetStates: ['none', 'none'],
+      maxResults: 1,
+    });
+
+    expect(result.search.status).toBe('optimal');
+    expect(result.results[0].bases[0].loadout).toEqual([null, null, null, null]);
+  });
+
+  test('keeps a locked empty slot empty while filling other slots', () => {
+    const result = optimizeLoadouts({
+      equipment: [
+        plane('fighter', { antiAir: 12, radius: 7, role: 'fighter', isLandBased: true }),
+        plane('attacker-1', { radius: 8, role: 'attacker', torpedo: 14, isLandBased: true }),
+        plane('attacker-2', { radius: 8, role: 'attacker', torpedo: 13, isLandBased: true }),
+        plane('attacker-3', { radius: 8, role: 'attacker', torpedo: 12, isLandBased: true }),
+      ],
+      baseCount: 1,
+      targetRadius: 7,
+      enemyAir: 40,
+      targetStates: ['parity', 'parity'],
+      lockedBases: [{ slots: [
+        { plane: null, locked: false },
+        { plane: null, locked: true },
+        { plane: null, locked: false },
+        { plane: null, locked: false },
+      ] }],
+      maxResults: 1,
+    });
+
+    expect(result.results[0].bases[0].loadout[1]).toBeNull();
+    expect(result.results[0].bases[0].loadout.filter(Boolean)).toHaveLength(3);
+  });
+
+  test('globally reserves an item locked in a later base', () => {
+    const reserved = plane('reserved-later', {
+      antiAir: 14,
+      radius: 7,
+      role: 'fighter',
+      isLandBased: true,
+    });
+    const result = optimizeLoadouts({
+      equipment: [
+        reserved,
+        plane('fighter-2', { antiAir: 12, radius: 7, role: 'fighter', isLandBased: true }),
+        ...Array.from({ length: 6 }, (_, index) => plane(`attacker-${index}`, {
+          antiAir: 2,
+          radius: 8,
+          role: 'attacker',
+          torpedo: 14 - index,
+          isLandBased: true,
+        })),
+      ],
+      baseCount: 2,
+      targetRadius: 7,
+      enemyAir: 40,
+      targetStates: ['parity', 'parity', 'parity', 'parity'],
+      lockedBases: [
+        { slots: [] },
+        { slots: [{ plane: reserved, locked: true }] },
+      ],
+      maxResults: 1,
+    });
+
+    const usedIds = result.results[0].bases.flatMap((base) =>
+      base.loadout.filter(Boolean).map((item) => item.instanceId),
+    );
+    expect(usedIds.filter((id) => id === reserved.instanceId)).toHaveLength(1);
+    expect(result.results[0].bases[1].loadout[0].instanceId).toBe(reserved.instanceId);
+  });
+
+  test.each([
+    ['duplicate', [
+      { slots: [{ plane: plane('locked', { radius: 7 }), locked: true }] },
+      { slots: [{ plane: plane('locked', { radius: 7 }), locked: true }] },
+    ]],
+    ['missing', [
+      { slots: [{ plane: plane('not-in-inventory', { radius: 7 }), locked: true }] },
+    ]],
+  ])('returns invalid_input for %s locked instance IDs', (_label, lockedBases) => {
+    const result = optimizeLoadouts({
+      equipment: [plane('locked', { antiAir: 12, radius: 7, role: 'fighter' })],
+      baseCount: lockedBases.length,
+      targetRadius: 7,
+      enemyAir: 0,
+      targetStates: ['supremacy'],
+      lockedBases,
+    });
+
+    expect(result.results).toEqual([]);
+    expect(result.search).toEqual(expect.objectContaining({
+      mode: 'branch-and-bound',
+      status: 'invalid_input',
+      provenOptimal: false,
+    }));
+  });
+
+  test('reports budget exhaustion without claiming infeasibility', () => {
+    const result = optimizeLoadouts({
+      equipment: Array.from({ length: 5 }, (_, index) => plane(`fighter-${index}`, {
+        antiAir: 8 + index,
+        radius: 7,
+        role: 'fighter',
+      })),
+      baseCount: 1,
+      targetRadius: 7,
+      enemyAir: 40,
+      targetStates: ['parity', 'parity'],
+      nodeBudget: 1,
+    });
+
+    expect(result.search).toEqual(expect.objectContaining({
+      status: 'budget_exhausted',
+      provenOptimal: false,
+      budget: 1,
+    }));
+  });
+
+  test('does not exhaust a budget that ends exactly on the only leaf', () => {
+    const fighter = plane('only-locked', { antiAir: 12, radius: 7, role: 'fighter' });
+    const result = optimizeLoadouts({
+      equipment: [fighter],
+      baseCount: 1,
+      targetRadius: 7,
+      enemyAir: 0,
+      targetStates: ['supremacy', 'supremacy'],
+      lockedBases: [{ slots: [
+        { plane: fighter, locked: true },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+      ] }],
+      nodeBudget: 2,
+    });
+
+    expect(result.search).toEqual(expect.objectContaining({
+      status: 'optimal',
+      nodesExplored: 2,
+      provenOptimal: true,
+    }));
+  });
+
+  test('reports infeasible only after exhausting the search', () => {
+    const result = optimizeLoadouts({
+      equipment: [plane('short', { antiAir: 20, radius: 2, role: 'fighter' })],
+      baseCount: 1,
+      targetRadius: 9,
+      enemyAir: 72,
+      targetStates: ['parity', 'parity'],
+      nodeBudget: Infinity,
+    });
+
+    expect(result.results).toEqual([]);
+    expect(result.search).toEqual(expect.objectContaining({
+      status: 'infeasible',
+      provenOptimal: true,
+    }));
+  });
+
+  test('does not truncate the only feasible target-air combination after 72 distractions', () => {
+    const distractions = Array.from({ length: 73 }, (_, index) => plane(`damage-${index}`, {
+      antiAir: 1,
+      radius: 7,
+      role: 'attacker',
+      torpedo: 20,
+      bombing: 20,
+      isLandBased: true,
+    }));
+    const fighter = plane('only-fighter', {
+      antiAir: 8,
+      radius: 7,
+      role: 'fighter',
+      isLandBased: true,
+    });
+
+    const result = optimizeLoadouts({
+      equipment: [...distractions, fighter],
+      baseCount: 1,
+      targetRadius: 7,
+      enemyAir: 63,
+      targetStates: ['parity', 'parity'],
+      maxResults: 1,
+      nodeBudget: Infinity,
+    });
+
+    expect(result.search.status).toBe('optimal');
+    expect(result.results[0].bases[0].loadout.filter(Boolean).map((item) => item.instanceId))
+      .toContain('only-fighter');
   });
 });
 

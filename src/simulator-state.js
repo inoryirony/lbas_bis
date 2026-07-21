@@ -66,6 +66,7 @@ function setBaseSlot(state, baseIndex, slotIndex, slotPatch) {
   });
 }
 
+/** Toggles a slot lock without treating an explicitly empty slot as unlocked. */
 function setSlotLock(state, baseIndex, slotIndex, locked) {
   return setBaseSlot(state, baseIndex, slotIndex, { locked: Boolean(locked) });
 }
@@ -88,6 +89,7 @@ function setWaveTarget(state, waveIndex, targetState) {
   });
 }
 
+/** Exports legacy slot objects while preserving locked null as a real constraint. */
 function simulatorToOptimizerInput(state) {
   const normalized = normalizeSimulatorState(state);
   return {
@@ -152,11 +154,12 @@ function normalizeBases(bases = [], baseCount) {
   });
 }
 
+/** Normalizes four simulator slots without erasing explicit null locks. */
 function normalizeSlots(slots = []) {
   return Array.from({ length: SLOTS_PER_BASE }, (_, slotIndex) => {
     const slot = slots[slotIndex] || {};
     return {
-      plane: slot.plane || null,
+      plane: slot.plane ?? null,
       locked: Boolean(slot.locked),
       proficiency: slot.proficiency ?? null,
       improvement: slot.improvement ?? null,

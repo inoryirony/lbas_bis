@@ -70,6 +70,19 @@ describe('simulator state', () => {
       ],
     });
   });
+
+  test('preserves an explicitly locked empty slot for optimizer input', () => {
+    const state = setSlotLock(createEmptySimulatorState(), 0, 1, true);
+
+    expect(state.bases[0].slots[1]).toEqual(expect.objectContaining({
+      plane: null,
+      locked: true,
+    }));
+    expect(simulatorToOptimizerInput(state).lockedBases[0].slots[1]).toEqual({
+      plane: null,
+      locked: true,
+    });
+  });
 });
 
 function plane(instanceId, overrides = {}) {
