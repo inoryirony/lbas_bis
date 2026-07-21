@@ -21,11 +21,11 @@ Replace the current fixed-enemy-air heuristic recommender with a correctness-ori
 
 Each plane keeps its inventory identity and gains independent capability flags derived from the API equipment type and icon type:
 
-`isPlane`, `isFighter`, `isAttacker`, `isLandAttacker`, `isHeavyLandAttacker`, `isRecon`, `isLandRecon`, `isBakusen`, `isAswPatrol`, `isJet`, and `isHeavyJet`.
+`isPlane`, `isFighter`, `isAttacker`, `isLandAttacker`, `isHeavyLandAttacker`, `isRecon`, `isLandRecon`, `isBakusen`, `isAswPatrol`, `isAutoGyro`, `isAswBomber1`, `isAswBomber2`, `blocksRangeExtension`, `isJet`, and `isHeavyJet`.
 
 LBAS slot sizes are capability-driven: recon 4, heavy land attacker 9, other aircraft 18. Range starts with the minimum radius of every equipped plane. A longer recon may extend that minimum by the game formula; a non-attacking ASW patrol plane disables extension. Empty slots do not participate.
 
-Visible proficiency is stored separately from internal proficiency. If Poi supplies only the visible level, calculations expose a lower and upper air-power bound for that visible band. The existing uniform visible-level threshold remains available but is named as such; it is not presented as per-aircraft optimization.
+Visible proficiency is stored separately from internal proficiency. If Poi supplies only the visible level, calculations expose a lower and upper air-power bound for that visible band. Hard target checks use the lower bound so a result means the target is guaranteed across the visible band; the upper bound is displayed as a possible value. The existing uniform visible-level threshold remains available but is named as such; it is not presented as per-aircraft optimization.
 
 ## Air State And Wave Model
 
@@ -34,7 +34,7 @@ Visible proficiency is stored separately from internal proficiency. If Poi suppl
 Enemy input supports two modes:
 
 - `static`: only total enemy air power is known. Every wave uses the same value and the UI labels all output as a static estimate.
-- `detailed`: enemy slots contain plane anti-air, current count, and optional identity. A seeded Monte Carlo simulation evaluates waves in actual order. Each wave calculates current air powers, determines state, applies stage-one losses to both sides, updates slot counts, and advances to the next wave. The first implementation excludes enemy fleet anti-air stage two unless the required enemy anti-air data is present, and reports that limitation in simulation metadata.
+- `detailed`: enemy slots contain plane anti-air, current count, and optional identity. A seeded Monte Carlo simulation evaluates waves in actual order. Each wave calculates current air powers, determines state, applies enemy stage-one losses, updates slot counts, and advances to the next wave. When a base concentrates both waves on this enemy, its own stage-one loss is applied only after the second wave; a separately dispatched base applies it after each wave. The first implementation excludes enemy fleet anti-air stage two unless the required enemy anti-air data is present, and reports that limitation in simulation metadata.
 
 The simulator returns state probabilities, expected remaining slots, expected enemy air power, expected own air power, expected damage proxy, and the seed/sample count used.
 
@@ -49,17 +49,20 @@ Equipment instances with identical optimization-relevant properties are grouped 
 - attainable target radius;
 - attainable air-power target for each base or wave model.
 
-Search uses a lexicographic objective shared by candidate comparison, pruning, and final ranking:
+Static search treats every requested wave target as a hard constraint. Among feasible plans it uses a lexicographic objective shared by candidate comparison, pruning, and final ranking:
 
-1. all requested wave targets fulfilled (or highest detailed-simulation fulfillment probability);
-2. expected damage proxy;
-3. lower expected aircraft loss and resource cost;
-4. air-power margin;
-5. lower missing-equipment and scarcity cost.
+1. expected damage proxy;
+2. lower expected aircraft loss and resource cost;
+3. air-power margin;
+4. lower missing-equipment and scarcity cost.
 
-Branch-and-bound computes optimistic remaining air power and damage. It prunes only when a hard constraint cannot be met or the optimistic score cannot enter Top K. Search metadata contains `status`, `nodesExplored`, `budget`, `provenOptimal`, and `mode`. Status is one of `optimal`, `infeasible`, or `budget_exhausted`; an exhausted search is never called infeasible.
+Branch-and-bound builds a relaxed single-base envelope for every unassigned base using the current remaining groups while ignoring competition with other unassigned bases. This envelope exactly checks that base's slots, range, recon multiplier, and target threshold, and returns independent optimistic damage and margin values. Reusing the same group in multiple relaxed envelopes is allowed because it can only make the bound more optimistic. A branch is pruned only when an envelope is infeasible or its score is strictly worse than the current Kth score; equality is retained for deterministic tie-breaking.
 
-For small inventories, a separate exhaustive oracle enumerates all legal assignments. Randomized regression tests compare the optimizer's best score and feasibility result against this oracle.
+Top K contains unique equivalence-count plans rather than permutations or plans differing only by interchangeable instance IDs. Materialization maps each group count to stable sorted instance IDs. Search metadata contains `status`, `nodesExplored`, `budget`, `provenOptimal`, and `mode`. Status is one of `optimal`, `infeasible`, `budget_exhausted`, or `invalid_input`; an exhausted search is never called infeasible. Reaching the budget exactly is not exhaustion unless an additional node remains unexplored.
+
+Detailed simulation ranks plans first by all-wave fulfillment probability, then by expected damage, loss/resource cost, margin, and scarcity. Every plan uses common random numbers derived from `(seed, sample, wave, side, slot)` so its score is independent of traversal order. Until a valid probability/expected-damage upper bound exists, detailed mode does not use score pruning and can claim `provenOptimal` only after complete enumeration.
+
+For small inventories, a separate exhaustive oracle enumerates all legal assignments and canonicalizes them to the same equivalence-count plan identity. Randomized regression tests compare complete Top K scores, canonical plan keys, feasibility, and status against this oracle. Bound property tests exhaustively complete random partial states and verify every reported optimistic bound is at least the true best completion.
 
 ## UI And Compatibility
 

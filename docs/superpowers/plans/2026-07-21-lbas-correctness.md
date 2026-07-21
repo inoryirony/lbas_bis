@@ -24,7 +24,7 @@
 
 - [ ] **Step 1: Add failing capability and formula tests**
 
-Add fixtures for API type 53 heavy land attackers, type 49 land recon, type 41 flying boats, types 25/26 ASW patrol, type 57 jets, and known bakusen IDs. Assert:
+Add fixtures for API type 53 heavy land attackers, type 49 land recon, type 41 flying boats, types 25/26 ASW patrol, type 56 fighters, type 57 jets, and known bakusen IDs. Add negative fixtures proving types 54/58/59 are not aircraft. Assert:
 
 ```js
 expect(capabilitiesFor({ masterId: 500, equipType: 53 })).toEqual(expect.objectContaining({
@@ -63,7 +63,9 @@ The equivalence key must include every search-relevant property, improvement, pr
 
 - [ ] **Step 4: Update Poi extraction and formulas**
 
-Populate `equipType`, `iconType`, `asw`, independent flags, and optional `internalProficiency`. Keep `role` only for compatibility. In `air-power.js`, add `AIR_STATES.none`, `airStateFor(airPower, enemyAir, hasPlane = true)`, proficiency band helpers, capability-based improvement rules, all-plane minimum range, and the ASW extension prohibition. Make damage call `defaultSlotSizeForPlane` unless an explicit current slot is passed.
+Populate `equipType`, `iconType`, `asw`, `scout`, independent flags, and optional `internalProficiency`. Split type 26 into bombing 0, 1-3, and 4+ behavior and derive `blocksRangeExtension`. Keep `role` only for compatibility. In `air-power.js`, add `AIR_STATES.none`, `airStateFor(airPower, enemyAir, hasPlane = true)`, proficiency band helpers, capability-based improvement rules, all-plane minimum range, and the ASW extension prohibition. Land-recon air-power coefficients use type 49 and scout 8/9, not master IDs. Hard target checks use visible-band lower bounds and summaries expose possible upper bounds.
+
+In `damage.js`, treat this as a clearly named generic-surface-target power proxy: use nullish current slot handling so slot 0 remains 0; use actual torpedo/bombing plus applicable improvement; use type-specific pre-cap formulas (type 47 uses `0.8 * stat * sqrt(1.8 * slot) + 20`, type 53 uses `0.8 * stat * sqrt(1.8 * slot) + 25`, other supported attackers use their reference category multiplier); apply the 220 soft cap `floor(power > 220 ? 220 + sqrt(power - 220) : power)`; and apply the post-cap 1.8 multiplier only to type 47. Keep target-specific bonuses out and label the result a proxy.
 
 - [ ] **Step 5: Run focused tests and typecheck**
 
@@ -101,6 +103,7 @@ expect(budgeted.search).toEqual(expect.objectContaining({
   provenOptimal: false,
 }));
 expect(confirmedImpossible.search.status).toBe('infeasible');
+expect(duplicateLocked.search.status).toBe('invalid_input');
 ```
 
 Include a fixture with more than 72 distracting items where the only feasible target-air combination previously fell outside the pool, and a two-base scarce-fighter fixture whose known global optimum differs from greedy base-first selection.
@@ -121,33 +124,33 @@ function comparePlanScores(left, right)
 function optimisticPlanScore(partial, remainingGroups, context)
 ```
 
-The tuple order is fulfilled probability/count, damage, negative expected loss/resource cost, margin, and negative scarcity/missing cost. Candidate ordering, bound checks, and final result sorting must use these functions.
+Static targets are hard constraints. The static tuple order is damage, negative expected loss/resource cost, margin, and negative scarcity/missing cost. Candidate ordering, bound checks, and final result sorting must use these functions. A canonical equivalence-count plan key is the deterministic final tie-break; Top K excludes plans that differ only by slot permutation or interchangeable instance IDs.
 
 - [ ] **Step 4: Implement the exhaustive oracle**
 
-`exhaustiveOptimize(options)` enumerates legal `null | equipment instance` assignments for up to the configured small-case limit, respects locked empty/equipment slots globally, and returns the same `{ messages, results, search }` shape as the main optimizer. It is test-only/reference code but ships as a pure module for randomized checks.
+`exhaustiveOptimize(options)` independently enumerates legal `null | equipment instance` assignments for up to the configured small-case limit, respects locked empty/equipment slots globally, canonicalizes equivalent plans, and returns the same `{ messages, results, search }` shape as the main optimizer. It shares formulas and the final comparator, but no production traversal or pruning code.
 
 - [ ] **Step 5: Replace fixed truncation with grouped branch-and-bound**
 
 Normalize four slot constraints without erasing locked nulls. Reserve every locked instance before searching. Group equivalent equipment by `aircraftEquivalenceKey`, recurse over counts and explicit empty slots, and track selected stable instance IDs only when materializing a result. Apply radius, inventory, locks, and target-air feasibility before score pruning.
 
-Return:
+Before recursion, normalize each slot to exactly one of `LOCKED_ITEM`, `LOCKED_EMPTY`, or `OPEN`. Duplicate or missing locked instance IDs return `invalid_input`. Return:
 
 ```js
 search: {
   mode: 'branch-and-bound',
-  status: 'optimal' | 'infeasible' | 'budget_exhausted',
+  status: 'optimal' | 'infeasible' | 'budget_exhausted' | 'invalid_input',
   nodesExplored,
   budget,
   provenOptimal,
 }
 ```
 
-Do not use equipment-pool, per-base-candidate, or found-result fixed stop constants. `maxResults` limits retained Top K output, not exploration.
+Do not use equipment-pool, per-base-candidate, or found-result fixed stop constants. `maxResults` limits retained Top K output, not exploration. For every unassigned base, enumerate a relaxed single-base envelope from the current remaining groups while ignoring competition with other unassigned bases. The envelope exactly applies slots, radius, recon multiplier, slot size, and both static wave targets, and returns independent maximum damage and margin. Reusing a group in several base envelopes is deliberately optimistic. Prune only when an envelope is infeasible or `compareScore(upperBound, kthScore) < 0`; never prune equality.
 
 - [ ] **Step 6: Add randomized oracle comparison**
 
-Generate deterministic small inventories with a seeded test RNG. For at least 100 cases, compare feasibility and best score between `optimizeLoadouts({ nodeBudget: Infinity })` and `exhaustiveOptimize`.
+Generate deterministic small inventories with a seeded test RNG. For at least 100 cases, compare feasibility, status, complete Top K scores, and canonical plan keys between `optimizeLoadouts({ nodeBudget: Infinity })` and `exhaustiveOptimize`. Also generate random partial search states, exhaustively enumerate their completions, and assert the production upper bound is never lower than the true best completion.
 
 - [ ] **Step 7: Run focused tests and typecheck**
 
@@ -173,7 +176,7 @@ Expected: regressions and 100 randomized oracle comparisons pass.
 
 - [ ] **Step 1: Add failing deterministic simulation tests**
 
-Create a detailed enemy with two slots and fixed random samples. Assert the first wave changes slot counts and enemy air power before wave two, the same seed reproduces exactly, and total-air-only input returns `mode: 'static'` without slot mutation.
+Create a detailed enemy with two slots and fixed random samples. Assert the first wave changes enemy slot counts and enemy air power before wave two, a concentrated base does not lose its own aircraft until its second wave, a separately dispatched base loses aircraft after each wave, the same seed reproduces exactly, and total-air-only input returns `mode: 'static'` without slot mutation.
 
 ```js
 expect(result.mode).toBe('detailed');
@@ -191,7 +194,7 @@ Expected: missing simulator module and repeated fixed enemy air fail.
 
 - [ ] **Step 3: Implement seeded random and stage-one loss formulas**
 
-`src/random.js` exports `createSeededRandom(seed)`. `src/wave-simulator.js` exports documented functions:
+`src/random.js` exports `createSeededRandom(seed)` and a deterministic common-random-number helper keyed by `(seed, sample, wave, side, slot, draw)`. `src/wave-simulator.js` exports documented functions:
 
 ```js
 function playerStageOneLoss(stateKey, slotSize, random)
@@ -200,7 +203,7 @@ function simulateWaveSequence(options)
 function monteCarloWaveSequence(options)
 ```
 
-Use the reference formulas from `noro6/kc-web`: player constants `[1,3,5,7,10]` and enemy constants `[10,8,6,4,1]`, mapped from supremacy through loss. Clamp slots at zero and recompute air power from current slots after each wave.
+Use the reference formulas from `noro6/kc-web`: player constants `[1,3,5,7,10]` and enemy constants `[10,8,6,4,1]`, explicitly mapped from supremacy through loss rather than using rank as an array index. Player loss uses the reference 0.001-discrete random draw, jets multiply raw loss by 0.6, and non-attacking ASW patrol planes multiply it by 0.91. Clamp slots at zero and recompute air power from current slots after each wave. Enemy loss always occurs after a wave; own loss timing follows concentrated/separate dispatch semantics.
 
 - [ ] **Step 4: Extend enemy state and summaries**
 
@@ -208,7 +211,7 @@ Detailed enemy slots use `{ instanceId, name, antiAir, currentSlot, maxSlot }`. 
 
 - [ ] **Step 5: Integrate simulation metadata into plan summaries**
 
-Plans receive wave probabilities and expected damage/loss metrics when detailed enemy data is present. Static plans remain branch-and-bound on deterministic thresholds and state `STATIC_ENEMY_AIR`.
+Plans receive wave probabilities and expected damage/loss metrics when detailed enemy data is present. Static plans remain branch-and-bound on deterministic hard thresholds and state `STATIC_ENEMY_AIR`. Detailed plan ranking is a pure function of plan plus simulation options; until a proven probability bound is implemented, it performs no score pruning and reports `provenOptimal: true` only after complete enumeration.
 
 - [ ] **Step 6: Run focused tests and typecheck**
 
@@ -305,4 +308,4 @@ Check `git status --short --branch`, `git diff --check`, and `git diff --stat`. 
 
 - Spec coverage: capability model and formulas are Task 1; empty slots, locks, exact-status search, grouping, branch-and-bound, exhaustive oracle, and random comparisons are Task 2; sequential state mutation and Monte Carlo are Task 3; user-visible honesty and controls are Task 4; cross-reference and release checks are Task 5.
 - Placeholder scan: no deferred implementation markers or unspecified test steps remain.
-- Type consistency: detailed enemy slots use `currentSlot/maxSlot`; search status uses `optimal/infeasible/budget_exhausted`; every optimizer path returns `{ messages, results, search }`; `provenOptimal` is true only for completed exhaustive or branch-and-bound search.
+- Type consistency: detailed enemy slots use `currentSlot/maxSlot`; search status uses `optimal/infeasible/budget_exhausted/invalid_input`; every optimizer path returns `{ messages, results, search }`; `provenOptimal` is true only for completed exhaustive or branch-and-bound search, and detailed score pruning is disabled until a proven bound exists.
