@@ -5,8 +5,10 @@ const {
   buildEquipmentChoices,
   defaultBlacklistedMasterIds,
   filterOptimizationEquipment,
+  filterBlacklistChoices,
   rankEquipmentMatches,
   sortEquipmentChoices,
+  uniqueEquipmentMasters,
 } = equipmentFilter;
 
 describe('equipment candidate filters', () => {
@@ -103,6 +105,19 @@ describe('equipment candidate filters', () => {
     ];
 
     expect(defaultBlacklistedMasterIds(equipment)).toEqual([20, 22]);
+  });
+
+  test('orders blacklist equipment by type then name and hides masters from blacklisted types', () => {
+    const equipment = [
+      plane('fighter-z', 31, 48, { name: 'Zulu Fighter' }),
+      plane('attacker-z', 32, 47, { name: 'Zulu Attacker', isLandBased: true }),
+      plane('attacker-a', 33, 47, { name: 'Alpha Attacker', isLandBased: true }),
+    ];
+    const masters = uniqueEquipmentMasters(equipment);
+
+    expect(masters.map((item) => item.masterId)).toEqual([33, 32, 31]);
+    expect(filterBlacklistChoices(masters, [47], '').map((item) => item.masterId))
+      .toEqual([31]);
   });
 });
 

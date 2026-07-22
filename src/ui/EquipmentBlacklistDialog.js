@@ -1,6 +1,7 @@
 'use strict';
 
 const React = require('react');
+const { filterBlacklistChoices } = require('../equipment-filter');
 
 const h = React.createElement;
 
@@ -24,12 +25,7 @@ function EquipmentBlacklistDialog(props) {
 
   const selected = new Set((selectedMasterIds || []).map(Number));
   const selectedTypes = new Set((selectedEquipTypes || []).map(Number));
-  const normalizedQuery = String(query || '').trim().toLocaleLowerCase();
-  const visible = (equipment || []).filter((item) =>
-    !normalizedQuery ||
-    item.name.toLocaleLowerCase().includes(normalizedQuery) ||
-    item.typeName.toLocaleLowerCase().includes(normalizedQuery) ||
-    String(item.masterId).includes(normalizedQuery));
+  const visible = filterBlacklistChoices(equipment, selectedEquipTypes, query);
   const equipmentTypes = [...new Map((equipment || []).map((item) => [
     item.equipType,
     { equipType: item.equipType, typeName: item.typeName },

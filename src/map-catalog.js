@@ -12,6 +12,10 @@ function buildMapCatalog({ cells = {}, master = {} } = {}) {
   const enemiesById = new Map((master.enemies || []).map((enemy) => [Number(enemy.id), enemy]));
   const itemsById = new Map((master.items || []).map((item) => [Number(item.id), item]));
   const patternAreas = new Set(patterns.map((pattern) => Number(pattern.a)));
+  const latestEventWorldId = Math.max(
+    0,
+    ...[...patternAreas].map((area) => Math.floor(area / 10)).filter(isEventWorld),
+  );
   const areas = [...patternAreas]
     .map((area) => {
       const map = mapsByArea.get(area) || {};
@@ -24,7 +28,7 @@ function buildMapCatalog({ cells = {}, master = {} } = {}) {
         bossNodes: Array.isArray(map.boss) ? map.boss : [],
       };
     })
-    .sort((left, right) => left.area - right.area);
+    .sort((left, right) => compareMapAreas(left, right, latestEventWorldId));
 
   return {
     areas,
@@ -61,6 +65,27 @@ function buildMapCatalog({ cells = {}, master = {} } = {}) {
         ));
     },
   };
+}
+
+/** Returns whether a world ID represents an event rather than a normal world. */
+function isEventWorld(worldId) {
+  return Number(worldId) >= 10;
+}
+
+/** Orders latest-event maps, normal maps, then archived event maps. */
+function compareMapAreas(left, right, latestEventWorldId) {
+  const leftGroup = mapAreaGroup(left.worldId, latestEventWorldId);
+  const rightGroup = mapAreaGroup(right.worldId, latestEventWorldId);
+  if (leftGroup !== rightGroup) return leftGroup - rightGroup;
+  if (leftGroup === 2 && left.worldId !== right.worldId) return right.worldId - left.worldId;
+  return left.area - right.area;
+}
+
+/** Assigns one map to the latest-event, normal, or archived-event group. */
+function mapAreaGroup(worldId, latestEventWorldId) {
+  if (isEventWorld(worldId) && worldId === latestEventWorldId) return 0;
+  if (!isEventWorld(worldId)) return 1;
+  return 2;
 }
 
 function normalizeFormation(pattern, sourceIndex, formationIndex, enemiesById, itemsById) {

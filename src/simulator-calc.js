@@ -7,7 +7,7 @@ const {
   requiredAirForState,
 } = require('./air-power');
 const { calculateBaseDamagePower } = require('./damage');
-const { normalizeSimulatorState } = require('./simulator-state');
+const { effectivePlaneForSlot, normalizeSimulatorState } = require('./simulator-state');
 const { monteCarloWaveSequence } = require('./wave-simulator');
 const { INVALID_SLOT_LIMITATION } = require('./enemy-slots');
 const { INVALID_SIMULATION_LIMITATION } = require('./simulation-options');
@@ -63,7 +63,7 @@ function calculateSimulatorSummary(state) {
   }
   const enemyAir = normalized.enemy.enemyAir;
   const bases = normalized.bases.map((base, baseIndex) => {
-    const loadout = base.slots.map((slot) => slot.plane).filter(Boolean);
+    const loadout = base.slots.map(effectivePlaneForSlot).filter(Boolean);
     const airPower = calculateBaseAirPower(loadout);
     const radius = calculateEffectiveRadius(loadout);
     const damagePower = calculateBaseDamagePower(loadout, {
@@ -126,7 +126,7 @@ function calculateSimulatorSummary(state) {
   }
 
   const simulation = monteCarloWaveSequence({
-    bases: normalized.bases.map((base) => base.slots.map((slot) => slot.plane)),
+    bases: normalized.bases.map((base) => base.slots.map(effectivePlaneForSlot)),
     enemy: normalized.enemy,
     targetStates: normalized.waves.map((wave) => wave.targetState),
     ...normalized.simulationOptions,

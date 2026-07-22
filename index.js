@@ -212,6 +212,7 @@ class LbasOptimizerPanel extends React.Component {
       searchProgress: null,
       mapCatalog: null,
       mapSelection: { area: null, node: '', difficulty: null, formationId: '' },
+      mapDifficultyPreference: null,
       enemyCatalog: null,
       noro6Master: null,
       mapDataError: null,
@@ -502,19 +503,18 @@ class LbasOptimizerPanel extends React.Component {
   };
 
   updateMapSelection = (field, rawValue) => {
-    this.setState((state) => {
-      const current = state.mapSelection;
-      if (field === 'area') {
-        return { mapSelection: { area: rawValue ? Number(rawValue) : null, node: '', difficulty: null, formationId: '' } };
-      }
-      if (field === 'node') {
-        return { mapSelection: { ...current, node: rawValue, difficulty: null, formationId: '' } };
-      }
-      if (field === 'difficulty') {
-        return { mapSelection: { ...current, difficulty: rawValue === '' ? null : Number(rawValue), formationId: '' } };
-      }
-      return { mapSelection: { ...current, formationId: rawValue } };
+    const resolved = resolveMapSelection(
+      this.state.mapCatalog,
+      this.state.mapSelection,
+      this.state.mapDifficultyPreference,
+      field,
+      rawValue,
+    );
+    this.setState({
+      mapSelection: resolved.selection,
+      mapDifficultyPreference: resolved.difficultyPreference,
     });
+    if (resolved.formation) this.applyMapPreset(resolved.formation);
   };
 
   applyMapPreset = (formation) => {
@@ -742,7 +742,16 @@ class LbasOptimizerPanel extends React.Component {
       );
       if (isEquipmentExcluded(plane, filters)) return;
     }
-    this.updateSimulator((simulator) => setBaseSlot(simulator, baseIndex, slotIndex, { plane }));
+    this.updateSimulator((simulator) => setBaseSlot(simulator, baseIndex, slotIndex, {
+      plane,
+      proficiency: null,
+    }));
+  };
+
+  updateSlotProficiency = (baseIndex, slotIndex, proficiency) => {
+    this.updateSimulator((simulator) => setBaseSlot(simulator, baseIndex, slotIndex, {
+      proficiency: Math.max(0, Math.min(7, Number(proficiency) || 0)),
+    }));
   };
 
   updateSlotLock = (baseIndex, slotIndex, locked) => {
@@ -842,7 +851,6 @@ class LbasOptimizerPanel extends React.Component {
         onEnemyShipChange: this.updateEnemyShip,
         onEnemyShipNameChange: this.updateEnemyShipName,
         onMapSelectionChange: this.updateMapSelection,
-        onMapPresetApply: this.applyMapPreset,
         onUseCustomEnemy: this.useCustomEnemyComposition,
         onAirRaidCellChange: this.updateAirRaidCell,
         onSimulationOptionChange: this.updateSimulationOption,
@@ -851,6 +859,7 @@ class LbasOptimizerPanel extends React.Component {
         onMultiplierRuleChange: this.updateMultiplierRule,
         onMultiplierRuleRemove: this.removeMultiplierRule,
         onSlotPlaneChange: this.updateSlotPlane,
+        onSlotProficiencyChange: this.updateSlotProficiency,
         onSlotLockChange: this.updateSlotLock,
         onWaveTargetChange: this.updateWaveTarget,
         onClear: this.clearComposition,
@@ -911,6 +920,38 @@ function effectiveEquipmentFilters(filters, equipment) {
     blacklistedMasterIds: defaultBlacklistedMasterIds(equipment),
     blacklistedEquipTypes: [],
   };
+}
+
+/** Resolves cascading map defaults and the formation that should be applied immediately. */
+function resolveMapSelection(catalog, current, difficultyPreference, field, rawValue) {
+  let selection = { ...current };
+  let preference = difficultyPreference;
+  if (field === 'area') {
+    selection = { area: rawValue ? Number(rawValue) : null, node: '', difficulty: null, formationId: '' };
+  } else if (field === 'node') {
+    selection = { ...selection, node: rawValue, difficulty: null, formationId: '' };
+  } else if (field === 'difficulty') {
+    const difficulty = rawValue === '' ? null : Number(rawValue);
+    selection = { ...selection, difficulty, formationId: '' };
+    if (difficulty > 0) preference = difficulty;
+  } else {
+    selection = { ...selection, formationId: rawValue };
+  }
+
+  if (!catalog || !selection.area || !selection.node) {
+    return { selection, difficultyPreference: preference, formation: null };
+  }
+  const difficulties = catalog.difficulties(selection.area, selection.node);
+  if (!difficulties.includes(selection.difficulty)) {
+    selection.difficulty = difficulties.includes(preference) ? preference : difficulties[0] ?? null;
+  }
+  if (selection.difficulty == null) {
+    return { selection, difficultyPreference: preference, formation: null };
+  }
+  const formations = catalog.formations(selection.area, selection.node, selection.difficulty);
+  const formation = formations.find((item) => item.id === selection.formationId) || formations[0] || null;
+  selection.formationId = formation?.id || '';
+  return { selection, difficultyPreference: preference, formation };
 }
 
 function normalizeEquipmentFilters(filters = {}) {
@@ -1159,13 +1200,16 @@ const styles = {
   },
   simulatorPanel: {
     border: border,
+    containerName: 'lbas-panel',
+    containerType: 'inline-size',
     marginBottom: 12,
     padding: 10,
   },
   simulatorGrid: {
+    alignItems: 'start',
     display: 'grid',
     gap: 10,
-    gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
+    gridTemplateColumns: 'minmax(0, 1.45fr) minmax(340px, 0.8fr)',
   },
   toolbar: {
     alignItems: 'center',
@@ -1272,7 +1316,19 @@ const styles = {
     fontSize: 12,
     lineHeight: 1.5,
     padding: 6,
-    width: 150,
+    width: 132,
+  },
+  equipmentColumn: {
+    width: 'auto',
+  },
+  controlColumn: {
+    width: 48,
+  },
+  proficiencyColumn: {
+    width: 68,
+  },
+  equipmentCell: {
+    minWidth: 0,
   },
   enemyPanel: {
     minWidth: 0,
@@ -1385,9 +1441,17 @@ const styles = {
     background: 'transparent',
     cursor: 'pointer',
   },
+  mapPresetActions: {
+    display: 'flex',
+    justifyContent: 'flex-end',
+  },
   equipmentPicker: {
-    minWidth: 240,
+    minWidth: 0,
     position: 'relative',
+    width: '100%',
+  },
+  baseTable: {
+    minWidth: 510,
   },
   equipmentPickerControl: {
     alignItems: 'stretch',
@@ -1397,16 +1461,20 @@ const styles = {
   equipmentPickerInput: {
     boxSizing: 'border-box',
     fontSize: 13,
-    height: 30,
+    lineHeight: 1.35,
     minWidth: 0,
-    padding: '2px 6px',
+    minHeight: 48,
+    overflowY: 'auto',
+    padding: '5px 6px',
+    resize: 'none',
+    whiteSpace: 'pre-wrap',
     width: '100%',
   },
   equipmentPickerClear: {
     cursor: 'pointer',
     flex: '0 0 30px',
     fontSize: 18,
-    height: 30,
+    minHeight: 48,
     padding: 0,
   },
   equipmentPickerMenu: {

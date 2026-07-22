@@ -95,13 +95,43 @@ describe('plugin entry', () => {
     expect(panel.state.simulator.bases[0].slots[0].plane?.instanceId).toBe('land-1');
   });
 
-  test('renders one searchable aircraft combobox per simulator slot', () => {
+  test('renders one multiline searchable aircraft combobox per simulator slot', () => {
     const panel = new plugin.reactClass({ readPoiState: () => equipmentPoiState() });
     const comboboxes = findNodes(panel.render(), (node) =>
-      node.type === 'input' && node.props?.role === 'combobox');
+      node.props?.role === 'combobox');
 
     expect(comboboxes).toHaveLength(4);
+    expect(comboboxes.every((node) => node.type === 'textarea')).toBe(true);
+    expect(comboboxes.every((node) => node.props.rows === 2)).toBe(true);
     expect(comboboxes.every((node) => node.props.placeholder === '搜索装备')).toBe(true);
+  });
+
+  test('lets each equipped slot select the proficiency used by simulation', () => {
+    const panel = new plugin.reactClass({ readPoiState: () => equipmentPoiState() });
+    panel.setState = (updater) => {
+      const patch = typeof updater === 'function' ? updater(panel.state) : updater;
+      Object.assign(panel.state, patch);
+    };
+    panel.updateSlotPlane(0, 0, 'land-1');
+
+    const proficiencySelect = findNodes(panel.render(), (node) =>
+      node.type === 'select' && node.props?.title === '熟练')[0];
+    expect(proficiencySelect.props.disabled).toBe(false);
+    proficiencySelect.props.onChange({ target: { value: '0' } });
+
+    expect(panel.state.simulator.bases[0].slots[0].proficiency).toBe(0);
+  });
+
+  test('stacks simulator columns by container width in a narrow Poi side pane', () => {
+    const panel = new plugin.reactClass({ readPoiState: () => equipmentPoiState() });
+    const rendered = panel.render();
+    const responsiveStyle = findNodes(rendered, (node) => node.type === 'style')[0];
+    const simulatorGrid = findNodes(rendered, (node) =>
+      node.props?.className === 'lbas-simulator-grid')[0];
+
+    expect(responsiveStyle.props.children).toContain('@container');
+    expect(responsiveStyle.props.children).toContain('grid-template-columns: minmax(0, 1fr)');
+    expect(simulatorGrid).toBeTruthy();
   });
 
   test('shows equipment kinds and persists master and kind blacklist filters', () => {
@@ -342,9 +372,11 @@ describe('plugin entry', () => {
     expect(renderedText).toContain('×1.18');
     expect(renderedText.match(/×1\.18/g)).toHaveLength(1);
     const selectedEquipment = findNodes(panel.render(), (node) =>
-      node.type === 'input' && node.props?.role === 'combobox' && node.props.value?.includes('倍卡陆攻'));
+      node.props?.role === 'combobox' && node.props.value?.includes('倍卡陆攻'));
     expect(selectedEquipment).toHaveLength(1);
     expect(selectedEquipment[0].props.value).toContain('×1.18');
+    expect(selectedEquipment[0].props.value).not.toContain('#bonus-plane');
+    expect(selectedEquipment[0].props.value).not.toContain('熟练');
 
     panel.updateMultiplierRule(0, 'enabled', false);
     expect(panel.state.simulator.combatContext.multiplierRules[0].enabled).toBe(false);
@@ -452,6 +484,28 @@ describe('plugin entry', () => {
       nodeId: 'Z',
     });
     expect(collectText(panel.render())).toContain('自定义编成');
+  });
+
+  test('auto-selects presets, remembers event difficulty, and hides the only normal difficulty', () => {
+    const panel = createSynchronousPanel();
+    panel.state.mapCatalog = interactiveMapCatalog();
+
+    panel.updateMapSelection('area', '623');
+    panel.updateMapSelection('node', 'X');
+    expect(panel.state.mapSelection).toMatchObject({ difficulty: 4, formationId: '623-X-4' });
+    expect(panel.state.simulator.enemy).toMatchObject({ dataSource: 'automatic', areaId: 623, nodeId: 'X' });
+
+    panel.updateMapSelection('difficulty', '3');
+    panel.updateMapSelection('area', '622');
+    panel.updateMapSelection('node', 'Y');
+    expect(panel.state.mapSelection).toMatchObject({ difficulty: 3, formationId: '622-Y-3' });
+
+    panel.updateMapSelection('area', '65');
+    panel.updateMapSelection('node', 'M');
+    expect(panel.state.mapSelection).toMatchObject({ difficulty: 0, formationId: '65-M-0' });
+    expect(findNodes(panel.render(), (node) =>
+      node.type === 'select' && node.props?.['aria-label'] === '难度')).toHaveLength(0);
+    expect(collectText(panel.render())).not.toContain('应用预设');
   });
 
   test('restores a custom enemy draft after applying and switching automatic presets', () => {
@@ -915,6 +969,41 @@ function mapFormation(node, shipId) {
     stage2Defense: {
       modeled: true,
       byAvoidance: { 0: { fixedLosses: [1], rateFactors: [0] } },
+    },
+  };
+}
+
+/** Creates cascading event and normal map choices for preset interaction tests. */
+function interactiveMapCatalog() {
+  const difficulties = new Map([
+    ['623:X', [4, 3]],
+    ['622:Y', [4, 3]],
+    ['65:M', [0]],
+  ]);
+  return {
+    areas: [
+      { area: 623, name: 'E-3' },
+      { area: 622, name: 'E-2' },
+      { area: 65, name: '6-5' },
+    ],
+    nodes(area) {
+      return [{ node: Number(area) === 623 ? 'X' : Number(area) === 622 ? 'Y' : 'M', isBoss: true }];
+    },
+    difficulties(area, node) {
+      return difficulties.get(`${Number(area)}:${node}`) || [];
+    },
+    formations(area, node, difficulty) {
+      const numericArea = Number(area);
+      const numericDifficulty = Number(difficulty);
+      if (!this.difficulties(numericArea, node).includes(numericDifficulty)) return [];
+      return [{
+        ...mapFormation(node, 1501),
+        id: `${numericArea}-${node}-${numericDifficulty}`,
+        area: numericArea,
+        difficulty: numericDifficulty,
+        enemyAir: 0,
+        thresholds: { supremacy: 0, superiority: 0, parity: 0, denial: 0 },
+      }];
     },
   };
 }

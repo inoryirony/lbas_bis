@@ -6,6 +6,13 @@ const EnemyPanel = require('./EnemyPanel');
 const WaveStatusTable = require('./WaveStatusTable');
 
 const h = React.createElement;
+const RESPONSIVE_LAYOUT_CSS = `
+  @container lbas-panel (max-width: 820px) {
+    .lbas-simulator-grid {
+      grid-template-columns: minmax(0, 1fr) !important;
+    }
+  }
+`;
 
 function SimulatorPanel(props) {
   const {
@@ -26,7 +33,6 @@ function SimulatorPanel(props) {
     onEnemyShipChange,
     onEnemyShipNameChange,
     onMapSelectionChange,
-    onMapPresetApply,
     onUseCustomEnemy,
     onAirRaidCellChange,
     onSimulationOptionChange,
@@ -35,6 +41,7 @@ function SimulatorPanel(props) {
     onMultiplierRuleChange,
     onMultiplierRuleRemove,
     onSlotPlaneChange,
+    onSlotProficiencyChange,
     onSlotLockChange,
     onWaveTargetChange,
     onClear,
@@ -45,10 +52,11 @@ function SimulatorPanel(props) {
   return h(
     'section',
     { style: styles.simulatorPanel },
+    h('style', null, RESPONSIVE_LAYOUT_CSS),
     h('h2', { style: styles.title }, t('simulatorTitle')),
     h(
       'div',
-      { style: styles.simulatorGrid },
+      { className: 'lbas-simulator-grid', style: styles.simulatorGrid },
       h(
         'div',
         null,
@@ -91,6 +99,7 @@ function SimulatorPanel(props) {
           summaries: summary.bases,
           combatContext: simulator.combatContext,
           onSlotPlaneChange,
+          onSlotProficiencyChange,
           onSlotLockChange,
           t,
           styles,
@@ -118,7 +127,6 @@ function SimulatorPanel(props) {
         onEnemyShipChange,
         onEnemyShipNameChange,
         onMapSelectionChange,
-        onMapPresetApply,
         onUseCustomEnemy,
         onAirRaidCellChange,
         onSimulationOptionChange,

@@ -4,8 +4,8 @@ const React = require('react');
 
 const h = React.createElement;
 
-/** Renders automatic map presets alongside an always-available custom fallback. */
-function MapPresetPicker({ catalog, selection, onSelectionChange, onApply, onUseCustom, isCustom, t, styles }) {
+/** Renders auto-applied map presets alongside an always-available custom fallback. */
+function MapPresetPicker({ catalog, selection, onSelectionChange, onUseCustom, isCustom, t, styles }) {
   const nodes = catalog && selection.area ? catalog.nodes(selection.area) : [];
   const difficulties = catalog && selection.area && selection.node
     ? catalog.difficulties(selection.area, selection.node)
@@ -30,10 +30,12 @@ function MapPresetPicker({ catalog, selection, onSelectionChange, onApply, onUse
         value: node.node,
         label: `${node.node}${node.isBoss ? ` (${t('bossNode')})` : ''}`,
       })), (value) => onSelectionChange('node', value), t, styles),
-      selectField('mapDifficulty', selection.difficulty ?? '', difficulties.map((value) => ({
-        value,
-        label: t(`difficulty_${value}`),
-      })), (value) => onSelectionChange('difficulty', value), t, styles),
+      difficulties.length > 1
+        ? selectField('mapDifficulty', selection.difficulty ?? '', difficulties.map((value) => ({
+          value,
+          label: t(`difficulty_${value}`),
+        })), (value) => onSelectionChange('difficulty', value), t, styles)
+        : null,
       selectField('enemyFormation', selection.formationId || '', formations.map((item, index) => ({
         value: item.id,
         label: `#${index + 1} · ${t('enemyAir')} ${item.enemyAir}`,
@@ -48,13 +50,7 @@ function MapPresetPicker({ catalog, selection, onSelectionChange, onApply, onUse
       : null,
     h(
       'div',
-      { style: styles.enemyControls },
-      h('button', {
-        type: 'button',
-        disabled: !formation,
-        onClick: () => onApply(formation),
-        style: styles.button,
-      }, t('applyMapPreset')),
+      { style: styles.mapPresetActions },
       h('button', {
         type: 'button',
         'aria-pressed': isCustom,
@@ -75,6 +71,7 @@ function selectField(labelKey, value, options, onChange, t, styles) {
       'select',
       {
         value,
+        'aria-label': t(labelKey),
         onChange: (event) => onChange(event.target.value),
         style: styles.select,
       },

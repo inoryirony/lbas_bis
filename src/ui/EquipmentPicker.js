@@ -3,6 +3,7 @@
 const React = require('react');
 const {
   buildEquipmentChoices,
+  equipmentTypeName,
   rankEquipmentMatches,
 } = require('../equipment-filter');
 
@@ -69,7 +70,11 @@ class EquipmentPicker extends React.PureComponent {
     const matches = this.matches();
     const selectedBlocked = allChoices.find((choice) => choice.current)?.disabled === true;
     const closedValue = plane
-      ? `${formatEquipmentIdentity(plane)}${this.props.formatSuffix?.(plane) || ''}${selectedBlocked ? ` (${t('blacklistedCurrent')})` : ''}`
+      ? formatEquipmentDisplay(
+          plane,
+          this.props.formatSuffix?.(plane) || '',
+          selectedBlocked ? t('blacklistedCurrent') : '',
+        )
       : '';
     return h(
       'div',
@@ -82,8 +87,9 @@ class EquipmentPicker extends React.PureComponent {
       h(
         'div',
         { style: styles.equipmentPickerControl },
-        h('input', {
+        h('textarea', {
           role: 'combobox',
+          rows: 2,
           'aria-autocomplete': 'list',
           'aria-expanded': this.state.open,
           'aria-label': t('equipment'),
@@ -179,8 +185,17 @@ function formatEquipmentIdentity(plane) {
   const proficiency = Number.isFinite(Number(plane.proficiency))
     ? ` 熟练${Number(plane.proficiency)}`
     : '';
-  return `${plane.name}${improvement}${proficiency} #${plane.instanceId}`;
+  return `${plane.name}${improvement}${proficiency}`;
+}
+
+/** Formats a selected plane as readable name and metadata lines. */
+function formatEquipmentDisplay(plane, suffix = '', blockedLabel = '') {
+  const improvement = Number(plane.improvement) > 0 ? ` +${Number(plane.improvement)}` : '';
+  const metadata = equipmentTypeName(plane.equipType);
+  const blocked = blockedLabel ? ` · ${blockedLabel}` : '';
+  return `${plane.name}${improvement}\n${metadata}${suffix}${blocked}`;
 }
 
 module.exports = EquipmentPicker;
 module.exports.formatEquipmentIdentity = formatEquipmentIdentity;
+module.exports.formatEquipmentDisplay = formatEquipmentDisplay;

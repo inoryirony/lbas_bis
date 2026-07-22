@@ -16,6 +16,7 @@ function BaseTable(props) {
     combatContext,
     equipmentFilters,
     onSlotPlaneChange,
+    onSlotProficiencyChange,
     onSlotLockChange,
     t,
     styles,
@@ -25,7 +26,7 @@ function BaseTable(props) {
     { style: styles.tableWrap },
     h(
       'table',
-      { style: styles.table },
+      { style: { ...styles.table, ...styles.baseTable } },
       h(
         'thead',
         null,
@@ -33,9 +34,9 @@ function BaseTable(props) {
           'tr',
           null,
           h('th', { style: styles.th }, t('baseColumn')),
-          h('th', { style: styles.th }, t('equipment')),
-          h('th', { style: styles.th }, t('lock')),
-          h('th', { style: styles.th }, t('proficiency')),
+          h('th', { style: { ...styles.th, ...styles.equipmentColumn } }, t('equipment')),
+          h('th', { style: { ...styles.th, ...styles.controlColumn } }, t('lock')),
+          h('th', { style: { ...styles.th, ...styles.proficiencyColumn } }, t('proficiency')),
           h('th', { style: styles.th }, t('baseSummary')),
         ),
       ),
@@ -52,7 +53,7 @@ function BaseTable(props) {
                 : null,
               h(
                 'td',
-                { style: styles.td },
+                { style: { ...styles.td, ...styles.equipmentCell } },
                 renderEquipmentSelect({
                   equipment,
                   slot,
@@ -80,8 +81,18 @@ function BaseTable(props) {
                 { style: styles.centerTd },
                 h(
                   'select',
-                  { value: slot.plane?.proficiency ?? '', disabled: true, style: styles.smallSelect },
-                  h('option', { value: '' }, '-'),
+                  {
+                    value: slot.proficiency ?? slot.plane?.proficiency ?? '',
+                    disabled: !slot.plane,
+                    onChange: (event) => onSlotProficiencyChange(
+                      baseIndex,
+                      slotIndex,
+                      Number(event.target.value),
+                    ),
+                    style: styles.smallSelect,
+                    title: t('proficiency'),
+                  },
+                  slot.plane ? null : h('option', { value: '' }, '-'),
                   PROFICIENCY_LABELS.map((label, index) =>
                     h('option', { key: index, value: index }, label),
                   ),

@@ -257,7 +257,7 @@ function renderResults({ results, combatContext, onImportPlan, t, styles }) {
                   key: item.instanceId ?? `slot-${slotIndex}`,
                   style: item.available === false ? styles.missingItem : null,
                 },
-                `${item.name} #${item.instanceId}${formatAvoidance(item, t)}${formatMultiplier(item, combatContext)} · ${t('airPower')} ${item.antiAir} · ${t('radius')} ${item.radius}${item.missing || item.available === false ? ` · ${t('missing')}` : ''}`,
+                `${item.name}${formatAvoidance(item, t)}${formatMultiplier(item, combatContext)} · ${t('airPower')} ${item.antiAir} · ${t('radius')} ${item.radius}${item.missing || item.available === false ? ` · ${t('missing')}` : ''}`,
               )
               : h(
                 'li',

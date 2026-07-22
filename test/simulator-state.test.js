@@ -114,6 +114,25 @@ describe('simulator state', () => {
       })]);
   });
 
+  test('exports a selected proficiency for a locked plane', () => {
+    const owned = plane('owned-fighter', {
+      proficiency: 7,
+      internalProficiency: 120,
+    });
+    let state = setBaseSlot(createEmptySimulatorState(), 0, 0, {
+      plane: owned,
+      proficiency: 0,
+    });
+    state = setSlotLock(state, 0, 0, true);
+
+    expect(simulatorToOptimizerInput(state).lockedBases[0].slots[0].plane).toEqual({
+      ...owned,
+      proficiency: 0,
+      internalProficiency: undefined,
+    });
+    expect(owned).toMatchObject({ proficiency: 7, internalProficiency: 120 });
+  });
+
   test('normalizes and exports custom target and equipment multiplier rules', () => {
     const state = stateModule.normalizeSimulatorState({
       ...createEmptySimulatorState(),

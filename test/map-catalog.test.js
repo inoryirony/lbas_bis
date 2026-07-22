@@ -28,10 +28,36 @@ describe('noro6-compatible map catalog', () => {
   test('exposes cascading area, node, difficulty, and formation options', () => {
     const catalog = buildMapCatalog(realSubset());
 
-    expect(catalog.areas.map((area) => area.area)).toEqual([64, 65, 623]);
+    expect(catalog.areas.map((area) => area.area)).toEqual([623, 64, 65]);
     expect(catalog.nodes(623)).toEqual([expect.objectContaining({ node: 'A1' })]);
     expect(catalog.difficulties(623, 'A1')).toEqual([4]);
     expect(catalog.formations(623, 'A1', 4)).toHaveLength(1);
+  });
+
+  test('orders the latest event first, normal maps second, and archived events last', () => {
+    const catalog = buildMapCatalog({
+      cells: {
+        patterns: [
+          { a: 611, n: 'A', l: 4, e: [] },
+          { a: 65, n: 'M', l: 0, e: [] },
+          { a: 622, n: 'X', l: 4, e: [] },
+          { a: 64, n: 'N', l: 0, e: [] },
+          { a: 621, n: 'A', l: 4, e: [] },
+        ],
+      },
+      master: {
+        maps: [],
+        worlds: [
+          { world: 6, name: 'Normal' },
+          { world: 61, name: 'Old event' },
+          { world: 62, name: 'Latest event' },
+        ],
+        enemies: [],
+        items: [],
+      },
+    });
+
+    expect(catalog.areas.map((area) => area.area)).toEqual([621, 622, 64, 65, 611]);
   });
 
   test('excludes non-aircraft equipment from land-base enemy air power', () => {

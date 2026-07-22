@@ -81,6 +81,17 @@ function setBaseSlot(state, baseIndex, slotIndex, slotPatch) {
   });
 }
 
+/** Returns the selected plane with any simulator-only proficiency override applied. */
+function effectivePlaneForSlot(slot) {
+  if (!slot?.plane) return null;
+  if (slot.proficiency == null) return slot.plane;
+  return {
+    ...slot.plane,
+    proficiency: Math.max(0, Math.min(7, Number(slot.proficiency) || 0)),
+    internalProficiency: undefined,
+  };
+}
+
 /** Toggles a slot lock without treating an explicitly empty slot as unlocked. */
 function setSlotLock(state, baseIndex, slotIndex, locked) {
   return setBaseSlot(state, baseIndex, slotIndex, { locked: Boolean(locked) });
@@ -114,7 +125,7 @@ function simulatorToOptimizerInput(state) {
     targetStates: normalized.waves.map((wave) => wave.targetState),
     lockedBases: normalized.bases.map((base) => ({
       slots: base.slots.map((slot) => ({
-        plane: slot.locked ? slot.plane : null,
+        plane: slot.locked ? effectivePlaneForSlot(slot) : null,
         locked: Boolean(slot.locked),
       })),
     })),
@@ -360,6 +371,7 @@ module.exports = {
   WAVES_PER_BASE,
   addDetailedEnemySlot,
   createEmptySimulatorState,
+  effectivePlaneForSlot,
   normalizeDetailedEnemySlots,
   normalizeSimulatorState,
   normalizeSimulationOptions,

@@ -57,6 +57,24 @@ describe('simulator calculations', () => {
     expect(summary.limitations).toContain('STATIC_ENEMY_AIR');
   });
 
+  test('uses a slot proficiency override without mutating the owned plane', () => {
+    const owned = plane('max-rank-fighter', {
+      antiAir: 12,
+      equipType: 6,
+      proficiency: 7,
+      internalProficiency: 120,
+      isFighter: true,
+      isAttacker: false,
+      role: 'fighter',
+    });
+    const normal = setBaseSlot(createEmptySimulatorState(), 0, 0, { plane: owned });
+    const lost = setBaseSlot(normal, 0, 0, { proficiency: 0 });
+
+    expect(calculateSimulatorSummary(lost).bases[0].airPower)
+      .toBeLessThan(calculateSimulatorSummary(normal).bases[0].airPower);
+    expect(owned).toMatchObject({ proficiency: 7, internalProficiency: 120 });
+  });
+
   test('normalizes and edits detailed enemy slots immutably', () => {
     const source = [{
       instanceId: 'enemy-1',

@@ -110,8 +110,14 @@ function uniqueEquipmentMasters(equipment = []) {
       isLandBased: plane.isLandBased === true,
     });
   });
-  return [...byMasterId.values()].sort((left, right) =>
-    left.name.localeCompare(right.name, 'ja') || left.masterId - right.masterId);
+  return sortEquipmentChoices([...byMasterId.values()]);
+}
+
+/** Sorts blacklist choices and hides individual equipment covered by a whole-type blacklist. */
+function filterBlacklistChoices(equipment = [], selectedEquipTypes = [], query = '') {
+  const excludedTypes = new Set(selectedEquipTypes.map(Number));
+  return rankEquipmentMatches(equipment, query)
+    .filter((item) => !excludedTypes.has(Number(item.equipType)));
 }
 
 function isCarrierAircraft(plane) {
@@ -130,6 +136,7 @@ module.exports = {
   buildEquipmentChoices,
   defaultBlacklistedMasterIds,
   equipmentTypeName,
+  filterBlacklistChoices,
   filterOptimizationEquipment,
   isEquipmentExcluded,
   isCarrierAircraft,
