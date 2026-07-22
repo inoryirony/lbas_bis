@@ -311,6 +311,8 @@ describe('plugin entry', () => {
     expect(renderedText).toContain('搜索节点 42');
     expect(renderedText).toContain('空槽');
     expect(renderedText).toContain('未持有');
+    expect(renderedText).toContain('攻击力代理');
+    expect(renderedText).not.toContain('伤害基准');
     expect(renderedText).toContain('统一最低可见熟练度 >>');
   });
 

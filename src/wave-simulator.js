@@ -203,6 +203,7 @@ function simulateWaveSequence(options = {}) {
     finalOwnAir: bases.map((base) => calculateBaseAirPower(base)),
     finalEnemyAir: enemies.map((enemy) => airPowerForEnemy(enemy)),
     totalDamage: waves.reduce((total, wave) => total + wave.damage, 0),
+    totalAttackPowerProxy: waves.reduce((total, wave) => total + wave.damage, 0),
     totalOwnSlotLoss,
     totalEnemySlotLoss: waves.reduce((total, wave) => total + wave.enemySlotLoss, 0),
     totalUsedSteel,
@@ -276,6 +277,8 @@ function monteCarloWaveSequence(options = {}) {
       sampleCount,
     ),
     expectedDamage: accumulator.totalDamage / sampleCount,
+    attackPowerProxy: accumulator.totalDamage / sampleCount,
+    totalAttackPowerProxyAcrossSamples: accumulator.totalDamage,
     expectedOwnSlotLoss: accumulator.totalOwnSlotLoss / sampleCount,
     expectedEnemySlotLoss: accumulator.totalEnemySlotLoss / sampleCount,
     expectedUsedSteel: accumulator.totalUsedSteel / sampleCount,
@@ -548,7 +551,9 @@ function evaluateDetailedPlanScore(options = {}) {
     samplesEvaluated: sampleCount,
     allWaveTargetFulfillmentProbability: fulfilledSamples / sampleCount,
     expectedDamage: totalDamage / sampleCount,
+    attackPowerProxy: totalDamage / sampleCount,
     totalDamageAcrossSamples: totalDamage,
+    totalAttackPowerProxyAcrossSamples: totalDamage,
     maximumFinalEnemyAir,
     ...(finalEnemySlotsBySample ? { finalEnemySlotsBySample } : {}),
   };
@@ -753,7 +758,9 @@ function evaluateReusableConcentratedSegment({
     enemyTrajectoryId: trajectory.enemyTrajectoryId,
     allWaveTargetFulfillmentProbability: trajectory.allWaveTargetFulfillmentProbability,
     expectedDamage: totalDamage / sampleCount,
+    attackPowerProxy: totalDamage / sampleCount,
     totalDamageAcrossSamples: totalDamage,
+    totalAttackPowerProxyAcrossSamples: totalDamage,
     maximumFinalEnemyAir: trajectory.maximumFinalEnemyAir,
     ...(captureFinalEnemySlots
       ? { finalEnemySlotsBySample: trajectory.finalEnemySlotsBySample }
@@ -1142,6 +1149,7 @@ function finalizeWaveAccumulator(accumulator, sampleCount) {
     expectedOwnSlotsBefore: divideNested(accumulator.ownSlotsBefore, sampleCount),
     expectedOwnSlotsAfter: divideNested(accumulator.ownSlotsAfter, sampleCount),
     expectedDamage: accumulator.damage / sampleCount,
+    attackPowerProxy: accumulator.damage / sampleCount,
     expectedOwnSlotLoss: accumulator.ownSlotLoss / sampleCount,
     expectedEnemySlotLoss: accumulator.enemySlotLoss / sampleCount,
   };

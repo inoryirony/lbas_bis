@@ -504,6 +504,9 @@ function withOptimalityScope(result, prepared) {
   const detailed = prepared?.detailed === true;
   return {
     ...result,
+    results: Array.isArray(result.results)
+      ? result.results.map(withAttackPowerProxyAliases)
+      : result.results,
     search: {
       ...result.search,
       optimalityScope: detailed ? 'fixed_sample' : 'model_exact',
@@ -511,6 +514,20 @@ function withOptimalityScope(result, prepared) {
         ? { evaluationSampleCount: prepared.simulationOptions.sampleCount }
         : {}),
     },
+  };
+}
+
+/** Adds honest public names while retaining legacy score fields for compatibility. */
+function withAttackPowerProxyAliases(plan) {
+  return {
+    ...plan,
+    attackPowerProxy: plan.attackPowerProxy ?? plan.totalDamagePower,
+    bases: Array.isArray(plan.bases)
+      ? plan.bases.map((base) => ({
+        ...base,
+        attackPowerProxy: base.attackPowerProxy ?? base.damagePower,
+      }))
+      : plan.bases,
   };
 }
 

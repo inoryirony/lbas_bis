@@ -220,6 +220,7 @@ function summarizePlan(loadouts, context) {
     plan.limitations = simulation.limitations;
     plan.limitationNotes = simulation.limitationNotes;
   }
+  plan.attackPowerProxy = plan.totalDamagePower;
   plan.canonicalKey = canonicalPlanKey(plan);
   plan.score = scorePlan(plan);
   return plan;
@@ -233,6 +234,9 @@ function summarizeBase(loadout, enemyAir, targetState, inventoryCounts = new Map
   const requiredAir = requiredAirForState(enemyAir, targetState);
   const state = airStateFor(airPower, enemyAir, planes.length > 0);
   const requiredRank = AIR_STATES[targetState]?.rank ?? AIR_STATES.parity.rank;
+  const damagePower = calculateBaseDamagePower(planes, {
+    combatContext: options.combatContext,
+  });
   return {
     loadout: [...loadout],
     airPower,
@@ -242,9 +246,8 @@ function summarizeBase(loadout, enemyAir, targetState, inventoryCounts = new Map
     fulfilled: state.rank >= requiredRank,
     marginToTarget: airPower - requiredAir,
     attackScore: planes.reduce((total, plane) => total + planeAttackScore(plane), 0),
-    damagePower: calculateBaseDamagePower(planes, {
-      combatContext: options.combatContext,
-    }),
+    damagePower,
+    attackPowerProxy: damagePower,
     resourceCost: planes.reduce((total, plane) => total + resourceCostForPlane(plane), 0),
     scarcityCost: planes.reduce(
       (total, plane) => total + scarcityCostForPlane(plane, inventoryCounts),

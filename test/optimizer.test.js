@@ -335,6 +335,9 @@ describe('LBAS optimizer MVP', () => {
 
     expect(result.results[0].bases[0].landAttackerCount).toBe(3);
     expect(result.results[0].bases[0].damagePower).toBeGreaterThan(0);
+    expect(result.results[0].bases[0].attackPowerProxy)
+      .toBe(result.results[0].bases[0].damagePower);
+    expect(result.results[0].attackPowerProxy).toBe(result.results[0].totalDamagePower);
   });
 
   test('keeps long-range land attackers in the candidate pool for radius-seven targets', () => {

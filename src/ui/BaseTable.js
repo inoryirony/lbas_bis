@@ -161,7 +161,7 @@ function formatSummary(summary, t) {
   return [
     `${t('airPower')} ${summary.airPower}`,
     `${t('radius')} ${summary.radius}`,
-    `${t('damagePower')} ${summary.damagePower}`,
+    `${t('damagePower')} ${summary.attackPowerProxy ?? summary.damagePower}`,
     t(summary.state.key),
   ].join(' / ');
 }

@@ -160,8 +160,13 @@ describe('wave simulator', () => {
     expect(result.limitations).not.toContain('JET_STAGE2_OMITTED');
 
     const fixedRandom = (_sample, wave, side) => random(wave, side);
-    expect(evaluateDetailedPlanScore({ ...common, fixedRandom }).expectedDamage)
-      .toBe(monteCarloWaveSequence({ ...common, fixedRandom }).expectedDamage);
+    const evaluated = evaluateDetailedPlanScore({ ...common, fixedRandom });
+    const simulated = monteCarloWaveSequence({ ...common, fixedRandom });
+    expect(evaluated.expectedDamage).toBe(simulated.expectedDamage);
+    expect(evaluated.attackPowerProxy).toBe(evaluated.expectedDamage);
+    expect(simulated.attackPowerProxy).toBe(simulated.expectedDamage);
+    expect(evaluated.totalAttackPowerProxyAcrossSamples)
+      .toBe(evaluated.totalDamageAcrossSamples);
   });
 
   test.each(['concentrated', 'separate'])(

@@ -270,7 +270,7 @@ function renderResults({ results, combatContext, onImportPlan, t, styles }) {
           'div',
           { style: styles.planHeader },
           h('strong', null, `${t('plan')} ${planIndex + 1}`),
-          h('span', null, `${t('damagePower')} ${plan.totalDamagePower}`),
+          h('span', null, `${t('damagePower')} ${plan.attackPowerProxy ?? plan.totalDamagePower}`),
           h('span', null, `${t('worstMargin')} ${plan.worstMargin}`),
           h('span', null, t(plan.calculationMode === 'detailed' ? 'detailedSimulation' : 'staticEstimate')),
           h('button', { type: 'button', onClick: () => onImportPlan(plan), style: styles.button }, t('importToSimulator')),
