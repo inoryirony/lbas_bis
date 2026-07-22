@@ -51,7 +51,12 @@ function solveStaticExact(preparedOrOptions = {}, solverOptions = {}) {
   if (!work.checkStop()) return stoppedResult(stats, startedAt, work.reason);
   solverOptions.onPhaseChange?.('finding_feasible');
   const allFeatures = prepared.groups.map((group, groupIndex) =>
-    featureForGroup(group, groupIndex, prepared.inventoryCounts));
+    featureForGroup(
+      group,
+      groupIndex,
+      prepared.inventoryCounts,
+      prepared.combatContext,
+    ));
   const openCapacity = prepared.baseLocks.reduce(
     (total, lock) => total + lock.slots.filter((slot) => slot.kind === SLOT_KINDS.OPEN).length,
     0,
@@ -336,7 +341,7 @@ function createBaseContext(prepared, lock, baseIndex, features) {
   for (const plane of lockedPlanes) {
     lockedState = addFeature(
       lockedState,
-      featureForPlane(plane, null, prepared.inventoryCounts),
+      featureForPlane(plane, null, prepared.inventoryCounts, prepared.combatContext),
       1,
     );
   }
@@ -352,14 +357,14 @@ function createBaseContext(prepared, lock, baseIndex, features) {
   };
 }
 
-function featureForGroup(group, groupIndex, inventoryCounts) {
+function featureForGroup(group, groupIndex, inventoryCounts, combatContext) {
   return {
-    ...featureForPlane(group.representative, groupIndex, inventoryCounts),
+    ...featureForPlane(group.representative, groupIndex, inventoryCounts, combatContext),
     count: group.instances.length,
   };
 }
 
-function featureForPlane(plane, groupIndex, inventoryCounts) {
+function featureForPlane(plane, groupIndex, inventoryCounts, combatContext) {
   const capabilities = capabilitiesFor(plane);
   const airCoefficient = landReconCoefficient([plane]);
   const damageCoefficient = landBasedReconDamageModifier([plane]);
@@ -370,7 +375,7 @@ function featureForPlane(plane, groupIndex, inventoryCounts) {
     key: groupIndex == null ? '' : String(groupIndex),
     air: calculateSlotAirPower(plane),
     damage: DAMAGE_COEFFICIENTS.map((modifier) =>
-      calculatePlaneSurfaceTargetPowerProxy(plane, { reconModifier: modifier })),
+      calculatePlaneSurfaceTargetPowerProxy(plane, { reconModifier: modifier, combatContext })),
     resource: Math.max(
       0,
       Number(plane.slotSize ?? defaultSlotSizeForPlane(plane)) || 0,

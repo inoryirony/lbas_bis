@@ -36,6 +36,45 @@ describe('exhaustive optimizer oracle', () => {
       .toContain('strong');
   });
 
+  test('matches the exhaustive optimum when an equipment bonus changes damage order', () => {
+    const options = {
+      equipment: [
+        plane('unbonused', { masterId: 800, torpedo: 18, role: 'attacker' }),
+        plane('bonused', { masterId: 801, torpedo: 10, role: 'attacker' }),
+      ],
+      baseCount: 1,
+      targetRadius: 7,
+      enemyAir: 0,
+      targetStates: ['denial', 'denial'],
+      lockedBases: [{ slots: [
+        { locked: false },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+      ] }],
+      combatContext: {
+        targetTags: ['event-test'],
+        multiplierRules: [{
+          id: 'event-test-bonus',
+          enabled: true,
+          targetTags: ['event-test'],
+          equipmentMasterIds: [801],
+          equipmentTypes: [],
+          group: 'event-test-bonus',
+          multiplier: 3,
+        }],
+      },
+      maxResults: 1,
+      nodeBudget: Infinity,
+    };
+
+    const production = optimizeLoadouts(options);
+    const exhaustive = exhaustiveOptimize(options);
+
+    expect(resultSignatures(production)).toEqual(resultSignatures(exhaustive));
+    expect(production.results[0].bases[0].loadout[0].instanceId).toBe('bonused');
+  });
+
   test('keeps explicit formula capabilities in separate equivalence groups', () => {
     const plain = plane('plain-type-54', {
       masterId: 700,

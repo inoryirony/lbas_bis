@@ -722,6 +722,42 @@ describe('LBAS optimizer MVP', () => {
       .toEqual(['plain-0', 'plain-1', 'plain-2', 'plain-3']);
   });
 
+  test('proves a different static optimum when a target equipment bonus applies', () => {
+    const strong = plane('strong-unbonused', {
+      masterId: 300,
+      torpedo: 18,
+      radius: 7,
+      role: 'attacker',
+      isLandBased: true,
+    });
+    const weak = plane('weak-bonused', {
+      masterId: 301,
+      torpedo: 10,
+      radius: 7,
+      role: 'attacker',
+      isLandBased: true,
+    });
+    const result = optimizeLoadouts({
+      equipment: [strong, weak],
+      baseCount: 1,
+      targetRadius: 7,
+      enemyAir: 0,
+      targetStates: ['denial', 'denial'],
+      lockedBases: [{ slots: [
+        { locked: false },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+      ] }],
+      combatContext: bonusContext(301, 3),
+      nodeBudget: Infinity,
+      maxResults: 1,
+    });
+
+    expect(result.search).toMatchObject({ status: 'optimal', provenOptimal: true });
+    expect(result.results[0].bases[0].loadout[0].instanceId).toBe('weak-bonused');
+  });
+
   test('returns invalid_input for invalid detailed enemy slots', () => {
     const result = optimizeLoadouts({
       equipment: [plane('fighter', { antiAir: 12, radius: 7, role: 'fighter' })],
@@ -1260,6 +1296,21 @@ function plane(instanceId, overrides = {}) {
     bombing: 0,
     isLandBased: false,
     ...overrides,
+  };
+}
+
+function bonusContext(masterId, multiplier) {
+  return {
+    targetTags: ['event-test'],
+    multiplierRules: [{
+      id: `bonus-${masterId}`,
+      enabled: true,
+      targetTags: ['event-test'],
+      equipmentMasterIds: [masterId],
+      equipmentTypes: [],
+      group: `bonus-${masterId}`,
+      multiplier,
+    }],
   };
 }
 

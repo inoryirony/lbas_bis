@@ -2,6 +2,7 @@
 
 const { capabilitiesFor } = require('./aircraft');
 const { defaultSlotSizeForPlane } = require('./air-power');
+const { equipmentDamageMultiplier } = require('./combat-context');
 
 const DAMAGE_CAP = 220;
 const LAND_BASED_RECON_DAMAGE_COEFFICIENTS = new Map([
@@ -33,8 +34,13 @@ function calculatePlaneSurfaceTargetPowerProxy(plane, options = {}) {
   );
   const preCapPower = basePower * reconModifier;
   const postCapPower = softCap(preCapPower, DAMAGE_CAP);
+  const equipmentMultiplier = equipmentDamageMultiplier(
+    plane,
+    options.combatContext,
+  );
+  const existingPostCapPower = Math.floor(postCapPower * attack.postCapMultiplier);
 
-  return Math.floor(postCapPower * attack.postCapMultiplier);
+  return Math.floor(existingPostCapPower * equipmentMultiplier);
 }
 
 /** Calculates a base surface-target power proxy with the strongest land-recon modifier. */

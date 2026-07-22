@@ -158,7 +158,13 @@ function summarizePlan(loadouts, context) {
     inventoryCounts = new Map(),
   } = context;
   const bases = loadouts.map((loadout, baseIndex) =>
-    summarizeBase(loadout, enemyAir, targetStateForBase(waveTargets, baseIndex), inventoryCounts));
+    summarizeBase(
+      loadout,
+      enemyAir,
+      targetStateForBase(waveTargets, baseIndex),
+      inventoryCounts,
+      { combatContext: context.combatContext },
+    ));
   const minimumProficiencyValues = bases
     .map((base) => base.minimumProficiency)
     .filter((value) => value != null);
@@ -187,6 +193,7 @@ function summarizePlan(loadouts, context) {
       enemy: context.enemy,
       enemyFleets: context.enemyFleets,
       targetStates: waveTargets,
+      combatContext: context.combatContext,
       ...context.simulationOptions,
     });
     if (simulation.prunedBySimulationBound) {
@@ -235,7 +242,9 @@ function summarizeBase(loadout, enemyAir, targetState, inventoryCounts = new Map
     fulfilled: state.rank >= requiredRank,
     marginToTarget: airPower - requiredAir,
     attackScore: planes.reduce((total, plane) => total + planeAttackScore(plane), 0),
-    damagePower: calculateBaseDamagePower(planes),
+    damagePower: calculateBaseDamagePower(planes, {
+      combatContext: options.combatContext,
+    }),
     resourceCost: planes.reduce((total, plane) => total + resourceCostForPlane(plane), 0),
     scarcityCost: planes.reduce(
       (total, plane) => total + scarcityCostForPlane(plane, inventoryCounts),

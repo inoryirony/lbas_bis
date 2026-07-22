@@ -45,6 +45,35 @@ describe('LBAS damage estimates', () => {
     expect(power).toBe(169);
   });
 
+  test('applies matching equipment damage multipliers after the existing post-cap result', () => {
+    const attacker = plane('bonus-ginga', {
+      masterId: 301,
+      role: 'attacker',
+      isAttacker: true,
+      equipType: 47,
+      isLandBased: true,
+      torpedo: 14,
+      bombing: 14,
+    });
+
+    const power = calculatePlaneDamagePower(attacker, {
+      combatContext: {
+        targetTags: ['event-e3'],
+        multiplierRules: [{
+          id: 'event-e3-a',
+          enabled: true,
+          targetTags: ['event-e3'],
+          equipmentMasterIds: [301],
+          equipmentTypes: [],
+          group: 'event-e3-a',
+          multiplier: 1.5,
+        }],
+      },
+    });
+
+    expect(power).toBe(223);
+  });
+
   test('uses the stronger anti-ship stat when torpedo and bombing differ', () => {
     const torpedoStrong = calculatePlaneDamagePower(plane('torpedo-strong', {
       role: 'attacker',

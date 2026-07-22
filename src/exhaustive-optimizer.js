@@ -2,6 +2,7 @@
 
 const { AIR_STATES, calculateEffectiveRadius } = require('./air-power');
 const { aircraftEquivalenceKey } = require('./aircraft');
+const { validateCombatContext } = require('./combat-context');
 const {
   comparePlanScores,
   comparePlansForSort,
@@ -57,7 +58,7 @@ function exhaustiveOptimize(options = {}) {
         prepared.enemyAir,
         targetStateForBase(prepared.waveTargets, baseIndex),
         prepared.inventoryCounts,
-        { details: false },
+        { details: false, combatContext: prepared.combatContext },
       );
       if (!isBaseFeasible(base, prepared.targetRadius)) {
         continue;
@@ -130,6 +131,10 @@ function prepareExhaustive(options) {
   if (!locks.valid) {
     return { valid: false, budget, message: locks.message };
   }
+  const combatValidation = validateCombatContext(options.combatContext);
+  if (!combatValidation.valid) {
+    return { valid: false, budget, message: combatValidation.errors[0].message };
+  }
   const reservedIds = new Set();
   for (const base of locks.bases) {
     for (const slot of base.slots) {
@@ -154,6 +159,7 @@ function prepareExhaustive(options) {
     baseLocks: locks.bases,
     targetRadius: Math.max(0, Number(options.targetRadius) || 0),
     enemyAir: Math.max(0, Number(options.enemyAir) || 0),
+    combatContext: combatValidation.context,
     waveTargets: normalizeWaveTargets(options.targetStates, baseCount),
     maxResults: Math.max(1, Math.floor(Number(options.maxResults) || DEFAULT_MAX_RESULTS)),
     budget,

@@ -130,7 +130,9 @@ function simulateWaveSequence(options = {}) {
       }
       const ownSlotsAfter = slotsForPlanes(base);
       const enemySlotsAfter = slotsForEnemy(enemy);
-      const damage = calculateBaseDamagePower(base.filter(Boolean));
+      const damage = calculateBaseDamagePower(base.filter(Boolean), {
+        combatContext: options.combatContext,
+      });
       const targetState = targetStates[waveIndex];
 
       waves.push({
@@ -203,7 +205,9 @@ function monteCarloWaveSequence(options = {}) {
   const seed = options.seed ?? options.simulationOptions?.seed ?? 0;
   const incumbentScore = options.incumbentScore;
   const maximumDamagePerSample = normalizeBases(options.bases || options.loadouts || [])
-    .reduce((total, base) => total + 2 * calculateBaseDamagePower(base.filter(Boolean)), 0);
+    .reduce((total, base) => total + 2 * calculateBaseDamagePower(base.filter(Boolean), {
+      combatContext: options.combatContext,
+    }), 0);
   let accumulator = null;
   for (let sample = 0; sample < sampleCount; sample += 1) {
     const result = simulateWaveSequence({

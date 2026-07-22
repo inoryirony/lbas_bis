@@ -9,6 +9,7 @@ const {
   requiredAirForState,
 } = require('./air-power');
 const { aircraftEquivalenceKey, capabilitiesFor } = require('./aircraft');
+const { validateCombatContext } = require('./combat-context');
 const {
   calculateBaseDamagePower,
   calculatePlaneSurfaceTargetPowerProxy,
@@ -89,6 +90,9 @@ function optimizeLoadouts(options = {}) {
       detailed
         ? 0
         : requiredAirForState(enemyAir, targetStateForBase(waveTargets, baseIndex)),
+      null,
+      null,
+      prepared.combatContext,
     );
   });
   const selected = [];
@@ -223,6 +227,7 @@ function optimizeLoadouts(options = {}) {
               ),
             staticBoundContext(),
             selectedGroupIndices,
+            prepared.combatContext,
           );
           const futureUpper = relaxedBaseDamageUpperBounds
             .slice(baseIndex + 1)
@@ -438,6 +443,7 @@ function generateBaseCandidates(equipment, targetRadius, enemyAir, slotConstrain
     prepared.enemyAir,
     targetStateForBase(prepared.waveTargets, 0),
     prepared.inventoryCounts,
+    { combatContext: prepared.combatContext },
   ));
 }
 
@@ -457,6 +463,15 @@ function prepareSearch(options) {
   if (!normalizedLocks.valid) {
     return invalidPreparation(options, normalizedLocks.message);
   }
+  const combatValidation = validateCombatContext(options.combatContext);
+  if (!combatValidation.valid) {
+    return invalidPreparation(
+      options,
+      combatValidation.errors[0].message,
+      combatValidation.errors,
+    );
+  }
+  const combatContext = combatValidation.context;
 
   const reservedIds = new Set();
   for (const base of normalizedLocks.bases) {
@@ -475,7 +490,7 @@ function prepareSearch(options) {
     equipment,
     Math.max(0, Number(options.targetRadius) || 0),
   );
-  const groups = groupEquipment(relevantEquipment);
+  const groups = groupEquipment(relevantEquipment, combatContext);
   const enemyFleetInputs = Array.isArray(options.enemyFleets)
     ? options.enemyFleets
     : Array.isArray(options.targets) ? options.targets : null;
@@ -549,6 +564,7 @@ function prepareSearch(options) {
     enemyAir: detailedEnemyAir,
     enemy,
     enemyFleets,
+    combatContext,
     detailed,
     simulationOptions: {
       ...rawSimulationOptions,
@@ -640,7 +656,7 @@ function normalizeSlotConstraint(slot = {}) {
 }
 
 /** Groups interchangeable aircraft and sorts instances for stable materialization. */
-function groupEquipment(equipment) {
+function groupEquipment(equipment, combatContext) {
   const grouped = new Map();
   for (const plane of equipment) {
     const key = aircraftEquivalenceKey(plane);
@@ -652,7 +668,7 @@ function groupEquipment(equipment) {
     .map((group) => ({
       ...group,
       slotAirPower: calculateSlotAirPower(group.representative),
-      damagePower: calculateBaseDamagePower([group.representative]),
+      damagePower: calculateBaseDamagePower([group.representative], { combatContext }),
       instances: group.instances.sort(compareInstanceIds),
     }))
     .sort((left, right) => left.key.localeCompare(right.key));
@@ -705,7 +721,7 @@ function buildStaticSeedPool(prepared, options) {
   const maximumCopies = prepared.baseCount * SLOTS_PER_BASE;
   const bySignature = new Map();
   for (const plane of prepared.groups.flatMap((group) => group.instances)) {
-    const features = staticSeedFeatures(plane);
+    const features = staticSeedFeatures(plane, prepared.combatContext);
     const signature = Object.values(features).join(':');
     const copies = bySignature.get(signature) || [];
     if (copies.length < maximumCopies) copies.push({ plane, features });
@@ -743,10 +759,10 @@ function buildStaticSeedPool(prepared, options) {
   return [...selected.values()].slice(0, maximumPoolSize);
 }
 
-function staticSeedFeatures(plane) {
+function staticSeedFeatures(plane, combatContext) {
   return {
     air: calculateSlotAirPower(plane),
-    damage: calculatePlaneSurfaceTargetPowerProxy(plane),
+    damage: calculatePlaneSurfaceTargetPowerProxy(plane, { combatContext }),
     radius: Math.max(0, Number(plane.radius) || 0),
     reconAir: landReconCoefficient([plane]),
     reconDamage: landBasedReconDamageModifier([plane]),
@@ -778,7 +794,7 @@ function buildStaticSeedCandidates(baseLock, prepared, baseIndex, options) {
         prepared.enemyAir,
         targetStateForBase(prepared.waveTargets, baseIndex),
         prepared.inventoryCounts,
-        { details: false },
+        { details: false, combatContext: prepared.combatContext },
       );
       if (!isBaseFeasible(summary, prepared.targetRadius)) return;
       const concrete = [...loadout];
@@ -822,7 +838,7 @@ function staticDominanceSearchOrder(searchOrder, remainingCounts, prepared, slot
       prepared.enemyAir,
       'none',
       prepared.inventoryCounts,
-      { details: false },
+      { details: false, combatContext: prepared.combatContext },
     );
     return {
       feasibility: [
@@ -834,7 +850,10 @@ function staticDominanceSearchOrder(searchOrder, remainingCounts, prepared, slot
         capabilities.blocksRangeExtension || plane.blocksRangeExtension ? 0 : 1,
       ],
       damage: STATIC_RECON_DAMAGE_MODIFIERS.map((modifier) =>
-        calculatePlaneSurfaceTargetPowerProxy(plane, { reconModifier: modifier })),
+        calculatePlaneSurfaceTargetPowerProxy(plane, {
+          reconModifier: modifier,
+          combatContext: prepared.combatContext,
+        })),
       resource: summary.resourceCost,
       scarcity: summary.scarcityCost,
     };
@@ -913,6 +932,7 @@ function walkBaseAssignments(
         remainingCounts,
         prepared.groups,
         searchOrder,
+        prepared.combatContext,
       );
     }
     return boundContext;
@@ -958,7 +978,7 @@ function walkBaseAssignments(
         prepared.enemyAir,
         targetState,
         prepared.inventoryCounts,
-        { details: false },
+        { details: false, combatContext: prepared.combatContext },
       );
       const feasible = prepared.detailed
         ? summary.radius >= prepared.targetRadius
@@ -1044,6 +1064,7 @@ function walkStaticBaseAssignmentsBySlots(
         remainingCounts,
         prepared.groups,
         searchOrder,
+        prepared.combatContext,
       );
     }
     return boundContext;
@@ -1096,7 +1117,7 @@ function walkStaticBaseAssignmentsBySlots(
       prepared.enemyAir,
       targetState,
       prepared.inventoryCounts,
-      { details: false },
+      { details: false, combatContext: prepared.combatContext },
     );
     if (!isBaseFeasible(summary, prepared.targetRadius)) {
       return consumeBudget(budgetState);
@@ -1133,6 +1154,7 @@ function maximumStaticBaseDamage(
   requiredAir,
   boundContext = null,
   selectedGroupIndices = null,
+  combatContext = null,
 ) {
   const fixedPlanes = baseLock.slots
     .filter((slot) => slot.kind === SLOT_KINDS.LOCKED_ITEM)
@@ -1164,7 +1186,7 @@ function maximumStaticBaseDamage(
     const fixedDamage = fixedPlanes.reduce(
       (total, plane) => total + calculatePlaneSurfaceTargetPowerProxy(
         plane,
-        { reconModifier: modifier },
+        { reconModifier: modifier, combatContext },
       ),
       0,
     );
@@ -1187,6 +1209,7 @@ function maximumStaticBaseDamage(
           groups,
           requiredProvider,
           airWeight,
+          combatContext,
         );
       if (!Number.isFinite(remainingUpper)) continue;
       modifierMaximum = Math.min(
@@ -1202,7 +1225,7 @@ function maximumStaticBaseDamage(
 }
 
 /** Precomputes relaxed suffix contribution tables shared by every static slot prefix. */
-function buildStaticSuffixDamageBounds(remainingCounts, groups, searchOrder) {
+function buildStaticSuffixDamageBounds(remainingCounts, groups, searchOrder, combatContext) {
   const tableByKey = new Map();
   const maximumAirCoefficients = Array(searchOrder.length + 1).fill(1);
   const maximumRawAir = Array.from(
@@ -1244,7 +1267,7 @@ function buildStaticSuffixDamageBounds(remainingCounts, groups, searchOrder) {
           const copies = Math.min(SLOTS_PER_BASE, remainingCounts[groupIndex]);
           const contribution = calculatePlaneSurfaceTargetPowerProxy(
             representative,
-            { reconModifier: modifier },
+            { reconModifier: modifier, combatContext },
           ) + airWeight * groups[groupIndex].slotAirPower;
           for (let selectedCount = 1; selectedCount <= copies; selectedCount += 1) {
             const providesModifier = groupModifier === modifier ? 1 : 0;
@@ -1312,6 +1335,7 @@ function maximumRemainingPlaneDamage(
   groups,
   requiredProviderModifier = null,
   airWeight = 0,
+  combatContext = null,
 ) {
   if (slotsLeft <= 0) {
     return requiredProviderModifier == null ? 0 : Number.NEGATIVE_INFINITY;
@@ -1330,7 +1354,7 @@ function maximumRemainingPlaneDamage(
     const copies = Math.min(Math.max(0, available), slotsLeft);
     const damage = calculatePlaneSurfaceTargetPowerProxy(
       representative,
-      { reconModifier: modifier },
+      { reconModifier: modifier, combatContext },
     );
     const weightedContribution = damage + airWeight * groups[groupIndex].slotAirPower;
     const providesModifier = requiredProviderModifier != null &&
@@ -1405,7 +1429,7 @@ function orderedGroupIndices(prepared, baseIndex, requiredAir) {
       prepared.enemyAir,
       targetState,
       prepared.inventoryCounts,
-      { details: false },
+      { details: false, combatContext: prepared.combatContext },
     );
     return scorePlan({
       totalDamagePower: summary.damagePower,
@@ -1767,7 +1791,7 @@ function candidateFromFixedLoadout(loadout, prepared, baseIndex, remainingCounts
     prepared.enemyAir,
     targetStateForBase(prepared.waveTargets, baseIndex),
     prepared.inventoryCounts,
-    { details: false },
+    { details: false, combatContext: prepared.combatContext },
   );
   const feasible = prepared.detailed
     ? summary.radius >= prepared.targetRadius

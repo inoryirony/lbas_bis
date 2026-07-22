@@ -203,6 +203,40 @@ describe('wave simulator', () => {
       .not.toEqual(result);
   });
 
+  test('applies the same equipment multiplier to both detailed waves', () => {
+    const attacker = fighter('bonus-attacker', {
+      masterId: 301,
+      antiAir: 0,
+      equipType: 47,
+      isFighter: false,
+      isAttacker: true,
+      isLandAttacker: true,
+      torpedo: 14,
+      bombing: 14,
+    });
+    const result = simulateWaveSequence({
+      bases: [[attacker]],
+      enemy: { mode: 'detailed', slots: [] },
+      targetStates: ['loss', 'loss'],
+      combatContext: {
+        targetTags: ['event-e3'],
+        multiplierRules: [{
+          id: 'event-e3-a',
+          enabled: true,
+          targetTags: ['event-e3'],
+          equipmentMasterIds: [301],
+          equipmentTypes: [],
+          group: 'event-e3-a',
+          multiplier: 1.5,
+        }],
+      },
+      random: () => 0,
+    });
+
+    expect(result.waves.map((wave) => wave.damage)).toEqual([223, 223]);
+    expect(result.totalDamage).toBe(446);
+  });
+
   test('stops a fixed-sample candidate once its optimistic score cannot beat the incumbent', () => {
     const result = monteCarloWaveSequence({
       bases: [[fighter('zero-damage')]],
