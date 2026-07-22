@@ -67,9 +67,10 @@ describe('wave simulator', () => {
     expect(result.waves).toHaveLength(2);
     expect(result.waves[0].enemyAirAfter).toBeLessThan(result.waves[0].enemyAirBefore);
     expect(result.waves[1].enemyAirBefore).toBe(result.waves[0].enemyAirAfter);
-    expect(result.waves[0].ownSlotsAfter).toEqual(result.waves[0].ownSlotsBefore);
+    expect(result.waves[0].ownSlotsAfter[0]).toBeLessThan(result.waves[0].ownSlotsBefore[0]);
+    expect(result.waves[1].ownSlotsBefore).toEqual(result.waves[0].ownSlotsBefore);
     expect(result.waves[1].ownSlotsAfter[0]).toBeLessThan(result.waves[1].ownSlotsBefore[0]);
-    expect(calls.filter(([, side]) => side === 'player')).toHaveLength(1);
+    expect(calls.filter(([, side]) => side === 'player')).toHaveLength(2);
   });
 
   test('requires independent fleets for separate dispatch and carries only own losses', () => {
@@ -119,6 +120,48 @@ describe('wave simulator', () => {
     expect(result.waves[0].jetAssault.ownSlotsAfter[0])
       .toBeLessThan(result.waves[0].jetAssault.ownSlotsBefore[0]);
     expect(result.waves[1].jetAssault).toBeNull();
+  });
+
+  test('applies enemy Stage 2 to non-fighter jets during jet assault', () => {
+    const defense = {
+      modeled: true,
+      byAvoidance: {
+        0: { fixedLosses: [2], rateFactors: [0] },
+      },
+    };
+    const jetBomber = fighter('jet-bomber', {
+      equipType: 57,
+      currentSlot: 18,
+      slotSize: 18,
+      isJet: true,
+      isFighter: false,
+      isAttacker: true,
+      bombing: 12,
+      cost: 10,
+    });
+    const common = {
+      bases: [[jetBomber]],
+      enemy: { mode: 'detailed', slots: [], stage2Defense: defense },
+      targetStates: ['supremacy', 'supremacy'],
+      sampleCount: 1,
+    };
+    const random = (_wave, side) => side.startsWith('jet-stage2') ? 0.999999 : 0;
+    const result = simulateWaveSequence({ ...common, random });
+
+    expect(result.waves[0].jetAssault).toMatchObject({
+      stage2Modeled: true,
+      slotDetails: [{
+        stageOneLoss: 0,
+        stageTwoLoss: 2,
+        loss: 2,
+        after: 16,
+      }],
+    });
+    expect(result.limitations).not.toContain('JET_STAGE2_OMITTED');
+
+    const fixedRandom = (_sample, wave, side) => random(wave, side);
+    expect(evaluateDetailedPlanScore({ ...common, fixedRandom }).expectedDamage)
+      .toBe(monteCarloWaveSequence({ ...common, fixedRandom }).expectedDamage);
   });
 
   test.each(['concentrated', 'separate'])(
@@ -186,6 +229,7 @@ describe('wave simulator', () => {
 
     expect(result.waves.map((wave) => wave.state.key)).toEqual(['denial', 'parity']);
     expect(calls.filter(([, side]) => side === 'player')).toEqual([
+      [0, 'player', expect.any(Number), 0],
       [1, 'player', expect.any(Number), 0],
     ]);
     expect(result.waves[1].ownSlotLoss)
@@ -266,6 +310,67 @@ describe('wave simulator', () => {
 
     expect(result.waves.map((wave) => wave.damage)).toEqual([223, 223]);
     expect(result.totalDamage).toBe(446);
+  });
+
+  test('applies enemy Stage 2 and lets weak shootdown avoidance preserve more attackers', () => {
+    const defense = {
+      modeled: true,
+      byAvoidance: {
+        0: { fixedLosses: [7], rateFactors: [0.2] },
+        1: { fixedLosses: [4], rateFactors: [0.12] },
+      },
+    };
+    const common = {
+      enemy: { mode: 'detailed', slots: [], stage2Defense: defense },
+      targetStates: ['supremacy', 'supremacy'],
+      random: (_wave, side) => side === 'player' ? 0 : 0.999999,
+    };
+    const ordinary = simulateWaveSequence({
+      ...common,
+      bases: [[fighter('ordinary-galaxy', {
+        equipType: 47,
+        isFighter: false,
+        isAttacker: true,
+        isLandAttacker: true,
+        torpedo: 14,
+        shootDownAvoidance: 0,
+      })]],
+    });
+    const resistant = simulateWaveSequence({
+      ...common,
+      bases: [[fighter('egusa-galaxy', {
+        equipType: 47,
+        isFighter: false,
+        isAttacker: true,
+        isLandAttacker: true,
+        torpedo: 15,
+        accuracy: 3,
+        shootDownAvoidance: 1,
+      })]],
+    });
+
+    expect(ordinary.waves[0].ownSlotDetails[0].stageTwoLoss).toBe(10);
+    expect(resistant.waves[0].ownSlotDetails[0].stageTwoLoss).toBe(6);
+    expect(resistant.totalDamage).toBeGreaterThan(ordinary.totalDamage);
+    expect(resistant.limitations).not.toContain('PLAYER_STAGE2_OMITTED');
+
+    const fixedRandom = (_sample, _wave, side) => side === 'player' ? 0 : 0.999999;
+    const scoreOptions = {
+      ...common,
+      random: undefined,
+      fixedRandom,
+      sampleCount: 1,
+      bases: [[fighter('egusa-score', {
+        equipType: 47,
+        isFighter: false,
+        isAttacker: true,
+        isLandAttacker: true,
+        torpedo: 14,
+        shootDownAvoidance: 1,
+      })]],
+    };
+    expect(evaluateDetailedPlanScore(scoreOptions).expectedDamage)
+      .toBe(monteCarloWaveSequence(scoreOptions).expectedDamage);
   });
 
   test('stops a fixed-sample candidate once its optimistic score cannot beat the incumbent', () => {
@@ -686,13 +791,12 @@ function explicitMaximumDetailedDamage(loadout, options) {
     });
   let total = 0;
   for (let sample = 0; sample < options.sampleCount; sample += 1) {
-    const current = loadout.map((plane) => ({ ...plane }));
-    if (options.dispatchMode === 'concentrated') {
-      total += calculateBaseDamagePower(current);
-    }
-    const firstLossWave = options.dispatchMode === 'separate' ? 0 : 1;
-    for (let waveIndex = firstLossWave; waveIndex < 2; waveIndex += 1) {
-      current.forEach((plane, slotIndex) => {
+    let current = loadout.map((plane) => ({ ...plane }));
+    for (let waveIndex = 0; waveIndex < 2; waveIndex += 1) {
+      const sortie = options.dispatchMode === 'concentrated'
+        ? loadout.map((plane) => ({ ...plane }))
+        : current;
+      sortie.forEach((plane, slotIndex) => {
         plane.currentSlot -= playerStageOneLoss(
           'supremacy',
           plane.currentSlot,
@@ -700,7 +804,8 @@ function explicitMaximumDetailedDamage(loadout, options) {
           plane,
         );
       });
-      total += calculateBaseDamagePower(current);
+      if (options.dispatchMode === 'separate') current = sortie;
+      total += calculateBaseDamagePower(sortie);
     }
   }
   return total / options.sampleCount;

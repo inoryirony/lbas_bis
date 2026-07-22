@@ -12,7 +12,11 @@ describe('plugin entry', () => {
   });
 
   test('normalizes target states for one selector per base', () => {
-    expect(parseTargetStates('parity,bad,supremacy')).toEqual(['parity', 'supremacy']);
+    expect(parseTargetStates('loss,parity,bad,supremacy')).toEqual([
+      'loss',
+      'parity',
+      'supremacy',
+    ]);
     expect(normalizeTargetStates(['denial'], 3)).toEqual([
       'denial',
       'denial',
@@ -37,6 +41,8 @@ describe('plugin entry', () => {
     expect(renderedText).toContain('详细逐波模拟');
     expect(renderedText).toContain('统一最低可见熟练度');
     expect(renderedText).toContain('波次状态');
+    expect(renderedText).toContain('丧失');
+    expect(renderedText).toContain('敌制空期望');
     expect(renderedText).toContain('不使用舰载机');
     expect(renderedText).toContain('装备黑名单');
     expect(renderedText).not.toContain('Target radius');
@@ -56,6 +62,7 @@ describe('plugin entry', () => {
     panel.state.equipmentFilters = {
       excludeCarrierAircraft: true,
       blacklistedMasterIds: [],
+      blacklistedEquipTypes: [],
     };
 
     panel.runOptimizer();
@@ -64,7 +71,40 @@ describe('plugin entry', () => {
     expect(start.mock.calls[0][0].equipment.map((plane) => plane.instanceId)).toEqual(['land-1']);
   });
 
-  test('opens the equipment blacklist dialog and persists edited filters', () => {
+  test('rejects a newly selected blacklisted plane but preserves one selected earlier', () => {
+    const panel = new plugin.reactClass({ readPoiState: () => equipmentPoiState() });
+    panel.setState = (updater) => {
+      const patch = typeof updater === 'function' ? updater(panel.state) : updater;
+      Object.assign(panel.state, patch);
+    };
+    panel.state.equipmentFilters = {
+      excludeCarrierAircraft: false,
+      blacklistedMasterIds: [2],
+      blacklistedEquipTypes: [],
+    };
+
+    panel.updateSlotPlane(0, 0, 'land-1');
+    expect(panel.state.simulator.bases[0].slots[0].plane).toBeNull();
+
+    panel.state.equipmentFilters.blacklistedMasterIds = [];
+    panel.updateSlotPlane(0, 0, 'land-1');
+    expect(panel.state.simulator.bases[0].slots[0].plane?.instanceId).toBe('land-1');
+
+    panel.state.equipmentFilters.blacklistedMasterIds = [2];
+    panel.render();
+    expect(panel.state.simulator.bases[0].slots[0].plane?.instanceId).toBe('land-1');
+  });
+
+  test('renders one searchable aircraft combobox per simulator slot', () => {
+    const panel = new plugin.reactClass({ readPoiState: () => equipmentPoiState() });
+    const comboboxes = findNodes(panel.render(), (node) =>
+      node.type === 'input' && node.props?.role === 'combobox');
+
+    expect(comboboxes).toHaveLength(4);
+    expect(comboboxes.every((node) => node.props.placeholder === '搜索装备')).toBe(true);
+  });
+
+  test('shows equipment kinds and persists master and kind blacklist filters', () => {
     const storage = {
       getItem: vi.fn(() => null),
       setItem: vi.fn(),
@@ -83,12 +123,21 @@ describe('plugin entry', () => {
     expect(renderedText).toContain('恢复默认');
     expect(renderedText).toContain('清空黑名单');
     expect(renderedText).toContain('测试舰战');
+    expect(renderedText).toContain('舰上战斗机');
+    expect(renderedText).toContain('陆上攻击机');
+    expect(renderedText).toContain('按装备种类');
 
     panel.toggleEquipmentBlacklist(2, true);
+    panel.toggleEquipmentTypeBlacklist(47, true);
     expect(panel.state.equipmentFilters.blacklistedMasterIds).toEqual([2]);
+    expect(panel.state.equipmentFilters.blacklistedEquipTypes).toEqual([47]);
     expect(storage.setItem).toHaveBeenCalledWith(
       'poi-plugin-lbas-bis.equipment-filters.v1',
-      JSON.stringify({ excludeCarrierAircraft: false, blacklistedMasterIds: [2] }),
+      JSON.stringify({
+        excludeCarrierAircraft: false,
+        blacklistedMasterIds: [2],
+        blacklistedEquipTypes: [47],
+      }),
     );
   });
 
@@ -132,6 +181,7 @@ describe('plugin entry', () => {
     panel.state.searchPhase = 'finding_feasible';
     panel.state.searchProgress = {
       nodesExplored: 2048,
+      totalNodesExplored: 3072,
       nodesPruned: 512,
       candidatesEvaluated: 12,
       simulationSamplesEvaluated: 768,
@@ -141,9 +191,26 @@ describe('plugin entry', () => {
     const renderedText = collectText(panel.render());
     expect(renderedText).toContain('停止计算');
     expect(renderedText).toContain('正在寻找可行方案');
-    expect(renderedText).toContain('搜索节点 2048');
+    expect(renderedText).toContain('搜索节点 3072');
     expect(renderedText).toContain('已剪枝 512');
     expect(renderedText).toContain('当前最佳');
+  });
+
+  test('renders translated countable detailed-search progress as a percentage', () => {
+    const panel = new plugin.reactClass({});
+    panel.state.isSearching = true;
+    panel.state.searchPhase = 'building_prefix_trajectories';
+    panel.state.searchProgress = {
+      phase: 'building_prefix_trajectories',
+      completedWork: 25,
+      totalWork: 100,
+      nodesExplored: 4096,
+      elapsedMs: 5000,
+    };
+
+    const renderedText = collectText(panel.render());
+    expect(renderedText).toContain('正在构建前序敌机轨迹');
+    expect(renderedText).toContain('25 / 100 (25%)');
   });
 
   test('renders editable detailed enemy slot controls', () => {
@@ -173,6 +240,7 @@ describe('plugin entry', () => {
     expect(renderedText).toContain('选择敌舰');
     expect(renderedText).toContain('完全自定义敌舰');
     expect(renderedText).toContain('自定义敌机槽位');
+    expect(renderedText).toContain('未计敌方 Stage 2 / 抗击坠');
   });
 
   test('edits custom equipment multiplier rules and shows the effective plane bonus', () => {
@@ -199,6 +267,7 @@ describe('plugin entry', () => {
         isLandAttacker: true,
         radius: 7,
         torpedo: 14,
+        shootDownAvoidance: 1,
       } },
     );
 
@@ -231,8 +300,13 @@ describe('plugin entry', () => {
     });
     expect(renderedText).toContain('装备伤害倍率');
     expect(renderedText).toContain('E-3 Group A');
+    expect(renderedText).toContain('抗击坠 弱');
     expect(renderedText).toContain('×1.18');
-    expect(renderedText.match(/×1\.18/g)).toHaveLength(2);
+    expect(renderedText.match(/×1\.18/g)).toHaveLength(1);
+    const selectedEquipment = findNodes(panel.render(), (node) =>
+      node.type === 'input' && node.props?.role === 'combobox' && node.props.value?.includes('倍卡陆攻'));
+    expect(selectedEquipment).toHaveLength(1);
+    expect(selectedEquipment[0].props.value).toContain('×1.18');
 
     panel.updateMultiplierRule(0, 'enabled', false);
     expect(panel.state.simulator.combatContext.multiplierRules[0].enabled).toBe(false);
@@ -290,7 +364,7 @@ describe('plugin entry', () => {
     expect(panel.state.search).toBeNull();
   });
 
-  test('invalidates an active search when importing its incumbent plan', () => {
+  test('keeps an active proof running when importing its incumbent plan', () => {
     const panel = createSynchronousPanel();
     const cancel = vi.fn(() => true);
     panel.searchRunner = { cancel };
@@ -300,10 +374,14 @@ describe('plugin entry', () => {
 
     panel.importPlan({ bases: [] });
 
-    expect(cancel).toHaveBeenCalledOnce();
-    expect(panel.state.results).toEqual([]);
-    expect(panel.state.search).toBeNull();
-    expect(panel.state.isSearching).toBe(false);
+    expect(cancel).not.toHaveBeenCalled();
+    expect(panel.state.results).toEqual([{ totalDamagePower: 123 }]);
+    expect(panel.state.search).toEqual({
+      status: 'searching',
+      provenOptimal: false,
+      nodesExplored: 99,
+    });
+    expect(panel.state.isSearching).toBe(true);
   });
 
   test('rejects malformed multiplier selectors without changing the committed rule', () => {
@@ -354,6 +432,8 @@ describe('plugin entry', () => {
     panel.applyMapPreset(mapFormation('A', 1501));
     panel.applyMapPreset(mapFormation('B', 1502));
     expect(panel.state.simulator.enemy.dataSource).toBe('automatic');
+    expect(panel.state.simulator.enemy.stage2Defense).toMatchObject({ modeled: true });
+    expect(collectText(panel.render())).toContain('已计敌方 Stage 2 / 抗击坠');
 
     panel.useCustomEnemyComposition();
 
@@ -369,6 +449,7 @@ describe('plugin entry', () => {
         sourceShipIndex: 0,
       }),
     ]);
+    expect(panel.state.simulator.enemy.stage2Defense).toBeNull();
   });
 
   test('restores a static custom air-power draft after applying an automatic preset', () => {
@@ -712,6 +793,9 @@ function collectText(node) {
     return node.map(collectText).join(' ');
   }
   if (typeof node.type === 'function') {
+    if (node.type.prototype?.render) {
+      return collectText(new node.type(node.props || {}).render());
+    }
     return collectText(node.type(node.props || {}));
   }
   return collectText(node.props?.children);
@@ -721,7 +805,12 @@ function findNodes(node, predicate) {
   if (node == null || typeof node === 'boolean') return [];
   if (Array.isArray(node)) return node.flatMap((child) => findNodes(child, predicate));
   if (typeof node !== 'object') return [];
-  if (typeof node.type === 'function') return findNodes(node.type(node.props || {}), predicate);
+  if (typeof node.type === 'function') {
+    if (node.type.prototype?.render) {
+      return findNodes(new node.type(node.props || {}).render(), predicate);
+    }
+    return findNodes(node.type(node.props || {}), predicate);
+  }
   const matches = predicate(node) ? [node] : [];
   return [...matches, ...findNodes(node.props?.children, predicate)];
 }
@@ -785,5 +874,9 @@ function mapFormation(node, shipId) {
     radius: [5],
     ships: [{ id: shipId, name: `Enemy ${shipId}`, airPower: 0 }],
     enemySlots: [],
+    stage2Defense: {
+      modeled: true,
+      byAvoidance: { 0: { fixedLosses: [1], rateFactors: [0] } },
+    },
   };
 }

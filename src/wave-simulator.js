@@ -20,6 +20,7 @@ const {
 } = require('./enemy-slots');
 const { createFixedSampleRandom } = require('./random');
 const { requireSampleCount } = require('./simulation-options');
+const { stageTwoShootdownStatus } = require('./enemy-stage2');
 
 const PLAYER_STAGE_ONE_CONSTANTS = Object.freeze({
   supremacy: 1,
@@ -97,6 +98,7 @@ function simulateWaveSequence(options = {}) {
   const waves = [];
   const usedSteelByBase = bases.map(() => 0);
   const initialOwnSlots = bases.map((base) => slotsForPlanes(base));
+  const limitations = detailedLimitationsFor(enemies);
 
   bases.forEach((base, baseIndex) => {
     let ownAir = calculateBaseAirPower(base);
@@ -109,7 +111,13 @@ function simulateWaveSequence(options = {}) {
       const runJet = !enemy.isAirRaidCell &&
         (dispatchMode === 'separate' || waveInBase === 0);
       const jetAssault = runJet
-        ? simulateJetAssault(base, waveIndex, random, playerLossKeys[baseIndex])
+        ? simulateJetAssault(
+          base,
+          enemy.stage2Defense,
+          waveIndex,
+          random,
+          playerLossKeys[baseIndex],
+        )
         : null;
       if (jetAssault) {
         ownAir = jetAssault.ownAirAfter;
@@ -126,22 +134,22 @@ function simulateWaveSequence(options = {}) {
       );
       const enemySlotDetails = applyEnemyStageOne(enemy, state.key, waveIndex, random);
       const enemyAirAfter = airPowerForEnemy(enemy);
-      const applyPlayerLoss = dispatchMode === 'separate' || waveInBase === 1;
-      const ownSlotDetails = applyPlayerLoss
-        ? applyPlayerStageOne(
-          base,
-          state.key,
-          waveIndex,
-          random,
-          playerLossKeys[baseIndex],
-        )
-        : unchangedOwnSlotDetails(base);
-      if (applyPlayerLoss) {
-        ownAir = calculateBaseAirPower(base);
-      }
-      const ownSlotsAfter = slotsForPlanes(base);
+      const persistPlayerLoss = dispatchMode === 'separate' || waveInBase === 1;
+      const playerWave = simulatePlayerWave(
+        base,
+        enemy.stage2Defense,
+        state.key,
+        waveIndex,
+        random,
+        playerLossKeys[baseIndex],
+        persistPlayerLoss,
+      );
+      const ownSlotDetails = playerWave.slotDetails;
+      const ownSlotsAfter = slotsForPlanes(playerWave.sortieBase);
+      const ownAirAfter = calculateBaseAirPower(playerWave.sortieBase);
+      if (persistPlayerLoss) ownAir = ownAirAfter;
       const enemySlotsAfter = slotsForEnemy(enemy);
-      const damage = calculateBaseDamagePower(base.filter(Boolean), {
+      const damage = calculateBaseDamagePower(playerWave.sortieBase.filter(Boolean), {
         combatContext: options.combatContext,
       });
       const targetState = targetStates[waveIndex];
@@ -157,7 +165,7 @@ function simulateWaveSequence(options = {}) {
         airPower: ownAirBefore,
         stateOwnAir: ownAirBefore,
         ownAirBefore,
-        ownAirAfter: ownAir,
+        ownAirAfter,
         enemyAirBefore,
         enemyAirAfter,
         ownSlotsBefore,
@@ -200,10 +208,10 @@ function simulateWaveSequence(options = {}) {
     totalSupplyBauxite,
     totalResourceCost: totalUsedSteel + totalSupplyFuel + totalSupplyBauxite,
     allWaveTargetsFulfilled: waves.every((wave) => wave.fulfilled),
-    limitations: [...DETAILED_LIMITATIONS],
+    limitations,
     limitationNotes: {
       DAMAGE_LOSS_RESOURCE_OPTIMISTIC:
-        'Player Stage 2 and jet Stage 2 are omitted, so own losses and resource use may be low and damage may be high.',
+        'Some resource accounting remains omitted, so resource use may be low.',
     },
   };
 }
@@ -272,7 +280,7 @@ function monteCarloWaveSequence(options = {}) {
     expectedFinalOwnAir: divideNested(accumulator.finalOwnAir, sampleCount),
     expectedFinalEnemySlots: divideNested(accumulator.finalEnemySlots, sampleCount),
     expectedFinalEnemyAir: divideNested(accumulator.finalEnemyAir, sampleCount),
-    limitations: [...DETAILED_LIMITATIONS],
+    limitations: first.limitations,
     limitationNotes: first.limitationNotes,
   };
 }
@@ -386,6 +394,7 @@ function evaluateDetailedPlanScore(options = {}) {
     captureFinalEnemySlots: options.captureFinalEnemySlots,
     incumbentScore: options.incumbentScore,
     disableConcentratedSegmentReuse: options.disableConcentratedSegmentReuse,
+    stage2Modeled: enemies.some((enemy) => enemy.stage2Defense?.modeled === true),
   })) {
     return evaluateReusableConcentratedSegment({
       base: bases[0],
@@ -429,6 +438,20 @@ function evaluateDetailedPlanScore(options = {}) {
               plane.lossModifier,
             ));
           });
+          applyNumericEnemyStageTwo(
+            base,
+            slots,
+            enemy.stage2Defense,
+            fixedRandom,
+            sample,
+            waveIndex,
+            {
+              phasePrefix: 'jet-stage2',
+              isEligible: (plane) => plane?.isJet &&
+                plane.isStageTwoTarget &&
+                !plane.isEscortItem,
+            },
+          );
           ownAir = numericBaseAirPower(base, slots, true);
         }
 
@@ -454,21 +477,30 @@ function evaluateDetailedPlanScore(options = {}) {
           });
         }
 
-        const applyPlayerLoss = dispatchMode === 'separate' || waveInBase === 1;
-        if (applyPlayerLoss && stateKey !== 'none') {
+        const persistPlayerLoss = dispatchMode === 'separate' || waveInBase === 1;
+        const attackSlots = persistPlayerLoss ? slots : Float64Array.from(slots);
+        if (stateKey !== 'none') {
           base.planes.forEach((plane, slotIndex) => {
             if (!plane) return;
-            const before = slots[slotIndex];
-            slots[slotIndex] = Math.max(0, before - numericPlayerLoss(
+            const before = attackSlots[slotIndex];
+            attackSlots[slotIndex] = Math.max(0, before - numericPlayerLoss(
               stateKey,
               before,
               fixedRandom(sample, waveIndex, 'player', base.lossKeys[slotIndex], 0),
               plane.lossModifier,
             ));
           });
-          ownAir = numericBaseAirPower(base, slots, false);
         }
-        totalDamage += numericBaseDamage(base, slots);
+        applyNumericEnemyStageTwo(
+          base,
+          attackSlots,
+          enemy.stage2Defense,
+          fixedRandom,
+          sample,
+          waveIndex,
+        );
+        if (persistPlayerLoss) ownAir = numericBaseAirPower(base, slots, false);
+        totalDamage += numericBaseDamage(base, attackSlots);
       }
     });
 
@@ -625,6 +657,7 @@ function evaluateReusableConcentratedSegment({
         allWaveTargetFulfillmentProbability: fulfilledSamples / sampleCount,
         finalEnemySlotsBySample,
         maximumFinalEnemyAir: [maximumFinalEnemyAir],
+        firstWaveStateKeys: firstWaveStateRanks.map(airStateKeyForRank),
         secondWaveStateKeys,
         damageContributionTotals: new Map(),
       };
@@ -635,8 +668,7 @@ function evaluateReusableConcentratedSegment({
     trajectoryCache.byAir.set(airKey, trajectory);
   }
 
-  const firstWaveDamage = numericBaseDamage(base, ownSlots);
-  let totalDamage = firstWaveDamage * sampleCount;
+  let totalDamage = 0;
   let damageContributionSimulations = 0;
   base.planes.forEach((plane, slotIndex) => {
     if (!plane) return;
@@ -649,20 +681,22 @@ function evaluateReusableConcentratedSegment({
     let contributionTotal = trajectory.damageContributionTotals.get(contributionKey);
     if (contributionTotal == null) {
       contributionTotal = 0;
-      trajectory.secondWaveStateKeys.forEach((stateKey, sample) => {
-        const loss = stateKey === 'none' ? 0 : numericPlayerLoss(
-          stateKey,
-          currentSlot,
-          fixedRandom(
-            sample,
-            baseIndexOffset * 2 + 1,
-            'player',
-            base.lossKeys[slotIndex],
-            0,
-          ),
-          plane.lossModifier,
-        );
-        contributionTotal += plane.damageBySlot[currentSlot - loss] || 0;
+      trajectory.secondWaveStateKeys.forEach((secondStateKey, sample) => {
+        [trajectory.firstWaveStateKeys[sample], secondStateKey].forEach((stateKey, waveInBase) => {
+          const loss = stateKey === 'none' ? 0 : numericPlayerLoss(
+            stateKey,
+            currentSlot,
+            fixedRandom(
+              sample,
+              baseIndexOffset * 2 + waveInBase,
+              'player',
+              base.lossKeys[slotIndex],
+              0,
+            ),
+            plane.lossModifier,
+          );
+          contributionTotal += plane.damageBySlot[currentSlot - loss] || 0;
+        });
       });
       trajectory.damageContributionTotals.set(contributionKey, contributionTotal);
       damageContributionSimulations += 1;
@@ -725,6 +759,7 @@ function canReuseConcentratedPrefixTrajectory(options) {
   const isContinuation = options.baseIndexOffset > 0 &&
     options.initialEnemySlotsBySample != null;
   return options.dispatchMode === 'concentrated' &&
+    options.stage2Modeled !== true &&
     options.disableConcentratedSegmentReuse !== true &&
     options.bases.length === 1 &&
     options.bases[0].hasJet === false &&
@@ -779,22 +814,20 @@ function maximumPlaneDamageContribution(
   if (cached != null) return cached;
 
   const curve = detailedDamageCurve(context, plane, planeKey, reconModifier);
-  const firstLossWave = context.dispatchMode === 'separate' ? 0 : 1;
   let total = 0;
   for (let sample = 0; sample < context.sampleCount; sample += 1) {
     let currentSlot = curve.initialSlot;
-    if (context.dispatchMode === 'concentrated') {
-      total += curve.damageBySlot[currentSlot] || 0;
-    }
-    for (let waveInBase = firstLossWave; waveInBase < 2; waveInBase += 1) {
+    for (let waveInBase = 0; waveInBase < 2; waveInBase += 1) {
       const waveIndex = baseIndex * 2 + waveInBase;
-      currentSlot = Math.max(0, currentSlot - numericPlayerLoss(
+      const before = context.dispatchMode === 'concentrated' ? curve.initialSlot : currentSlot;
+      const after = Math.max(0, before - numericPlayerLoss(
         'supremacy',
-        currentSlot,
+        before,
         context.fixedRandom(sample, waveIndex, 'player', lossCoordinate, 0),
         curve.lossModifier,
       ));
-      total += curve.damageBySlot[currentSlot] || 0;
+      if (context.dispatchMode === 'separate') currentSlot = after;
+      total += curve.damageBySlot[after] || 0;
     }
   }
   context.contributionCache.set(contributionKey, total);
@@ -903,9 +936,10 @@ function applyEnemyStageOne(enemy, stateKey, waveIndex, random) {
   });
 }
 
-/** Runs the kc-web jet Stage 1 and steel-cost phase while intentionally omitting Stage 2. */
+/** Runs the kc-web jet Stage 1, enemy Stage 2, and steel-cost phase. */
 function simulateJetAssault(
   base,
+  stage2Defense,
   waveIndex,
   random,
   lossKeys = playerLossCoordinates(base),
@@ -913,7 +947,7 @@ function simulateJetAssault(
   if (!base.some((plane) => hasCapability(plane, 'isJet'))) return null;
   const ownSlotsBefore = slotsForPlanes(base);
   let usedSteel = 0;
-  const slotDetails = base.map((plane, slotIndex) => {
+  const stageOne = base.map((plane, slotIndex) => {
     if (!plane) return { slotIndex, before: 0, loss: 0, after: 0 };
     const before = plane.currentSlot;
     if (!hasCapability(plane, 'isJet') || plane.isEscortItem) {
@@ -932,6 +966,31 @@ function simulateJetAssault(
     plane.currentSlot = Math.max(0, before - loss);
     return { slotIndex, before, loss, after: plane.currentSlot };
   });
+  const stageTwo = applyEnemyStageTwo(
+    base,
+    stage2Defense,
+    waveIndex,
+    random,
+    lossKeys,
+    {
+      phasePrefix: 'jet-stage2',
+      isEligible: (plane, capabilities) => Boolean(
+        plane &&
+        !plane.isEscortItem &&
+        (plane.isJet === true || capabilities.isJet === true) &&
+        !(plane.isFighter === true || capabilities.isFighter === true),
+      ),
+    },
+  );
+  const slotDetails = stageOne.map((detail, slotIndex) => ({
+    slotIndex,
+    before: detail.before,
+    stageOneLoss: detail.loss,
+    afterStageOne: detail.after,
+    stageTwoLoss: stageTwo[slotIndex].loss,
+    loss: detail.loss + stageTwo[slotIndex].loss,
+    after: stageTwo[slotIndex].after,
+  }));
   const rawAir = base.reduce((total, plane) => {
     if (!plane || hasCapability(plane, 'isRecon')) return total;
     return total + calculateSlotAirPower(plane);
@@ -947,7 +1006,7 @@ function simulateJetAssault(
     ownSlotsAfter: slotsForPlanes(base),
     slotDetails,
     usedSteel,
-    stage2Modeled: false,
+    stage2Modeled: stage2Defense?.modeled === true,
   };
 }
 
@@ -1053,6 +1112,85 @@ function finalizeWaveAccumulator(accumulator, sampleCount) {
   };
 }
 
+/** Resolves one LBAS sortie without leaking first-wave losses into concentrated wave two. */
+function simulatePlayerWave(
+  base,
+  stage2Defense,
+  stateKey,
+  waveIndex,
+  random,
+  lossKeys,
+  persist,
+) {
+  const sortieBase = persist
+    ? base
+    : base.map((plane) => plane ? { ...plane } : null);
+  const stageOne = applyPlayerStageOne(
+    sortieBase,
+    stateKey,
+    waveIndex,
+    random,
+    lossKeys,
+  );
+  const stageTwo = applyEnemyStageTwo(
+    sortieBase,
+    stage2Defense,
+    waveIndex,
+    random,
+    lossKeys,
+  );
+  return {
+    sortieBase,
+    slotDetails: stageOne.map((detail, slotIndex) => ({
+      slotIndex,
+      before: detail.before,
+      stageOneLoss: detail.loss,
+      afterStageOne: detail.after,
+      stageTwoLoss: stageTwo[slotIndex].loss,
+      loss: detail.loss + stageTwo[slotIndex].loss,
+      after: stageTwo[slotIndex].after,
+    })),
+  };
+}
+
+/** Applies enemy no-cut-in Stage 2 to attack-capable aircraft only. */
+function applyEnemyStageTwo(base, defense, waveIndex, random, lossKeys, options = {}) {
+  const phasePrefix = options.phasePrefix || 'player-stage2';
+  return base.map((plane, slotIndex) => {
+    const before = plane?.currentSlot || 0;
+    const capabilities = capabilitiesFor(plane || {});
+    const isStageTwoTarget = typeof options.isEligible === 'function'
+      ? options.isEligible(plane, capabilities)
+      : plane && (
+        plane.isAttacker === true ||
+        capabilities.isAttacker === true ||
+        plane.isAswBomber2 === true ||
+        capabilities.isAswBomber2 === true
+      );
+    if (!isStageTwoTarget || defense?.modeled !== true || before <= 0) {
+      return { slotIndex, before, loss: 0, after: before };
+    }
+    const status = stageTwoShootdownStatus(defense, plane.shootDownAvoidance);
+    const shipCount = Math.min(status.rateFactors.length, status.fixedLosses.length);
+    if (!shipCount) return { slotIndex, before, loss: 0, after: before };
+    const coordinate = lossKeys[slotIndex];
+    const shipIndex = Math.min(
+      shipCount - 1,
+      Math.floor(unitRandom(random(waveIndex, `${phasePrefix}-ship`, coordinate, 0)) * shipCount),
+    );
+    let after = before;
+    if (unitRandom(random(waveIndex, `${phasePrefix}-rate`, coordinate, 0)) >= 0.5) {
+      after -= Math.floor(status.rateFactors[shipIndex] * after);
+    }
+    if (unitRandom(random(waveIndex, `${phasePrefix}-fixed`, coordinate, 0)) >= 0.5) {
+      after -= status.fixedLosses[shipIndex];
+    }
+    after = Math.max(0, after);
+    plane.currentSlot = after;
+    return { slotIndex, before, loss: before - after, after };
+  });
+}
+
 /** Precomputes slot-indexed air, damage, and loss metadata for numeric scoring. */
 function prepareNumericBase(base, combatContext, planeCurveCache = null) {
   const sourcePlanes = base.filter(Boolean);
@@ -1089,6 +1227,8 @@ function prepareNumericPlane(plane, damageCoefficient, combatContext, cache) {
     scoreCacheKey: cacheKey,
     isJet,
     isRecon: plane.isRecon === true || capabilities.isRecon === true,
+    isStageTwoTarget: isAttacker || plane.isAswBomber2 === true || capabilities.isAswBomber2 === true,
+    shootDownAvoidance: Number(plane.shootDownAvoidance) || 0,
     isEscortItem: plane.isEscortItem === true,
     lossModifier: isJet ? 0.6 : isAswPatrol && !isAttacker ? 0.91 : 1,
     airBySlot: Array.from({ length: maximumSlot + 1 }, (_unused, slot) =>
@@ -1127,6 +1267,7 @@ function prepareNumericEnemy(enemy) {
     sortieAntiAir: enemy.slots.map((slot) => slot.sortieAntiAir),
     initialSlots: enemy.slots.map((slot) => slot.currentSlot),
     instanceIds: enemy.slots.map((slot, index) => slot.instanceId ?? index),
+    stage2Defense: enemy.stage2Defense?.modeled === true ? enemy.stage2Defense : null,
   };
 }
 
@@ -1182,6 +1323,47 @@ function numericPlayerLoss(stateKey, currentSlot, random, modifier) {
   return Math.min(currentSlot, Math.floor(raw * modifier));
 }
 
+function applyNumericEnemyStageTwo(
+  base,
+  slots,
+  defense,
+  fixedRandom,
+  sample,
+  waveIndex,
+  options = {},
+) {
+  if (defense?.modeled !== true) return;
+  const phasePrefix = options.phasePrefix || 'player-stage2';
+  base.planes.forEach((plane, slotIndex) => {
+    const isEligible = typeof options.isEligible === 'function'
+      ? options.isEligible(plane)
+      : plane?.isStageTwoTarget;
+    if (!isEligible || slots[slotIndex] <= 0) return;
+    const status = stageTwoShootdownStatus(defense, plane.shootDownAvoidance);
+    const shipCount = Math.min(status.rateFactors.length, status.fixedLosses.length);
+    if (!shipCount) return;
+    const coordinate = base.lossKeys[slotIndex];
+    const shipIndex = Math.min(
+      shipCount - 1,
+      Math.floor(fixedRandom(
+        sample,
+        waveIndex,
+        `${phasePrefix}-ship`,
+        coordinate,
+        0,
+      ) * shipCount),
+    );
+    let after = slots[slotIndex];
+    if (fixedRandom(sample, waveIndex, `${phasePrefix}-rate`, coordinate, 0) >= 0.5) {
+      after -= Math.floor(status.rateFactors[shipIndex] * after);
+    }
+    if (fixedRandom(sample, waveIndex, `${phasePrefix}-fixed`, coordinate, 0) >= 0.5) {
+      after -= status.fixedLosses[shipIndex];
+    }
+    slots[slotIndex] = Math.max(0, after);
+  });
+}
+
 /** Returns whether any physical plane in the base still has aircraft. */
 function baseHasPlane(base, slots) {
   return base.planes.some((plane, index) => plane && slots[index] > 0);
@@ -1227,6 +1409,7 @@ function normalizeEnemyFleet(enemy = {}) {
     ...enemy,
     mode: 'detailed',
     isAirRaidCell: enemy.isAirRaidCell === true,
+    stage2Defense: enemy.stage2Defense?.modeled === true ? enemy.stage2Defense : null,
     slots: validation.slots,
   };
 }
@@ -1234,6 +1417,15 @@ function normalizeEnemyFleet(enemy = {}) {
 /** Returns a detached enemy fleet copy. */
 function cloneEnemyFleet(enemy) {
   return { ...enemy, slots: enemy.slots.map((slot) => ({ ...slot })) };
+}
+
+function detailedLimitationsFor(enemies) {
+  const limitations = [...DETAILED_LIMITATIONS];
+  if (enemies.length && enemies.every((enemy) => enemy.stage2Defense?.modeled === true)) {
+    return limitations.filter((code) =>
+      code !== 'PLAYER_STAGE2_OMITTED' && code !== 'JET_STAGE2_OMITTED');
+  }
+  return limitations;
 }
 
 /** Returns normal base air power from current slots. */

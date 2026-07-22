@@ -2,6 +2,7 @@
 
 const React = require('react');
 const { equipmentDamageMultiplier } = require('../combat-context');
+const { shootDownAvoidanceLabelKey } = require('../enemy-stage2');
 const EquipmentBlacklistDialog = require('./EquipmentBlacklistDialog');
 
 const h = React.createElement;
@@ -28,6 +29,7 @@ function OptimizerPanel(props) {
     onEquipmentBlacklistClose,
     onEquipmentBlacklistQueryChange,
     onEquipmentBlacklistToggle,
+    onEquipmentTypeBlacklistToggle,
     onEquipmentBlacklistReset,
     onEquipmentBlacklistClear,
     onOptimize,
@@ -90,7 +92,7 @@ function OptimizerPanel(props) {
       h(
         'button',
         { type: 'button', onClick: onEquipmentBlacklistOpen, style: styles.button },
-        `${t('equipmentBlacklist')} (${equipmentFilters.blacklistedMasterIds.length})`,
+        `${t('equipmentBlacklist')} (${equipmentFilters.blacklistedMasterIds.length + equipmentFilters.blacklistedEquipTypes.length})`,
       ),
       h('span', { style: styles.meta }, `${t('availablePlanes')}: ${equipmentCount} / ${t('candidatePlanes')}: ${theoreticalCount}`),
     ),
@@ -98,9 +100,11 @@ function OptimizerPanel(props) {
       open: equipmentBlacklistOpen,
       equipment: equipmentCatalog,
       selectedMasterIds: equipmentFilters.blacklistedMasterIds,
+      selectedEquipTypes: equipmentFilters.blacklistedEquipTypes,
       query: equipmentBlacklistQuery,
       onQueryChange: onEquipmentBlacklistQueryChange,
       onToggle: onEquipmentBlacklistToggle,
+      onTypeToggle: onEquipmentTypeBlacklistToggle,
       onResetDefaults: onEquipmentBlacklistReset,
       onClear: onEquipmentBlacklistClear,
       onClose: onEquipmentBlacklistClose,
@@ -117,20 +121,43 @@ function OptimizerPanel(props) {
 
 function renderLiveSearch(phase, progress = {}, results, t, styles) {
   const elapsedSeconds = Math.round((progress?.elapsedMs || 0) / 100) / 10;
+  const displayedNodes = progress?.totalNodesExplored ?? progress?.nodesExplored ?? 0;
+  const hasCountableWork = Number.isFinite(progress?.completedWork) &&
+    Number.isFinite(progress?.totalWork) && progress.totalWork > 0;
+  const completedWork = hasCountableWork
+    ? Math.max(0, Math.min(progress.completedWork, progress.totalWork))
+    : 0;
+  const percentage = hasCountableWork
+    ? Math.round(completedWork / progress.totalWork * 100)
+    : null;
   return h(
     'div',
     { style: styles.searchProgress || styles.searchMeta },
     h('strong', null, t(`phase_${phase || 'finding_feasible'}`)),
     h('span', null, `${t('currentBest')}: ${results.length ? t('plan') : t('waitingFeasible')}`),
+    hasCountableWork
+      ? h('span', null, `${completedWork} / ${progress.totalWork} (${percentage}%)`)
+      : null,
     h(
       'div',
-      { style: styles.progressTrack },
-      h('div', { style: styles.progressBar }),
+      {
+        style: styles.progressTrack,
+        role: 'progressbar',
+        'aria-valuemin': 0,
+        'aria-valuemax': hasCountableWork ? progress.totalWork : undefined,
+        'aria-valuenow': hasCountableWork ? completedWork : undefined,
+      },
+      h('div', {
+        style: {
+          ...styles.progressBar,
+          width: hasCountableWork ? `${percentage}%` : styles.progressBar?.width,
+        },
+      }),
     ),
     h(
       'span',
       null,
-      `${t('searchNodes')} ${progress?.nodesExplored || 0} / ${t('prunedNodes')} ${progress?.nodesPruned || 0} / ${t('completeCandidates')} ${progress?.candidatesEvaluated || 0} / ${t('simulationSamples')} ${progress?.simulationSamplesEvaluated || 0} / ${t('elapsedTime')} ${elapsedSeconds}s`,
+      `${t('searchNodes')} ${displayedNodes} / ${t('prunedNodes')} ${progress?.nodesPruned || 0} / ${t('completeCandidates')} ${progress?.candidatesEvaluated || 0} / ${t('simulationSamples')} ${progress?.simulationSamplesEvaluated || 0} / ${t('elapsedTime')} ${elapsedSeconds}s`,
     ),
   );
 }
@@ -142,7 +169,7 @@ function renderSearch(search, t, styles) {
     'div',
     { style: styles.searchMeta || styles.meta },
     h('strong', null, search.provenOptimal ? t('provenOptimal') : t('notProvenOptimal')),
-    ` / ${t(`searchStatus_${search.status}`)} / ${t('searchNodes')} ${search.nodesExplored ?? 0}`,
+    ` / ${t(`searchStatus_${search.status}`)} / ${t('searchNodes')} ${search.totalNodesExplored ?? search.nodesExplored ?? 0}`,
   );
 }
 
@@ -224,7 +251,7 @@ function renderResults({ results, combatContext, onImportPlan, t, styles }) {
                   key: item.instanceId ?? `slot-${slotIndex}`,
                   style: item.available === false ? styles.missingItem : null,
                 },
-                `${item.name} #${item.instanceId}${formatMultiplier(item, combatContext)} · ${t('airPower')} ${item.antiAir} · ${t('radius')} ${item.radius}${item.missing || item.available === false ? ` · ${t('missing')}` : ''}`,
+                `${item.name} #${item.instanceId}${formatAvoidance(item, t)}${formatMultiplier(item, combatContext)} · ${t('airPower')} ${item.antiAir} · ${t('radius')} ${item.radius}${item.missing || item.available === false ? ` · ${t('missing')}` : ''}`,
               )
               : h(
                 'li',
@@ -237,6 +264,11 @@ function renderResults({ results, combatContext, onImportPlan, t, styles }) {
       ),
     ),
   );
+}
+
+function formatAvoidance(item, t) {
+  if (!item || item.isAttacker !== true) return '';
+  return ` · ${t('shootDownAvoidance')} ${t(shootDownAvoidanceLabelKey(item.shootDownAvoidance))}`;
 }
 
 function formatMultiplier(plane, combatContext) {

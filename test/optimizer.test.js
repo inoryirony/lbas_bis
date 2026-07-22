@@ -967,7 +967,7 @@ describe('LBAS optimizer MVP', () => {
     expect(result.results[0].bases[0].loadout[0].instanceId).toBe('close-damage-high-air');
   });
 
-  test('skips full detailed simulation when minimum-loss damage cannot win', () => {
+  test('counts seed screening while skipping proof simulation when minimum-loss damage cannot win', () => {
     const equipment = [
       plane('minimum-loss-bound-jet', {
         masterId: 2150,
@@ -1008,7 +1008,9 @@ describe('LBAS optimizer MVP', () => {
     expect(result.search).toEqual(expect.objectContaining({
       status: 'optimal',
       provenOptimal: true,
-      simulationSamplesEvaluated: sampleCount,
+      simulationSamplesEvaluated: 2 * sampleCount,
+      numericScoreEvaluations: 2,
+      candidatesEvaluated: 1,
     }));
     expect(result.results[0].bases[0].loadout[0].instanceId)
       .toBe('minimum-loss-bound-jet');
@@ -1384,6 +1386,82 @@ describe('LBAS optimizer MVP', () => {
     expect(result.search.solverStats.suffixTrajectorySimulations)
       .toBeLessThan(result.search.solverStats.suffixCandidatesEvaluated);
   });
+
+  test('reports seed work before publishing the first detailed incumbent', () => {
+    const events = [];
+    const result = optimizeLoadouts({
+      equipment: distinctFighters(8),
+      baseCount: 2,
+      targetRadius: 7,
+      enemy: detailedEnemy(),
+      targetStates: ['parity', 'parity', 'parity', 'parity'],
+      simulationOptions: { seed: 'seed-progress', sampleCount: 4 },
+      simulationWorkBudget: Infinity,
+      nodeBudget: Infinity,
+      maxResults: 1,
+      onProgress: (snapshot) => events.push({ type: 'progress', ...snapshot }),
+      onIncumbent: () => events.push({ type: 'incumbent' }),
+    });
+
+    const firstIncumbent = events.findIndex((event) => event.type === 'incumbent');
+    expect(result.search.provenOptimal).toBe(true);
+    expect(firstIncumbent).toBeGreaterThan(0);
+    expect(events.slice(0, firstIncumbent)).toContainEqual(expect.objectContaining({
+      type: 'progress',
+      phase: 'finding_feasible',
+      nodesExplored: expect.any(Number),
+    }));
+    expect(events.slice(0, firstIncumbent).some((event) => event.nodesExplored > 0)).toBe(true);
+  });
+
+  test('publishes a large-inventory incumbent within the bounded heuristic seed budget', () => {
+    let cancelled = false;
+    let randomCalls = 0;
+    let firstIncumbentRandomCalls = null;
+    /** @type {{ totalNodesExplored: number } | null} */
+    let firstIncumbentProgress = null;
+    const equipment = Array.from({ length: 64 }, (_, index) => plane(`seed-tradeoff-${index}`, {
+      masterId: 3000 + index,
+      antiAir: index + 1,
+      torpedo: 64 - index,
+      bombing: 64 - index,
+      radius: 7,
+      isLandBased: true,
+      role: 'attacker',
+    }));
+    const result = optimizeLoadouts({
+      equipment,
+      baseCount: 2,
+      targetRadius: 7,
+      enemy: detailedEnemy(),
+      targetStates: ['parity', 'parity', 'parity', 'parity'],
+      simulationOptions: {
+        seed: 'prompt-large-seed',
+        sampleCount: 4,
+        fixedRandom: () => {
+          randomCalls += 1;
+          return 0.5;
+        },
+      },
+      simulationWorkBudget: Infinity,
+      nodeBudget: Infinity,
+      maxResults: 1,
+      isCancelled: () => cancelled,
+      onIncumbent: (_plan, progress) => {
+        if (firstIncumbentProgress) return;
+        firstIncumbentProgress = progress;
+        firstIncumbentRandomCalls = randomCalls;
+        cancelled = true;
+      },
+    });
+
+    expect(firstIncumbentProgress).not.toBeNull();
+    if (!firstIncumbentProgress) throw new Error('Expected a feasible incumbent.');
+    expect(firstIncumbentProgress.totalNodesExplored).toBeLessThanOrEqual(20000);
+    expect(firstIncumbentRandomCalls).toBeLessThanOrEqual(2000);
+    expect(result.search).toMatchObject({ status: 'cancelled', provenOptimal: false });
+    expect(result.results).toHaveLength(1);
+  }, 30000);
 
   test('does not prune a second-wave target made feasible by first-wave enemy losses', () => {
     const fighter = plane('fighter', {

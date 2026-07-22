@@ -1559,6 +1559,7 @@ function optimizeDetailedRankOne(prepared, options) {
       backend: exact.solverStats.backend,
       status,
       nodesExplored: exact.solverStats.nodesExplored,
+      totalNodesExplored: exact.solverStats.totalNodesExplored,
       budget: prepared.budget,
       simulationSamplesEvaluated: exact.solverStats.simulationSamplesEvaluated,
       candidatesEvaluated: exact.solverStats.candidatesEvaluated ??

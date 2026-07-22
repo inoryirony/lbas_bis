@@ -37,6 +37,7 @@ function progressEvent(state = {}) {
     type: 'progress',
     phase: state.phase,
     nodesExplored: state.nodesExplored || 0,
+    totalNodesExplored: state.totalNodesExplored ?? state.nodesExplored ?? 0,
     nodesPruned: state.nodesPruned || 0,
     candidatesEvaluated: state.candidatesEvaluated || 0,
     simulationSamplesEvaluated: state.simulationSamplesEvaluated || 0,

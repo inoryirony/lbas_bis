@@ -1,0 +1,17 @@
+{
+  "baseCount": 2,
+  "mapSelection": {
+    "area": 623,
+    "node": "X",
+    "difficulty": 4,
+    "formationIndex": 0
+  },
+  "candidateMode": "owned",
+  "excludeCarrierAircraft": true,
+  "targetStates": ["loss", "loss", "loss", "loss"],
+  "simulationOptions": {
+    "sampleCount": 256,
+    "seed": "2026-e3p1-final-loss"
+  },
+  "maxResults": 1
+}

@@ -3,7 +3,7 @@
 const React = require('react');
 
 const h = React.createElement;
-const STATE_OPTIONS = ['denial', 'parity', 'superiority', 'supremacy'];
+const STATE_OPTIONS = ['loss', 'denial', 'parity', 'superiority', 'supremacy'];
 
 function WaveStatusTable(props) {
   const { waves, onWaveTargetChange, t, styles } = props;
@@ -36,6 +36,19 @@ function WaveStatusTable(props) {
 
 /** Renders deterministic state or Monte Carlo target probability. */
 function renderWaveResult(wave, t, styles) {
+  const result = renderStateResult(wave, t, styles);
+  const expectedAir = Number.isFinite(wave.expectedEnemyAirBefore) &&
+    Number.isFinite(wave.expectedEnemyAirAfter)
+    ? h(
+      'span',
+      { style: styles.meta },
+      `${t('expectedEnemyAir')} ${formatAir(wave.expectedEnemyAirBefore)} → ${formatAir(wave.expectedEnemyAirAfter)}`,
+    )
+    : null;
+  return h(React.Fragment, null, result, expectedAir);
+}
+
+function renderStateResult(wave, t, styles) {
   if (wave.state) {
     return h('strong', { style: wave.fulfilled ? styles.goodState : styles.badState }, t(wave.state.key));
   }
@@ -45,6 +58,10 @@ function renderWaveResult(wave, t, styles) {
     { style: probability >= 100 ? styles.goodState : styles.badState },
     `${probability}%`,
   );
+}
+
+function formatAir(value) {
+  return Math.round(Number(value) * 10) / 10;
 }
 
 function format(template, values) {

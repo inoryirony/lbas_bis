@@ -78,6 +78,13 @@ function EnemyPanel(props) {
         : null,
     ),
     detailed
+      ? h(
+        'div',
+        { style: enemy.stage2Defense?.modeled === true ? styles.goodState : styles.meta },
+        t(enemy.stage2Defense?.modeled === true ? 'enemyStage2Modeled' : 'enemyStage2Omitted'),
+      )
+      : null,
+    detailed
       ? renderDetailedEnemy({
         enemy,
         simulationOptions,

@@ -6,7 +6,11 @@ const { loadMapData } = require('./map-cache');
 const { buildMapCatalog } = require('./map-catalog');
 const { prepareSearch } = require('./optimizer');
 const { extractOptimizationPlanes } = require('./poi-data');
-const { filterOptimizationEquipment } = require('./equipment-filter');
+const {
+  equipmentTypeName,
+  filterOptimizationEquipment,
+  rankEquipmentMatches,
+} = require('./equipment-filter');
 const { createPoiClient } = require('./poi-client');
 const { runSearchSession } = require('./search-session');
 
@@ -23,7 +27,15 @@ async function runCli(argv, io = process, dependencies = {}) {
     if (parsed.command === 'enemy' && parsed.positionals[0] === 'search') {
       return enemySearchCommand(parsed, io);
     }
-    throw new Error('Usage: lbas-bis <validate|optimize|enemy search> [options]');
+    if (parsed.command === 'map' && parsed.positionals[0] === 'search') {
+      return mapSearchCommand(parsed, io, dependencies);
+    }
+    if (parsed.command === 'equipment' && parsed.positionals[0] === 'search') {
+      return equipmentSearchCommand(parsed, io, dependencies);
+    }
+    throw new Error(
+      'Usage: lbas-bis <validate|optimize|enemy search|map search|equipment search> [options]',
+    );
   } catch (error) {
     io.stderr.write(`${error.message}\n`);
     return 1;
@@ -71,23 +83,121 @@ async function enemySearchCommand(parsed, io) {
   return 0;
 }
 
+/** Lists noro6 formations as selectors that can be copied into mapSelection. */
+async function mapSearchCommand(parsed, io, dependencies = {}) {
+  const mapData = await (dependencies.loadMapData || loadMapData)();
+  const catalog = buildMapCatalog(mapData);
+  const areaFilter = optionalIntegerFlag(parsed.flags.area, '--area');
+  const difficultyFilter = optionalIntegerFlag(parsed.flags.difficulty, '--difficulty');
+  const nodeFilter = parsed.flags.node == null ? null : String(parsed.flags.node).trim();
+  const minimumAir = optionalNumberFlag(parsed.flags['min-air'], '--min-air') ?? 0;
+  const formations = [];
+
+  for (const area of catalog.areas) {
+    if (areaFilter != null && area.area !== areaFilter) continue;
+    for (const node of catalog.nodes(area.area)) {
+      if (parsed.flags.boss && !node.isBoss) continue;
+      if (nodeFilter && node.node.toLowerCase() !== nodeFilter.toLowerCase()) continue;
+      for (const difficulty of catalog.difficulties(area.area, node.node)) {
+        if (difficultyFilter != null && difficulty !== difficultyFilter) continue;
+        for (const formation of catalog.formations(area.area, node.node, difficulty)) {
+          if (formation.enemyAir < minimumAir) continue;
+          formations.push({
+            area: formation.area,
+            node: formation.node,
+            difficulty: formation.difficulty,
+            formationIndex: formation.index,
+            enemyAir: formation.enemyAir,
+            targetRadius: formation.radius.length ? Math.max(...formation.radius) : null,
+            isBoss: node.isBoss,
+            detail: formation.detail,
+            ships: formation.ships.map((ship) => ({ id: ship.id, name: ship.name })),
+            warnings: formation.warnings,
+            source: formation.source,
+          });
+        }
+      }
+    }
+  }
+
+  formations.sort((left, right) =>
+    (right.enemyAir - left.enemyAir) ||
+    (left.area - right.area) ||
+    left.node.localeCompare(right.node) ||
+    (right.difficulty - left.difficulty) ||
+    (left.formationIndex - right.formationIndex));
+  const limit = positiveIntegerFlag(parsed.flags.limit, '--limit', 100);
+  io.stdout.write(`${JSON.stringify({
+    total: formations.length,
+    formations: formations.slice(0, limit),
+  })}\n`);
+  return 0;
+}
+
+/** Lists concrete Poi equipment instances for scenario filters and locked slots. */
+async function equipmentSearchCommand(parsed, io, dependencies = {}) {
+  const poiUrl = parsed.flags.poi || 'http://127.0.0.1:17777';
+  const clientFactory = dependencies.createPoiClient || createPoiClient;
+  const extractPlanes = dependencies.extractOptimizationPlanes || extractOptimizationPlanes;
+  const state = await clientFactory(poiUrl).loadState();
+  const noro6Master = await loadNoroMasterForEquipment(dependencies);
+  const query = String(parsed.flags.name || '').trim();
+  const masterId = optionalIntegerFlag(
+    parsed.flags.master ?? parsed.flags['master-id'],
+    '--master',
+  );
+  const equipType = optionalIntegerFlag(parsed.flags.type, '--type');
+  const filtered = extractPlanes(state, {
+    includeMissing: parsed.flags['include-missing'] === true,
+    noro6Master,
+  }).filter((plane) =>
+    (masterId == null || Number(plane.masterId) === masterId) &&
+    (equipType == null || Number(plane.equipType) === equipType))
+    .map((plane) => ({
+      ...plane,
+      typeName: equipmentTypeName(plane.equipType),
+    }));
+  const equipment = rankEquipmentMatches(filtered, query);
+  const limit = positiveIntegerFlag(parsed.flags.limit, '--limit', 100);
+  io.stdout.write(`${JSON.stringify({
+    total: equipment.length,
+    equipment: equipment.slice(0, limit),
+  })}\n`);
+  return 0;
+}
+
 async function hydrateScenario(scenario, poiUrl, dependencies = {}) {
+  const loadMapDataImpl = dependencies.loadMapData || loadMapData;
   const hydrated = await hydrateMapSelection(
     scenario,
-    dependencies.loadMapData || loadMapData,
+    loadMapDataImpl,
   );
   if (!poiUrl) return applyEquipmentFilters(hydrated);
   const clientFactory = dependencies.createPoiClient || createPoiClient;
   const extractPlanes = dependencies.extractOptimizationPlanes || extractOptimizationPlanes;
   const state = await clientFactory(poiUrl).loadState();
+  const noro6Master = await loadNoroMasterForEquipment(dependencies);
   const equipment = extractPlanes(state, {
     includeMissing: hydrated.candidateMode === 'theoretical' || hydrated.includeMissing === true,
     missingCopiesPerMaster: hydrated.missingCopiesPerMaster ?? 1,
+    noro6Master,
   });
   return applyEquipmentFilters({
     ...hydrated,
     equipment,
   });
+}
+
+async function loadNoroMasterForEquipment(dependencies = {}) {
+  const hasInjectedRuntime = Boolean(
+    dependencies.createPoiClient || dependencies.extractOptimizationPlanes,
+  );
+  if (hasInjectedRuntime && typeof dependencies.loadMapData !== 'function') return null;
+  try {
+    return (await (dependencies.loadMapData || loadMapData)()).master;
+  } catch (_error) {
+    return null;
+  }
 }
 
 function applyEquipmentFilters(scenario) {
@@ -97,6 +207,7 @@ function applyEquipmentFilters(scenario) {
     equipment: filterOptimizationEquipment(scenario.equipment, {
       excludeCarrierAircraft: scenario.excludeCarrierAircraft === true,
       blacklistedMasterIds: scenario.blacklistedMasterIds,
+      blacklistedEquipTypes: scenario.blacklistedEquipTypes,
       lockedInstanceIds: (scenario.lockedBases || []).flatMap((base) =>
         (base?.slots || []).filter((slot) => slot?.locked && slot.plane)
           .map((slot) => slot.plane.instanceId)),
@@ -167,6 +278,7 @@ async function hydrateMapSelection(scenario, loadMapDataImpl) {
       manualEnemyAir: formation.enemyAir,
       ships: formation.ships.map((ship) => ({ ...ship })),
       slots: resolved.enemySlots.map((slot) => ({ ...slot, overridden: false })),
+      stage2Defense: formation.stage2Defense || null,
     };
   }
   return resolved;
@@ -214,7 +326,7 @@ function parseArgs(argv) {
       continue;
     }
     const key = value.slice(2);
-    if (key === 'jsonl') {
+    if (BOOLEAN_FLAGS.has(key)) {
       flags[key] = true;
     } else {
       flags[key] = rest[index + 1];
@@ -222,6 +334,29 @@ function parseArgs(argv) {
     }
   }
   return { command, flags, positionals };
+}
+
+const BOOLEAN_FLAGS = new Set(['jsonl', 'boss', 'include-missing']);
+
+function optionalNumberFlag(value, name) {
+  if (value == null) return null;
+  const number = Number(value);
+  if (!Number.isFinite(number)) throw new Error(`${name} must be a finite number.`);
+  return number;
+}
+
+function optionalIntegerFlag(value, name) {
+  const number = optionalNumberFlag(value, name);
+  if (number == null) return null;
+  if (!Number.isInteger(number)) throw new Error(`${name} must be an integer.`);
+  return number;
+}
+
+function positiveIntegerFlag(value, name, fallback) {
+  const number = optionalIntegerFlag(value, name);
+  if (number == null) return fallback;
+  if (number <= 0) throw new Error(`${name} must be a positive integer.`);
+  return number;
 }
 
 module.exports = { hydrateScenario, parseArgs, runCli };

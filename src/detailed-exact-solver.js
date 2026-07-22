@@ -24,6 +24,12 @@ const SLOT_KINDS = Object.freeze({
   LOCKED_ITEM: 'LOCKED_ITEM',
   OPEN: 'OPEN',
 });
+const FAST_STATIC_SEED_NODE_LIMIT = 3000000;
+const FAST_HEURISTIC_SEED_ATTEMPTS = Object.freeze([
+  Object.freeze({ seedPoolLimit: 12, seedCandidateLimit: 512, combinationLimit: 20000 }),
+  Object.freeze({ seedPoolLimit: 20, seedCandidateLimit: 2048, combinationLimit: 50000 }),
+  Object.freeze({ seedPoolLimit: 32, seedCandidateLimit: 4096, combinationLimit: 100000 }),
+]);
 
 /** Solves a rank-one fixed-sample detailed search from reusable per-base frontiers. */
 function solveDetailedExact(prepared, solverOptions = {}) {
@@ -67,18 +73,29 @@ function solveDetailedExact(prepared, solverOptions = {}) {
   });
   solverOptions.onPhaseChange?.('finding_feasible');
 
-  let incumbent = buildStaticSeed(prepared, work);
+  let seedWasPublished = false;
+  let incumbent = buildStaticSeed(
+    prepared,
+    work,
+    stats,
+    solverOptions,
+    startedAt,
+    (plan) => {
+      seedWasPublished = true;
+      solverOptions.onIncumbent?.(
+        plan,
+        progressSnapshot(work, 'improving', startedAt),
+      );
+    },
+  );
   if (!work.checkStop()) return stoppedResult(stats, startedAt, work.reason, incumbent);
-  if (incumbent) {
-    stats.numericScoreEvaluations += 1;
-    stats.simulationSamplesEvaluated +=
-      incumbent.simulation?.samplesEvaluated || prepared.simulationOptions.sampleCount;
-  }
   if (incumbent?.allWaveTargetFulfillmentProbability === 1) {
-    solverOptions.onIncumbent?.(
-      incumbent,
-      progressSnapshot(work, 'improving', startedAt),
-    );
+    if (!seedWasPublished) {
+      solverOptions.onIncumbent?.(
+        incumbent,
+        progressSnapshot(work, 'improving', startedAt),
+      );
+    }
     if (!work.checkStop()) return stoppedResult(stats, startedAt, work.reason, incumbent);
     solverOptions.onPhaseChange?.('proving_optimal');
     const refined = refineStaticSeed(incumbent, prepared, work, stats);
@@ -462,8 +479,115 @@ function refineStaticSeed(seed, prepared, work, stats) {
   return refined.allWaveTargetFulfillmentProbability === 1 ? refined : seed;
 }
 
-/** Builds a bounded feasible lower bound without delaying exact proof or cancellation. */
-function buildStaticSeed(prepared, work) {
+/** Publishes a bounded heuristic seed before falling back to the static frontier. */
+function buildStaticSeed(
+  prepared,
+  work,
+  stats,
+  solverOptions,
+  startedAt,
+  onIncumbent = (_plan) => {},
+) {
+  let seedNodesExplored = 0;
+  let seedCandidatesEvaluated = 0;
+  const inventorySize = prepared.groups.reduce(
+    (total, group) => total + group.instances.length,
+    0,
+  );
+  const reportSeedProgress = (nodesExplored, candidatesEvaluated = 0) => {
+    seedNodesExplored = Math.max(seedNodesExplored, nodesExplored || 0);
+    seedCandidatesEvaluated = Math.max(
+      seedCandidatesEvaluated,
+      candidatesEvaluated || 0,
+    );
+    stats.seedNodesExplored = seedNodesExplored;
+    stats.seedCandidatesEvaluated = seedCandidatesEvaluated;
+    solverOptions.onProgress?.({
+      ...progressSnapshot(work, 'finding_feasible', startedAt),
+      nodesExplored: stats.nodesExplored + seedNodesExplored,
+      totalNodesExplored: stats.nodesExplored + seedNodesExplored,
+      candidatesEvaluated: seedCandidatesEvaluated,
+    });
+  };
+
+  let heuristicNodes = 0;
+  let heuristicCandidates = 0;
+  for (const attempt of FAST_HEURISTIC_SEED_ATTEMPTS) {
+    let attemptNodes = 0;
+    let attemptCandidates = 0;
+    const heuristicSeed = buildHeuristicStaticSeed(
+      prepared,
+      work,
+      (nodesExplored, candidatesEvaluated) => {
+        attemptNodes = Math.max(attemptNodes, nodesExplored);
+        attemptCandidates = Math.max(attemptCandidates, candidatesEvaluated);
+        reportSeedProgress(
+          heuristicNodes + nodesExplored,
+          heuristicCandidates + candidatesEvaluated,
+        );
+      },
+      { ...attempt, onIncumbent },
+    );
+    heuristicNodes += attemptNodes;
+    heuristicCandidates += attemptCandidates;
+    if (heuristicSeed || !work.checkStop()) return heuristicSeed;
+  }
+  if (inventorySize < 64 && inventorySize < prepared.groups.length * 2) return null;
+
+  let stopAfterIncumbent = false;
+  const exact = solveStaticExact({
+    ...prepared,
+    detailed: false,
+    simulationBudget: 0,
+  }, {
+    nodeBudget: FAST_STATIC_SEED_NODE_LIMIT,
+    isCancelled: () => stopAfterIncumbent || !work.checkStop(),
+    onIncumbent() {
+      stopAfterIncumbent = true;
+    },
+    onProgress(snapshot) {
+      reportSeedProgress(
+        heuristicNodes + snapshot.nodesExplored,
+        heuristicCandidates + snapshot.candidatesEvaluated,
+      );
+    },
+  });
+  seedNodesExplored = Math.max(
+    seedNodesExplored,
+    heuristicNodes + (exact.solverStats?.nodesExplored || 0),
+  );
+  seedCandidatesEvaluated = Math.max(
+    seedCandidatesEvaluated,
+    heuristicCandidates + (exact.solverStats?.combinationsEvaluated || 0),
+  );
+  stats.seedNodesExplored = seedNodesExplored;
+  stats.seedCandidatesEvaluated = seedCandidatesEvaluated;
+  if (!work.checkStop()) return null;
+
+  if (exact.plan) {
+    const detailedSeed = summarizePlan(
+      exact.plan.bases.map((base) => base.loadout),
+      prepared,
+    );
+    stats.numericScoreEvaluations += 1;
+    stats.simulationSamplesEvaluated +=
+      detailedSeed.simulation?.samplesEvaluated || prepared.simulationOptions.sampleCount;
+    if (detailedSeed.allWaveTargetFulfillmentProbability === 1) {
+      onIncumbent(detailedSeed);
+      return detailedSeed;
+    }
+  }
+
+  return null;
+}
+
+/** Retains the former bounded heuristic as a fallback for dynamic-air edge cases. */
+function buildHeuristicStaticSeed(
+  prepared,
+  work,
+  onProgress = (_nodesExplored, _candidatesEvaluated) => {},
+  options = {},
+) {
   const { buildStaticSeedCandidates } = require('./optimizer');
   const candidatesByBase = [];
   for (let baseIndex = 0; baseIndex < prepared.baseLocks.length; baseIndex += 1) {
@@ -471,7 +595,11 @@ function buildStaticSeed(prepared, work) {
       prepared.baseLocks[baseIndex],
       prepared,
       baseIndex,
-      { isCancelled: () => !work.checkStop() },
+      {
+        isCancelled: () => !work.checkStop(),
+        seedPoolLimit: options.seedPoolLimit,
+        seedCandidateLimit: options.seedCandidateLimit,
+      },
     );
     candidatesByBase.push(candidates);
     if (work.stopped) return null;
@@ -487,9 +615,10 @@ function buildStaticSeed(prepared, work) {
       candidatesByBase[baseIndex][0].summary.damagePower;
   }
   let combinations = 0;
+  const combinationLimit = Math.max(1, Number(options.combinationLimit) || 100000);
 
   function combine(baseIndex, damage) {
-    if (!work.checkStop() || combinations >= 100000) return;
+    if (!work.checkStop() || combinations >= combinationLimit) return;
     if (retained.length >= 64 && damage + suffixDamage[baseIndex] < retained.at(-1).damage) {
       return;
     }
@@ -503,24 +632,33 @@ function buildStaticSeed(prepared, work) {
       return;
     }
     for (const candidate of candidatesByBase[baseIndex]) {
+      if (!work.checkStop() || combinations >= combinationLimit) return;
       combinations += 1;
+      if ((combinations & 4095) === 0) onProgress(combinations, retained.length);
       if (candidate.instanceIds.some((instanceId) => usedIds.has(instanceId))) continue;
       candidate.instanceIds.forEach((instanceId) => usedIds.add(instanceId));
       selected.push(candidate);
       combine(baseIndex + 1, damage + candidate.summary.damagePower);
       selected.pop();
       candidate.instanceIds.forEach((instanceId) => usedIds.delete(instanceId));
-      if (!work.checkStop() || combinations >= 100000) return;
+      if (!work.checkStop() || combinations >= combinationLimit) return;
     }
   }
 
   combine(0, 0);
+  onProgress(combinations, retained.length);
   let best = null;
   for (const candidate of retained) {
     if (!work.checkStop()) break;
     const plan = summarizePlan(candidate.loadouts, prepared);
+    work.stats.numericScoreEvaluations += 1;
+    work.stats.simulationSamplesEvaluated +=
+      plan.simulation?.samplesEvaluated || prepared.simulationOptions.sampleCount;
     if (plan.allWaveTargetFulfillmentProbability === 1 &&
-        (!best || comparePlanScores(plan, best) > 0)) best = plan;
+        (!best || comparePlanScores(plan, best) > 0)) {
+      best = plan;
+      options.onIncumbent?.(best);
+    }
   }
   return best;
 }
@@ -677,6 +815,8 @@ function progressSnapshot(work, phase, startedAt) {
   return {
     phase,
     nodesExplored: work.stats?.nodesExplored ?? null,
+    totalNodesExplored: (work.stats?.nodesExplored ?? 0) +
+      (work.stats?.seedNodesExplored ?? 0),
     nodesPruned: work.stats?.nodesPruned ?? 0,
     candidatesEvaluated: work.stats?.combinationsEvaluated ?? null,
     simulationSamplesEvaluated: work.stats?.simulationSamplesEvaluated ?? null,
@@ -688,6 +828,7 @@ function progressSnapshot(work, phase, startedAt) {
 
 function finishedResult(plan, stats, startedAt) {
   stats.status = plan ? 'optimal' : 'infeasible';
+  stats.totalNodesExplored = stats.nodesExplored + (stats.seedNodesExplored || 0);
   stats.elapsedMs = Date.now() - startedAt;
   return { plan, provenOptimal: true, solverStats: stats };
 }
@@ -695,6 +836,7 @@ function finishedResult(plan, stats, startedAt) {
 function stoppedResult(stats, startedAt, reason, plan = null) {
   stats.status = reason === 'cancelled' ? 'cancelled' : 'not_optimal';
   stats.stopReason = reason;
+  stats.totalNodesExplored = stats.nodesExplored + (stats.seedNodesExplored || 0);
   stats.elapsedMs = Date.now() - startedAt;
   return { plan, provenOptimal: false, solverStats: stats };
 }

@@ -7,12 +7,18 @@ const {
 
 const LAND_BASED_API_TYPE_ROOTS = new Set([17, 21, 22, 25, 26]);
 
-function extractOwnedPlanes(poiState) {
+function extractOwnedPlanes(poiState, options = {}) {
   const masterById = getMasterEquipment(poiState);
+  const noroItemsById = noroItemMap(options.noro6Master);
   const ownedEquips = Object.values(poiState?.info?.equips || {});
 
   return ownedEquips
-    .map((equip) => toPlaneInstance(equip, masterById[equip.api_slotitem_id]))
+    .map((equip) => toPlaneInstance(
+      equip,
+      masterById[equip.api_slotitem_id],
+      {},
+      noroItemsById.get(Number(equip.api_slotitem_id)),
+    ))
     .filter(Boolean);
 }
 
@@ -24,7 +30,8 @@ function extractOptimizationPlanes(poiState, options = {}) {
   );
   const missingProficiency = Math.max(0, Math.min(7, Number(options.missingProficiency ?? 7) || 0));
   const masterById = getMasterEquipment(poiState);
-  const ownedPlanes = extractOwnedPlanes(poiState).map((plane) => ({
+  const noroItemsById = noroItemMap(options.noro6Master);
+  const ownedPlanes = extractOwnedPlanes(poiState, options).map((plane) => ({
     ...plane,
     available: true,
     missing: false,
@@ -53,6 +60,7 @@ function extractOptimizationPlanes(poiState, options = {}) {
             copyIndex: index + 1,
             missingQuantityPolicy: missingCopiesPerMaster,
           },
+          noroItemsById.get(masterId),
         ),
       );
     })
@@ -74,7 +82,7 @@ function getMasterEquipment(poiState) {
   return items;
 }
 
-function toPlaneInstance(equip, master, overrides = {}) {
+function toPlaneInstance(equip, master, overrides = {}, noroItem = null) {
   if (!equip || !master || !isLbasCandidateMaster(master)) {
     return null;
   }
@@ -103,6 +111,8 @@ function toPlaneInstance(equip, master, overrides = {}) {
     bombing,
     asw,
     scout,
+    accuracy: Number(noroItem?.accuracy ?? master.api_houm) || 0,
+    shootDownAvoidance: normalizeShootDownAvoidance(noroItem?.avoid),
     available: true,
     missing: false,
     ...overrides,
@@ -118,6 +128,15 @@ function toPlaneInstance(equip, master, overrides = {}) {
     ...basePlane,
     role: classifyRole(equipType, capabilities),
   });
+}
+
+function noroItemMap(master) {
+  return new Map((master?.items || []).map((item) => [Number(item.id), item]));
+}
+
+function normalizeShootDownAvoidance(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 0 && number <= 5 ? number : 0;
 }
 
 function isLbasCandidateMaster(master) {

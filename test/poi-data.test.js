@@ -94,6 +94,49 @@ describe('Poi data adapter', () => {
     ]);
   });
 
+  test('enriches owned planes with noro6 shootdown avoidance', () => {
+    const poiState = samplePoiStateWithOneGinga();
+    poiState.const.$equips[388] = {
+      ...poiState.const.$equips[187],
+      api_id: 388,
+      api_name: 'Ginga Egusa',
+      api_raig: 15,
+      api_baku: 15,
+      api_tais: 4,
+      api_saku: 4,
+      api_distance: 8,
+    };
+    poiState.info.equips[1003] = {
+      api_id: 1003,
+      api_slotitem_id: 388,
+      api_level: 0,
+      api_alv: 7,
+    };
+
+    const planes = extractOwnedPlanes(poiState, {
+      noro6Master: {
+        items: [
+          { id: 187, avoid: 0, accuracy: 1 },
+          { id: 388, avoid: 1, accuracy: 3 },
+        ],
+      },
+    });
+
+    expect(planes.find((plane) => plane.masterId === 187)).toMatchObject({
+      shootDownAvoidance: 0,
+      accuracy: 1,
+    });
+    expect(planes.find((plane) => plane.masterId === 388)).toMatchObject({
+      shootDownAvoidance: 1,
+      accuracy: 3,
+      torpedo: 15,
+      bombing: 15,
+      asw: 4,
+      scout: 4,
+      radius: 8,
+    });
+  });
+
   test('keeps pure range extenders even when they have no air power stat', () => {
     const planes = extractOwnedPlanes({
       const: {

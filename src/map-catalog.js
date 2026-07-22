@@ -2,6 +2,7 @@
 
 const { requiredAirForState } = require('./air-power');
 const { PLANE_TYPES } = require('./aircraft');
+const { buildEnemyStage2Defense } = require('./enemy-stage2');
 
 /** @param {{cells?: Record<string, any>, master?: Record<string, any>}} [input] */
 function buildMapCatalog({ cells = {}, master = {} } = {}) {
@@ -122,6 +123,14 @@ function normalizeFormation(pattern, sourceIndex, formationIndex, enemiesById, i
   });
   const enemySlots = ships.flatMap((ship) => ship.slots);
   const enemyAir = airPowerForSlots(enemySlots);
+  const stage2Defense = buildEnemyStage2Defense({
+    enemyIds,
+    formation: pattern.f,
+    battleType: pattern.t,
+    enemiesById,
+    itemsById,
+    source: 'noro6',
+  });
   return {
     id: `${pattern.a}:${pattern.n}:${pattern.l || 0}:${sourceIndex}`,
     index: formationIndex,
@@ -136,6 +145,7 @@ function normalizeFormation(pattern, sourceIndex, formationIndex, enemiesById, i
     ships,
     enemySlots,
     enemyAir,
+    stage2Defense,
     thresholds: {
       supremacy: requiredAirForState(enemyAir, 'supremacy'),
       superiority: requiredAirForState(enemyAir, 'superiority'),

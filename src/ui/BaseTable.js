@@ -2,6 +2,8 @@
 
 const React = require('react');
 const { equipmentDamageMultiplier } = require('../combat-context');
+const { shootDownAvoidanceLabelKey } = require('../enemy-stage2');
+const EquipmentPicker = require('./EquipmentPicker');
 
 const h = React.createElement;
 const PROFICIENCY_LABELS = ['-', '|', '||', '|||', '/', '//', '///', '>>'];
@@ -12,6 +14,7 @@ function BaseTable(props) {
     equipment,
     summaries,
     combatContext,
+    equipmentFilters,
     onSlotPlaneChange,
     onSlotLockChange,
     t,
@@ -57,6 +60,7 @@ function BaseTable(props) {
                   slotIndex,
                   onSlotPlaneChange,
                   combatContext,
+                  equipmentFilters,
                   t,
                   styles,
                 }),
@@ -106,47 +110,37 @@ function renderEquipmentSelect(props) {
     slotIndex,
     onSlotPlaneChange,
     combatContext,
+    equipmentFilters,
     t,
     styles,
   } = props;
-  const options = optionPlanes(equipment, slot.plane);
   return h(
-    'select',
+    EquipmentPicker,
     {
-      value: slot.plane ? String(slot.plane.instanceId) : '',
-      onChange: (event) => onSlotPlaneChange(
+      equipment,
+      equipmentFilters,
+      plane: slot.plane,
+      onChange: (instanceId) => onSlotPlaneChange(
         baseIndex,
         slotIndex,
-        /** @type {HTMLSelectElement} */ (event.currentTarget).value,
+        instanceId,
       ),
-      style: styles.select,
+      formatSuffix: (plane) => `${formatAvoidance(plane, t)}${formatMultiplier(plane, combatContext)}`,
+      t,
+      styles,
     },
-    h('option', { value: '' }, t('emptySlot')),
-    options.map((plane) =>
-      h(
-        'option',
-        { key: String(plane.instanceId), value: String(plane.instanceId) },
-        `${plane.name} #${plane.instanceId}${formatMultiplier(plane, combatContext)}${plane.missing ? ` (${t('missing')})` : ''}`,
-      ),
-    ),
   );
+}
+
+function formatAvoidance(plane, t) {
+  if (!plane || plane.isAttacker !== true) return '';
+  return ` · ${t('shootDownAvoidance')} ${t(shootDownAvoidanceLabelKey(plane.shootDownAvoidance))}`;
 }
 
 function formatMultiplier(plane, combatContext) {
   const multiplier = equipmentDamageMultiplier(plane, combatContext);
   if (Math.abs(multiplier - 1) < 1e-12) return '';
   return ` ×${Number(multiplier.toFixed(4))}`;
-}
-
-function optionPlanes(equipment, currentPlane) {
-  const unique = new Map();
-  for (const plane of equipment || []) {
-    unique.set(String(plane.instanceId), plane);
-  }
-  if (currentPlane && !unique.has(String(currentPlane.instanceId))) {
-    unique.set(String(currentPlane.instanceId), currentPlane);
-  }
-  return [...unique.values()];
 }
 
 function formatSummary(summary, t) {

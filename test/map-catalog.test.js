@@ -55,6 +55,21 @@ describe('noro6-compatible map catalog', () => {
       Math.floor(10 * Math.sqrt(18)) + Math.floor(Math.sqrt(4)),
     );
   });
+
+  test('attaches enemy Stage 2 defense from full ship equipment and formation data', () => {
+    const catalog = buildMapCatalog({
+      cells: { patterns: [{ a: 65, n: 'M', l: 0, t: 1, f: 1, r: [5], e: [1] }] },
+      master: {
+        maps: [{ area: 65, name: '6-5', boss: ['M'] }],
+        worlds: [{ world: 6, name: 'world 6' }],
+        enemies: [{ id: 1501, name: 'AA cruiser', aa: 100, slots: [-1], items: [1601] }],
+        items: [{ id: 1601, name: 'AA gun', type: 21, itype: 15, antiAir: 10 }],
+      },
+    });
+
+    expect(catalog.formations(65, 'M', 0)[0].stage2Defense)
+      .toMatchObject({ modeled: true, formation: 1, isUnion: false });
+  });
 });
 
 function realSubset() {

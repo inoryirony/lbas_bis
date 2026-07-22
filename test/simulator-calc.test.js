@@ -44,7 +44,14 @@ describe('simulator calculations', () => {
       waveIndex: 0,
       baseIndex: 0,
       targetState: 'parity',
+      expectedEnemyAirBefore: 72,
+      expectedEnemyAirAfter: expect.any(Number),
     }));
+    expect(summary.waves[0].expectedEnemyAirAfter).toBeLessThan(72);
+    expect(summary.waves[1].expectedEnemyAirBefore)
+      .toBeCloseTo(summary.waves[0].expectedEnemyAirAfter, 8);
+    expect(summary.waves[1].expectedEnemyAirAfter)
+      .toBeLessThan(summary.waves[1].expectedEnemyAirBefore);
     expect(summary.calculationMode).toBe('static');
     expect(summary.mode).toBe('static');
     expect(summary.limitations).toContain('STATIC_ENEMY_AIR');
@@ -83,6 +90,27 @@ describe('simulator calculations', () => {
     expect(removeDetailedEnemySlot(state, 0).enemy.slots).toEqual([]);
   });
 
+  test('estimates two denial waves near the reference 0.8 enemy-air ratio', () => {
+    let state = createEmptySimulatorState();
+    state = {
+      ...state,
+      enemy: { ...state.enemy, enemyAir: 300 },
+    };
+    state = setBaseSlot(state, 0, 0, { plane: plane('denial-fighter', {
+      antiAir: 24,
+      equipType: 48,
+      proficiency: 0,
+      isFighter: true,
+      isAttacker: false,
+      role: 'fighter',
+    }) });
+
+    const summary = calculateSimulatorSummary(state);
+
+    expect(summary.waves.map((wave) => wave.expectedState.key)).toEqual(['denial', 'denial']);
+    expect(summary.waves[1].expectedEnemyAirAfter / 300).toBeCloseTo(0.797, 2);
+  });
+
   test('delegates detailed enemies to Monte Carlo without mutating slots', () => {
     let state = /** @type {any} */ (createEmptySimulatorState());
     state = setBaseSlot(state, 0, 0, { plane: plane('fighter', {
@@ -116,6 +144,10 @@ describe('simulator calculations', () => {
     expect(summary.calculationMode).toBe('detailed');
     expect(summary.simulation.sampleCount).toBe(16);
     expect(summary.simulation.waves).toHaveLength(2);
+    expect(summary.waves[0]).toEqual(expect.objectContaining({
+      expectedEnemyAirBefore: expect.any(Number),
+      expectedEnemyAirAfter: expect.any(Number),
+    }));
     expect(summary.limitations).toEqual(expect.arrayContaining([
       'ENEMY_STAGE2_OMITTED',
       'JET_STAGE2_OMITTED',

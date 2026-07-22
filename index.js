@@ -23,6 +23,7 @@ const { applyPlanToSimulator } = require('./src/import-plan');
 const {
   defaultBlacklistedMasterIds,
   filterOptimizationEquipment,
+  isEquipmentExcluded,
   uniqueEquipmentMasters,
 } = require('./src/equipment-filter');
 const SimulatorPanel = require('./src/ui/SimulatorPanel');
@@ -31,7 +32,7 @@ const OptimizerPanel = require('./src/ui/OptimizerPanel');
 const h = React.createElement;
 const PLUGIN_ID = 'lbas_bis';
 const CUSTOM_ENEMY_SHIP_ID = '__custom__';
-const STATE_OPTIONS = ['denial', 'parity', 'superiority', 'supremacy'];
+const STATE_OPTIONS = ['loss', 'denial', 'parity', 'superiority', 'supremacy'];
 const INVALID_MULTIPLIER_FIELD = Symbol('invalid-multiplier-field');
 const EQUIPMENT_FILTER_STORAGE_KEY = 'poi-plugin-lbas-bis.equipment-filters.v1';
 
@@ -41,6 +42,7 @@ const FALLBACK_ZH_CN = {
   optimizerTitle: '配装优化',
   targetRadius: '目标半径',
   enemyAir: '敌制空',
+  expectedEnemyAir: '敌制空期望',
   baseCount: '基地队数',
   displayWaves: '显示波数',
   targetState: '目标状态',
@@ -121,6 +123,8 @@ const FALLBACK_ZH_CN = {
   phase_finding_feasible: '正在寻找可行方案',
   phase_improving: '正在改进方案',
   phase_proving_optimal: '正在证明全局最优',
+  phase_building_prefix_trajectories: '正在构建前序敌机轨迹',
+  phase_evaluating_suffix_trajectories: '正在评估后序敌机轨迹',
   phase_cancelling: '正在停止',
   prunedNodes: '已剪枝',
   completeCandidates: '完整候选',
@@ -148,6 +152,15 @@ const FALLBACK_ZH_CN = {
   customEnemyShipName: '自定义敌舰名',
   addSlotForShip: '为该舰增加敌机槽',
   refreshEnemyShip: '刷新敌舰数据',
+  enemyStage2Modeled: '已计敌方 Stage 2 / 抗击坠',
+  enemyStage2Omitted: '未计敌方 Stage 2 / 抗击坠',
+  shootDownAvoidance: '抗击坠',
+  shootDownAvoidance_0: '无',
+  shootDownAvoidance_1: '弱',
+  shootDownAvoidance_2: '中',
+  shootDownAvoidance_3: '强',
+  shootDownAvoidance_4: '超',
+  shootDownAvoidance_5: '超+',
   multiplierEditor: '装备伤害倍率',
   targetTags: '目标标签',
   ruleLabel: '规则名称',
@@ -168,7 +181,11 @@ const FALLBACK_ZH_CN = {
   difficulty_4: '甲',
   excludeCarrierAircraft: '不使用舰载机',
   equipmentBlacklist: '装备黑名单',
+  blacklistByEquipmentType: '按装备种类',
   searchEquipment: '搜索装备名称或 Master ID',
+  searchAircraft: '搜索装备',
+  blacklistedCurrent: '已在黑名单中',
+  visibleResults: '显示结果',
   restoreDefaults: '恢复默认',
   clearBlacklist: '清空黑名单',
   noMatchingEquipment: '没有匹配的装备',
@@ -198,6 +215,7 @@ class LbasOptimizerPanel extends React.Component {
       equipmentFilters: savedEquipmentFilters || {
         excludeCarrierAircraft: false,
         blacklistedMasterIds: null,
+        blacklistedEquipTypes: [],
       },
       equipmentBlacklistOpen: false,
       equipmentBlacklistQuery: '',
@@ -241,16 +259,19 @@ class LbasOptimizerPanel extends React.Component {
 
     const simulator = normalizeSimulatorState(this.state.simulator);
     const optimizerInput = simulatorToOptimizerInput(simulator);
-    const ownedEquipment = extractOwnedPlanes(poiState);
+    const equipmentAdapterOptions = { noro6Master: this.state.noro6Master };
+    const ownedEquipment = extractOwnedPlanes(poiState, equipmentAdapterOptions);
     const unfilteredEquipment = extractOptimizationPlanes(poiState, {
       includeMissing: simulator.candidateMode === 'theoretical',
       missingCopiesPerMaster: 1,
+      ...equipmentAdapterOptions,
     });
     const equipmentFilters = effectiveEquipmentFilters(
       this.state.equipmentFilters,
       extractOptimizationPlanes(poiState, {
         includeMissing: true,
         missingCopiesPerMaster: 1,
+        ...equipmentAdapterOptions,
       }),
     );
     const equipment = filterOptimizationEquipment(unfilteredEquipment, {
@@ -361,7 +382,7 @@ class LbasOptimizerPanel extends React.Component {
       const updated = normalizeSimulatorState(updater(simulator));
       const custom = normalizeSimulatorState({
         ...updated,
-        enemy: { ...updated.enemy, dataSource: 'custom' },
+        enemy: { ...updated.enemy, dataSource: 'custom', stage2Defense: null },
       });
       this.customEnemyDraft = cloneEnemy(custom.enemy);
       return custom;
@@ -517,6 +538,7 @@ class LbasOptimizerPanel extends React.Component {
             ? { ...formation.ships[index] }
             : { id: null, name: '', airPower: 0 }),
           slots: formation.enemySlots.map((slot) => ({ ...slot, overridden: false })),
+          stage2Defense: formation.stage2Defense || null,
         },
       };
     });
@@ -682,17 +704,41 @@ class LbasOptimizerPanel extends React.Component {
     });
   };
 
+  toggleEquipmentTypeBlacklist = (equipType, checked) => {
+    this.updateEquipmentFilters((filters) => {
+      const selected = new Set(filters.blacklistedEquipTypes);
+      if (checked) selected.add(Number(equipType));
+      else selected.delete(Number(equipType));
+      return { ...filters, blacklistedEquipTypes: [...selected] };
+    });
+  };
+
   resetEquipmentBlacklist = () => {
     const defaults = defaultBlacklistedMasterIds(this.currentOptimizationEquipment(true));
-    this.updateEquipmentFilters((filters) => ({ ...filters, blacklistedMasterIds: defaults }));
+    this.updateEquipmentFilters((filters) => ({
+      ...filters,
+      blacklistedMasterIds: defaults,
+      blacklistedEquipTypes: [],
+    }));
   };
 
   clearEquipmentBlacklist = () => {
-    this.updateEquipmentFilters((filters) => ({ ...filters, blacklistedMasterIds: [] }));
+    this.updateEquipmentFilters((filters) => ({
+      ...filters,
+      blacklistedMasterIds: [],
+      blacklistedEquipTypes: [],
+    }));
   };
 
   updateSlotPlane = (baseIndex, slotIndex, instanceId) => {
     const plane = findSelectablePlane(this.currentOwnedEquipment(), this.state.simulator, instanceId);
+    if (plane) {
+      const filters = effectiveEquipmentFilters(
+        this.state.equipmentFilters,
+        this.currentOptimizationEquipment(true),
+      );
+      if (isEquipmentExcluded(plane, filters)) return;
+    }
     this.updateSimulator((simulator) => setBaseSlot(simulator, baseIndex, slotIndex, { plane }));
   };
 
@@ -720,12 +766,16 @@ class LbasOptimizerPanel extends React.Component {
   };
 
   importPlan = (plan) => {
-    this.updateSimulator((simulator) => applyPlanToSimulator(simulator, plan));
+    this.setState((state) => ({
+      simulator: normalizeSimulatorState(applyPlanToSimulator(state.simulator, plan)),
+    }));
   };
 
   currentOwnedEquipment() {
     const poiState = this.readPoiState();
-    return poiState ? extractOwnedPlanes(poiState) : [];
+    return poiState ? extractOwnedPlanes(poiState, {
+      noro6Master: this.state.noro6Master,
+    }) : [];
   }
 
   currentOptimizationEquipment(includeMissing) {
@@ -733,6 +783,7 @@ class LbasOptimizerPanel extends React.Component {
     return poiState ? extractOptimizationPlanes(poiState, {
       includeMissing: includeMissing === true,
       missingCopiesPerMaster: 1,
+      noro6Master: this.state.noro6Master,
     }) : [];
   }
 
@@ -774,6 +825,7 @@ class LbasOptimizerPanel extends React.Component {
         simulator,
         summary,
         equipment: ownedEquipment,
+        equipmentFilters,
         enemyCatalog,
         mapCatalog: this.state.mapCatalog,
         mapSelection: this.state.mapSelection,
@@ -826,6 +878,7 @@ class LbasOptimizerPanel extends React.Component {
         onEquipmentBlacklistQueryChange: (equipmentBlacklistQuery) =>
           this.setState({ equipmentBlacklistQuery }),
         onEquipmentBlacklistToggle: this.toggleEquipmentBlacklist,
+        onEquipmentTypeBlacklistToggle: this.toggleEquipmentTypeBlacklist,
         onEquipmentBlacklistReset: this.resetEquipmentBlacklist,
         onEquipmentBlacklistClear: this.clearEquipmentBlacklist,
         onOptimize: this.runOptimizer,
@@ -853,6 +906,7 @@ function effectiveEquipmentFilters(filters, equipment) {
   return {
     excludeCarrierAircraft: filters?.excludeCarrierAircraft === true,
     blacklistedMasterIds: defaultBlacklistedMasterIds(equipment),
+    blacklistedEquipTypes: [],
   };
 }
 
@@ -860,6 +914,10 @@ function normalizeEquipmentFilters(filters = {}) {
   return {
     excludeCarrierAircraft: filters.excludeCarrierAircraft === true,
     blacklistedMasterIds: [...new Set((filters.blacklistedMasterIds || [])
+      .map(Number)
+      .filter((value) => Number.isInteger(value) && value > 0))]
+      .sort((left, right) => left - right),
+    blacklistedEquipTypes: [...new Set((filters.blacklistedEquipTypes || [])
       .map(Number)
       .filter((value) => Number.isInteger(value) && value > 0))]
       .sort((left, right) => left - right),
@@ -1323,6 +1381,86 @@ const styles = {
     borderRadius: 3,
     background: 'transparent',
     cursor: 'pointer',
+  },
+  equipmentPicker: {
+    minWidth: 240,
+    position: 'relative',
+  },
+  equipmentPickerControl: {
+    alignItems: 'stretch',
+    display: 'flex',
+    minWidth: 0,
+  },
+  equipmentPickerInput: {
+    boxSizing: 'border-box',
+    fontSize: 13,
+    height: 30,
+    minWidth: 0,
+    padding: '2px 6px',
+    width: '100%',
+  },
+  equipmentPickerClear: {
+    cursor: 'pointer',
+    flex: '0 0 30px',
+    fontSize: 18,
+    height: 30,
+    padding: 0,
+  },
+  equipmentPickerMenu: {
+    backgroundColor: 'Canvas',
+    border: border,
+    boxShadow: '0 5px 14px rgba(0, 0, 0, 0.3)',
+    color: 'CanvasText',
+    left: 0,
+    maxHeight: 360,
+    minWidth: 'min(520px, calc(100vw - 40px))',
+    overflowY: 'auto',
+    position: 'absolute',
+    top: '100%',
+    zIndex: 50,
+  },
+  equipmentPickerGroup: {
+    background: 'rgba(128, 128, 128, 0.18)',
+    fontSize: 12,
+    fontWeight: 600,
+    padding: '4px 8px',
+    position: 'sticky',
+    top: 0,
+  },
+  equipmentPickerOption: {
+    alignItems: 'center',
+    background: 'transparent',
+    border: 0,
+    borderBottom: border,
+    color: 'inherit',
+    cursor: 'pointer',
+    display: 'grid',
+    fontSize: 13,
+    gap: 8,
+    gridTemplateColumns: '120px minmax(0, 1fr)',
+    minHeight: 32,
+    padding: '4px 8px',
+    textAlign: 'left',
+    width: '100%',
+  },
+  equipmentPickerOptionActive: {
+    background: 'rgba(47, 125, 100, 0.2)',
+  },
+  equipmentPickerType: {
+    color: '#777',
+    fontSize: 12,
+  },
+  equipmentPickerEmpty: {
+    padding: 10,
+  },
+  equipmentPickerMeta: {
+    color: '#777',
+    fontSize: 12,
+    padding: '5px 8px',
+  },
+  blacklistedSelection: {
+    color: '#a56a00',
+    opacity: 0.75,
   },
   modalBackdrop: {
     alignItems: 'center',

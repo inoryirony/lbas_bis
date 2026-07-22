@@ -1,0 +1,17 @@
+{
+  "baseCount": 2,
+  "mapSelection": {
+    "area": 622,
+    "node": "Y",
+    "difficulty": 4,
+    "formationIndex": 1
+  },
+  "candidateMode": "owned",
+  "excludeCarrierAircraft": true,
+  "targetStates": ["parity", "parity", "parity", "parity"],
+  "simulationOptions": {
+    "sampleCount": 256,
+    "seed": "2026-e2p3-final-parity"
+  },
+  "maxResults": 1
+}

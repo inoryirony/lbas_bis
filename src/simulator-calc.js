@@ -14,6 +14,13 @@ const { INVALID_SIMULATION_LIMITATION } = require('./simulation-options');
 
 const STATIC_LIMITATIONS = Object.freeze(['STATIC_ENEMY_AIR']);
 const INVALID_SEPARATE_LIMITATION = 'INVALID_SEPARATE_ENEMY_FLEETS';
+const ENEMY_STAGE_ONE_DRAW_MAX = Object.freeze({
+  supremacy: 10,
+  superiority: 8,
+  parity: 6,
+  denial: 4,
+  loss: 1,
+});
 
 function calculateEnemyAirLines(enemyAir) {
   return {
@@ -74,9 +81,17 @@ function calculateSimulatorSummary(state) {
       loadout,
     };
   });
+  let expectedEnemyAir = enemyAir;
   const staticWaves = normalized.waves.map((wave, waveIndex) => {
     const base = bases[wave.baseIndex] || bases[0] || emptyBaseSummary();
     const stateForWave = airStateFor(base.airPower, enemyAir, base.loadout.length > 0);
+    const expectedEnemyAirBefore = expectedEnemyAir;
+    const expectedState = airStateFor(
+      base.airPower,
+      expectedEnemyAirBefore,
+      base.loadout.length > 0,
+    );
+    expectedEnemyAir = expectedEnemyAirBefore * expectedEnemyAirRatio(expectedState.key);
     return {
       waveIndex,
       baseIndex: wave.baseIndex,
@@ -85,6 +100,9 @@ function calculateSimulatorSummary(state) {
       airPower: base.airPower,
       state: stateForWave,
       fulfilled: stateForWave.rank >= airStateRank(wave.targetState),
+      expectedEnemyAirBefore,
+      expectedEnemyAirAfter: expectedEnemyAir,
+      expectedState,
     };
   });
 
@@ -98,7 +116,8 @@ function calculateSimulatorSummary(state) {
     mode: 'static',
     limitations: [...STATIC_LIMITATIONS],
     limitationNotes: {
-      STATIC_ENEMY_AIR: 'Static total enemy air does not model aircraft-slot losses between waves.',
+      STATIC_ENEMY_AIR:
+        'Static total enemy air estimates expected Stage 1 reduction without exact enemy slots.',
     },
   };
 
@@ -122,6 +141,22 @@ function calculateSimulatorSummary(state) {
     limitationNotes: simulation.limitationNotes,
     statusKey: weakestExpectedStateKey(simulation.waves),
   };
+}
+
+/** Approximates E[sqrt(remaining slot ratio)] from the full discrete Stage 1 distribution. */
+function expectedEnemyAirRatio(stateKey) {
+  const maximumDraw = ENEMY_STAGE_ONE_DRAW_MAX[stateKey];
+  if (!Number.isInteger(maximumDraw)) return 1;
+  let total = 0;
+  let outcomes = 0;
+  for (let x = 0; x <= maximumDraw; x += 1) {
+    for (let y = 0; y <= maximumDraw; y += 1) {
+      const lossRatio = (0.65 * x + 0.35 * y) / 10;
+      total += Math.sqrt(Math.max(0, 1 - lossRatio));
+      outcomes += 1;
+    }
+  }
+  return total / outcomes;
 }
 
 /** Returns a non-simulated structured result for invalid simulator input. */

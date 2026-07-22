@@ -36,6 +36,7 @@
     "priority": 52
   },
   "dependencies": {
+    "chinese-conv": "^4.0.0",
     "react": "18.3.1"
   },
   "devDependencies": {

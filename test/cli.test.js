@@ -65,6 +65,54 @@ describe('headless LBAS CLI', () => {
 });
 
 describe('CLI map scenario hydration', () => {
+  test('lists selectable boss formations for AI-assisted scenario creation', async () => {
+    const io = memoryIo();
+    const code = await runCliInProcess(
+      ['map', 'search', '--boss', '--min-air', '40', '--limit', '5'],
+      io,
+      { loadMapData: async () => mapDataFixture() },
+    );
+
+    expect(code).toBe(0);
+    expect(JSON.parse(io.stdout.text)).toEqual({
+      total: 1,
+      formations: [expect.objectContaining({
+        area: 65,
+        node: 'M',
+        difficulty: 0,
+        formationIndex: 0,
+        enemyAir: 42,
+        targetRadius: 5,
+        isBoss: true,
+      })],
+    });
+  });
+
+  test('searches normalized Poi equipment across simplified and traditional Chinese', async () => {
+    const io = memoryIo();
+    const code = await runCliInProcess(
+      ['equipment', 'search', '--name', '银河', '--poi', 'http://poi.test'],
+      io,
+      {
+        createPoiClient: () => ({ loadState: async () => ({}) }),
+        extractOptimizationPlanes: () => [
+          { instanceId: 122197, masterId: 270, name: '東海(九〇一空)', equipType: 47 },
+          { instanceId: 50362, masterId: 187, name: '銀河', equipType: 47 },
+        ],
+      },
+    );
+
+    expect(code).toBe(0);
+    expect(JSON.parse(io.stdout.text)).toEqual({
+      total: 1,
+      equipment: [expect.objectContaining({
+        instanceId: 50362,
+        masterId: 187,
+        name: '銀河',
+      })],
+    });
+  });
+
   test('applies candidate filters to equipment embedded in an offline scenario', async () => {
     const hydrated = await hydrateScenario({
       equipment: [

@@ -12,6 +12,7 @@ function SimulatorPanel(props) {
     simulator,
     summary,
     equipment,
+    equipmentFilters,
     enemyCatalog,
     mapCatalog,
     mapSelection,
@@ -86,6 +87,7 @@ function SimulatorPanel(props) {
         h(BaseTable, {
           bases: simulator.bases,
           equipment,
+          equipmentFilters,
           summaries: summary.bases,
           combatContext: simulator.combatContext,
           onSlotPlaneChange,

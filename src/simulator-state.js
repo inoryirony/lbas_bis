@@ -17,7 +17,7 @@ const MAX_BASES = 3;
 const DEFAULT_TARGET_RADIUS = 7;
 const DEFAULT_ENEMY_AIR = 72;
 const DEFAULT_TARGET_STATE = 'parity';
-const STATE_OPTIONS = new Set(['denial', 'parity', 'superiority', 'supremacy']);
+const STATE_OPTIONS = new Set(['loss', 'denial', 'parity', 'superiority', 'supremacy']);
 const BASE_NAMES = ['第一基地', '第二基地', '第三基地'];
 
 /** Creates a normalized simulator state with legacy static-enemy defaults. */
@@ -142,6 +142,7 @@ function createDefaultEnemy() {
     areaId: null,
     nodeId: null,
     isAirRaidCell: false,
+    stage2Defense: null,
     slots: [],
     ships: Array.from({ length: 6 }, (_, index) => ({
       id: null,
@@ -199,6 +200,9 @@ function normalizeEnemy(enemy = {}) {
     nodeId: enemy.nodeId ?? null,
     source: enemy.source ?? null,
     isAirRaidCell: enemy.isAirRaidCell === true,
+    stage2Defense: enemy.stage2Defense?.modeled === true
+      ? enemy.stage2Defense
+      : null,
     ships,
     slots,
     ...(detailed ? {

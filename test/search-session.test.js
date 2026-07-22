@@ -27,6 +27,13 @@ describe('LBAS search session', () => {
     expect(progress.at(-1).nodesExplored).toBe(result.search.nodesExplored);
     expect(progress.every((event, index) =>
       index === 0 || event.nodesExplored >= progress[index - 1].nodesExplored)).toBe(true);
+    expect(progress.every((event) => Number.isFinite(event.totalNodesExplored))).toBe(true);
+    expect(progress.at(-1).totalNodesExplored).toBeGreaterThanOrEqual(
+      result.search.nodesExplored,
+    );
+    expect(progress.every((event, index) =>
+      index === 0 || event.totalNodesExplored >= progress[index - 1].totalNodesExplored))
+      .toBe(true);
     expect(events.at(-1)).toMatchObject({
       type: 'completed',
       result: {
