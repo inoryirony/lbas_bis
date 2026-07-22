@@ -52,6 +52,7 @@
   "includeMissing": "未所持の理論装備を含める",
   "optimizerProficiency": "計算熟練度",
   "proficiencyLost": "熟練度なし",
+  "proficiencyInventory": "所持熟練度",
   "proficiencyMax": "熟練度最大",
   "importToSimulator": "シミュレーターへ反映",
   "sixWaveState": "波次状態",

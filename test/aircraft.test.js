@@ -141,6 +141,12 @@ describe('Aircraft capabilities', () => {
       .not.toBe(aircraftEquivalenceKey(base));
     expect(aircraftEquivalenceKey({ ...base, available: false, missing: true }))
       .not.toBe(aircraftEquivalenceKey(base));
+    expect(aircraftEquivalenceKey({ ...base, cost: 12 }))
+      .not.toBe(aircraftEquivalenceKey(base));
+    expect(aircraftEquivalenceKey({ ...base, shootDownAvoidance: 2 }))
+      .not.toBe(aircraftEquivalenceKey(base));
+    expect(aircraftEquivalenceKey({ ...base, isEscortItem: true }))
+      .not.toBe(aircraftEquivalenceKey(base));
   });
 
   test('distinguishes explicit true formula capabilities without reclassifying API types', () => {

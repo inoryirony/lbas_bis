@@ -117,12 +117,54 @@ describe('CLI map scenario hydration', () => {
     const hydrated = await hydrateScenario({
       equipment: [
         { instanceId: 'offline-carrier', masterId: 1, equipType: 6 },
-        { instanceId: 'offline-land', masterId: 2, equipType: 47 },
+        {
+          instanceId: 'offline-land',
+          masterId: 2,
+          equipType: 47,
+          proficiency: 7,
+          internalProficiency: 120,
+        },
       ],
       excludeCarrierAircraft: true,
     }, null);
 
     expect(hydrated.equipment.map((plane) => plane.instanceId)).toEqual(['offline-land']);
+    expect(hydrated.equipment[0]).toMatchObject({
+      proficiency: 0,
+      internalProficiency: undefined,
+    });
+  });
+
+  test.each([
+    ['inventory', 5, 83],
+    ['max', 7, undefined],
+  ])('applies the %s proficiency policy to CLI equipment and locked planes', async (
+    optimizerProficiencyMode,
+    expectedVisible,
+    expectedInternal,
+  ) => {
+    const plane = {
+      instanceId: 'policy-plane',
+      masterId: 2,
+      equipType: 47,
+      proficiency: 5,
+      internalProficiency: 83,
+    };
+    const hydrated = await hydrateScenario({
+      equipment: [plane],
+      optimizerProficiencyMode,
+      lockedBases: [{ slots: [{ plane, locked: true }] }],
+    }, null);
+
+    expect(hydrated.optimizerProficiencyMode).toBe(optimizerProficiencyMode);
+    expect(hydrated.equipment[0]).toMatchObject({
+      proficiency: expectedVisible,
+      internalProficiency: expectedInternal,
+    });
+    expect(hydrated.lockedBases[0].slots[0].plane).toMatchObject({
+      proficiency: expectedVisible,
+      internalProficiency: expectedInternal,
+    });
   });
 
   test('applies explicit candidate filters to Poi equipment before optimization', async () => {
@@ -148,6 +190,21 @@ describe('CLI map scenario hydration', () => {
       'locked-carrier',
       'ordinary-land',
     ]);
+  });
+
+  test('prefers cached noro6 equipment metadata for Poi-backed scenarios', async () => {
+    const mapLoadOptions = [];
+
+    await hydrateScenario({ baseCount: 1 }, 'http://poi.test', {
+      createPoiClient: () => ({ loadState: async () => ({}) }),
+      extractOptimizationPlanes: () => [],
+      loadMapData: async (options) => {
+        mapLoadOptions.push(options);
+        return mapDataFixture();
+      },
+    });
+
+    expect(mapLoadOptions).toEqual([{ preferCache: true }]);
   });
 
   test('hydrates detailed enemy slots, air power, and radius from a map selection', async () => {

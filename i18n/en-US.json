@@ -52,6 +52,7 @@
   "includeMissing": "Include missing theoretical equipment",
   "optimizerProficiency": "Calculation proficiency",
   "proficiencyLost": "Assume lost",
+  "proficiencyInventory": "Use inventory",
   "proficiencyMax": "Assume max",
   "importToSimulator": "Import to simulator",
   "sixWaveState": "Wave states",

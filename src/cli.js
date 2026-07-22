@@ -5,6 +5,7 @@ const { buildEnemyCatalog } = require('./enemy-catalog');
 const { loadMapData } = require('./map-cache');
 const { buildMapCatalog } = require('./map-catalog');
 const { prepareSearch } = require('./optimizer');
+const { applyOptimizerProficiencyPolicy } = require('./proficiency-policy');
 const { extractOptimizationPlanes } = require('./poi-data');
 const {
   equipmentTypeName,
@@ -73,7 +74,7 @@ async function enemySearchCommand(parsed, io) {
   const state = await createPoiClient(poiUrl).loadState();
   let noro6Master = null;
   try {
-    noro6Master = (await loadMapData()).master;
+    noro6Master = (await loadMapData({ preferCache: true })).master;
   } catch (_error) {
     // Poi and Navy Album remain usable while offline without a map cache.
   }
@@ -194,25 +195,27 @@ async function loadNoroMasterForEquipment(dependencies = {}) {
   );
   if (hasInjectedRuntime && typeof dependencies.loadMapData !== 'function') return null;
   try {
-    return (await (dependencies.loadMapData || loadMapData)()).master;
+    return (await (dependencies.loadMapData || loadMapData)({ preferCache: true })).master;
   } catch (_error) {
     return null;
   }
 }
 
 function applyEquipmentFilters(scenario) {
-  if (!Array.isArray(scenario.equipment)) return scenario;
-  return {
+  const filtered = Array.isArray(scenario.equipment)
+    ? filterOptimizationEquipment(scenario.equipment, {
+        excludeCarrierAircraft: scenario.excludeCarrierAircraft === true,
+        blacklistedMasterIds: scenario.blacklistedMasterIds,
+        blacklistedEquipTypes: scenario.blacklistedEquipTypes,
+        lockedInstanceIds: (scenario.lockedBases || []).flatMap((base) =>
+          (base?.slots || []).filter((slot) => slot?.locked && slot.plane)
+            .map((slot) => slot.plane.instanceId)),
+      })
+    : scenario.equipment;
+  return applyOptimizerProficiencyPolicy({
     ...scenario,
-    equipment: filterOptimizationEquipment(scenario.equipment, {
-      excludeCarrierAircraft: scenario.excludeCarrierAircraft === true,
-      blacklistedMasterIds: scenario.blacklistedMasterIds,
-      blacklistedEquipTypes: scenario.blacklistedEquipTypes,
-      lockedInstanceIds: (scenario.lockedBases || []).flatMap((base) =>
-        (base?.slots || []).filter((slot) => slot?.locked && slot.plane)
-          .map((slot) => slot.plane.instanceId)),
-    }),
-  };
+    ...(Array.isArray(filtered) ? { equipment: filtered } : {}),
+  }, scenario.optimizerProficiencyMode);
 }
 
 /** Fills missing CLI enemy inputs from one noro6 map formation. */

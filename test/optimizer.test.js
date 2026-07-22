@@ -1349,6 +1349,81 @@ describe('LBAS optimizer MVP', () => {
     expect(production.results[0].canonicalKey).toBe(exhaustive[0].canonicalKey);
   });
 
+  test('prunes detailed suffixes that cannot share scarce inventory with a viable prefix', () => {
+    const scarceAttackers = Array.from({ length: 4 }, (_unused, index) => plane(
+      `scarce-detailed-${index}`,
+      {
+        masterId: 3900,
+        antiAir: 16,
+        radius: 7,
+        role: 'attacker',
+        torpedo: 24,
+        isLandBased: true,
+      },
+    ));
+    const result = optimizeLoadouts({
+      equipment: scarceAttackers,
+      baseCount: 2,
+      targetRadius: 7,
+      enemy: detailedEnemy(),
+      targetStates: ['superiority', 'superiority', 'loss', 'loss'],
+      simulationOptions: { seed: 'scarce-detailed-inventory-bound', sampleCount: 4 },
+      simulationWorkBudget: Infinity,
+      nodeBudget: Infinity,
+      maxResults: 1,
+    });
+
+    expect(result.search).toMatchObject({
+      status: 'optimal',
+      provenOptimal: true,
+      backend: 'detailed-frontier',
+    });
+    expect(result.search.solverStats.inventoryCompatibilityPrunes).toBeGreaterThan(0);
+    expect(result.search.solverStats.suffixCandidatesEvaluated)
+      .toBeLessThan(result.search.solverStats.suffixCandidatesTotal);
+    expect(result.search.solverStats.peakRetainedSuffixCandidates).toBeLessThanOrEqual(1);
+  });
+
+  test('stops infeasible jet suffixes on a strict fixed-sample incumbent bound', () => {
+    const fighters = Array.from({ length: 8 }, (_unused, index) => plane(
+      `jet-bound-fighter-${index}`,
+      { masterId: 3950, antiAir: 16, radius: 7, role: 'fighter', isLandBased: true },
+    ));
+    const jets = Array.from({ length: 4 }, (_unused, index) => plane(
+      `jet-bound-attacker-${index}`,
+      {
+        masterId: 3951,
+        antiAir: 16,
+        radius: 7,
+        role: 'attacker',
+        torpedo: 40,
+        isJet: true,
+        isLandBased: true,
+      },
+    ));
+    const result = optimizeLoadouts({
+      equipment: [...fighters, ...jets],
+      baseCount: 2,
+      targetRadius: 7,
+      enemy: {
+        ...detailedEnemy(),
+        stage2Defense: {
+          modeled: true,
+          byAvoidance: { 0: { fixedLosses: [17], rateFactors: [0] } },
+        },
+      },
+      targetStates: ['superiority', 'superiority', 'superiority', 'superiority'],
+      simulationOptions: { seed: 'pj', sampleCount: 32 },
+      simulationWorkBudget: Infinity,
+      nodeBudget: Infinity,
+      maxResults: 1,
+    });
+
+    expect(result.search).toMatchObject({ status: 'optimal', provenOptimal: true });
+    expect(result.search.solverStats.prefixSimulationBoundPrunes).toBeGreaterThan(0);
+    expect(result.search.solverStats.suffixSimulationBoundPrunes).toBeGreaterThan(0);
+  });
+
   test('reports countable progress while proving a two-base detailed optimum', () => {
     const progress = [];
     const result = optimizeLoadouts({
@@ -1379,13 +1454,19 @@ describe('LBAS optimizer MVP', () => {
     ]));
     expect(progress.filter((snapshot) => snapshot.totalWork != null).every((snapshot) =>
       snapshot.completedWork <= snapshot.totalWork)).toBe(true);
-    expect(progress.filter((snapshot) => snapshot.phase === 'evaluating_suffix_trajectories')
-      .every((snapshot) =>
-        snapshot.totalWork === result.search.solverStats.suffixCandidatesTotal)).toBe(true);
+    const suffixProgress = progress.filter((snapshot) =>
+      snapshot.phase === 'evaluating_suffix_trajectories');
+    expect(suffixProgress.some((snapshot) => snapshot.totalWork == null)).toBe(true);
+    expect(suffixProgress.at(-1)).toMatchObject({
+      completedWork: result.search.solverStats.suffixCandidatesTotal,
+      totalWork: result.search.solverStats.suffixCandidatesTotal,
+    });
     expect(result.search.solverStats.prefixTrajectorySimulations)
       .toBeLessThan(result.search.solverStats.prefixCandidatesEvaluated);
     expect(result.search.solverStats.prefixTrajectorySimulations)
       .toBeLessThan(result.search.solverStats.prefixStateSignatureProbes);
+    expect(result.search.solverStats.trajectoryKeySerializations)
+      .toBeLessThan(result.search.solverStats.prefixCandidatesEvaluated);
     expect(result.search.solverStats.suffixTrajectorySimulations)
       .toBeLessThan(result.search.solverStats.suffixCandidatesEvaluated);
   });

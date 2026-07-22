@@ -140,9 +140,11 @@ function enumerateBase(context, work, options = {}) {
   const suffixAir = buildSuffixUpperBounds(features, maximumSlots, (feature) => feature.air);
   const pairs = [];
   const candidates = [];
+  const onCandidate = typeof options.onCandidate === 'function' ? options.onCandidate : null;
   const collectLimit = options.collectLimit ?? Number.POSITIVE_INFINITY;
   let maximumDamage = Number.NEGATIVE_INFINITY;
   let feasible = false;
+  let candidateCount = 0;
 
   function visit(startIndex, slotsLeft, state) {
     if (!work.consume()) return;
@@ -159,8 +161,14 @@ function enumerateBase(context, work, options = {}) {
       feasible = true;
       if (summary.damage > maximumDamage) maximumDamage = summary.damage;
       if (!options.findMaximum && summary.damage >= options.minimumDamage) {
-        candidates.push(candidateFromState(pairs, summary));
-        trimSeedCandidates(candidates, collectLimit);
+        const candidate = candidateFromState(pairs, summary);
+        candidateCount += 1;
+        if (onCandidate) {
+          onCandidate(candidate);
+        } else {
+          candidates.push(candidate);
+          trimSeedCandidates(candidates, collectLimit);
+        }
       }
     }
     if (slotsLeft === 0) return;
@@ -182,11 +190,13 @@ function enumerateBase(context, work, options = {}) {
   }
 
   visit(0, maximumSlots, context.lockedState);
-  candidates.sort(compareBaseCandidates);
-  if (Number.isFinite(collectLimit) && candidates.length > collectLimit) {
-    candidates.length = collectLimit;
+  if (!onCandidate) {
+    candidates.sort(compareBaseCandidates);
+    if (Number.isFinite(collectLimit) && candidates.length > collectLimit) {
+      candidates.length = collectLimit;
+    }
   }
-  return { candidates, feasible, maximumDamage };
+  return { candidateCount, candidates, feasible, maximumDamage };
 }
 
 /** Finds a lower bound only; all proof work is repeated without this truncation. */

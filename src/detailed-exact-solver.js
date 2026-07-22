@@ -1,5 +1,6 @@
 'use strict';
 
+const { capabilitiesFor } = require('./aircraft');
 const { requiredAirForState } = require('./air-power');
 const {
   createDetailedDamageBoundContext,
@@ -51,8 +52,15 @@ function solveDetailedExact(prepared, solverOptions = {}) {
     prefixTrajectorySimulations: 0,
     prefixStateSignatureProbes: 0,
     prefixDamageContributionSimulations: 0,
+    prefixSimulationBoundPrunes: 0,
+    trajectoryKeySerializations: 0,
     trajectoryCount: 0,
+    inventoryCompatibilityChecks: 0,
+    inventoryCompatibilityPrunes: 0,
+    peakRetainedSuffixCandidates: 0,
+    suffixCandidatesProcessed: 0,
     suffixCandidatesEvaluated: 0,
+    suffixSimulationBoundPrunes: 0,
     suffixTrajectorySimulations: 0,
     suffixStateSignatureProbes: 0,
     suffixDamageContributionSimulations: 0,
@@ -71,7 +79,7 @@ function solveDetailedExact(prepared, solverOptions = {}) {
     targetStates: prepared.waveTargets,
     ...prepared.simulationOptions,
   });
-  solverOptions.onPhaseChange?.('finding_feasible');
+  setSearchPhase(work, solverOptions, 'finding_feasible');
 
   let seedWasPublished = false;
   let incumbent = buildStaticSeed(
@@ -97,7 +105,7 @@ function solveDetailedExact(prepared, solverOptions = {}) {
       );
     }
     if (!work.checkStop()) return stoppedResult(stats, startedAt, work.reason, incumbent);
-    solverOptions.onPhaseChange?.('proving_optimal');
+    setSearchPhase(work, solverOptions, 'proving_optimal');
     const refined = refineStaticSeed(incumbent, prepared, work, stats);
     if (refined && comparePlanScores(refined, incumbent) > 0) {
       incumbent = refined;
@@ -137,7 +145,8 @@ function solveDetailedExact(prepared, solverOptions = {}) {
 
   const incumbentDamage = scorePlan(incumbent).damage;
   const candidateSets = [];
-  for (let baseIndex = 0; baseIndex < contexts.length; baseIndex += 1) {
+  const collectedBaseCount = prepared.baseCount === 2 ? 1 : contexts.length;
+  for (let baseIndex = 0; baseIndex < collectedBaseCount; baseIndex += 1) {
     const context = contexts[baseIndex];
     const otherUpper = maximumStaticDamage.reduce(
       (total, value, index) => index === baseIndex ? total : total + 2 * value,
@@ -168,12 +177,20 @@ function solveDetailedExact(prepared, solverOptions = {}) {
   if (!work.checkStop()) return stoppedResult(stats, startedAt, work.reason, incumbent);
 
   if (prepared.baseCount === 2) {
+    const suffixOtherUpper = 2 * maximumStaticDamage[0];
+    const prefixOtherUpper = 2 * maximumStaticDamage[1];
+    const suffixMinimumStaticDamage = (incumbentDamage - suffixOtherUpper) / 2;
     incumbent = combineTwoBaseTrajectories(
-      candidateSets,
+      candidateSets[0],
+      contexts[1],
+      suffixMinimumStaticDamage,
+      suffixOtherUpper,
+      prefixOtherUpper,
       prepared,
       work,
       stats,
       scoreContext,
+      damageBoundContext,
       incumbent,
       solverOptions,
       startedAt,
@@ -280,27 +297,40 @@ function solveDetailedExact(prepared, solverOptions = {}) {
 
 /** Proves a two-base optimum by reusing exact suffix scores for equal enemy trajectories. */
 function combineTwoBaseTrajectories(
-  candidateSets,
+  prefixCandidates,
+  suffixContext,
+  suffixMinimumStaticDamage,
+  suffixOtherUpper,
+  prefixOtherUpper,
   prepared,
   work,
   stats,
   scoreContext,
+  damageBoundContext,
   initialIncumbent,
   solverOptions,
   startedAt,
 ) {
   const sampleCount = prepared.simulationOptions.sampleCount;
   const trajectoryGroups = new Map();
+  const trajectoryKeysById = new Map();
   let incumbent = initialIncumbent;
-  stats.prefixCandidatesTotal = candidateSets[0].length;
-  stats.suffixCandidatesTotal = candidateSets[1].length;
+  stats.prefixCandidatesTotal = prefixCandidates.length;
+  stats.suffixCandidatesTotal = null;
   emitProgress(solverOptions, work, 'building_prefix_trajectories', startedAt);
 
-  for (const candidate of candidateSets[0]) {
+  for (const candidate of prefixCandidates) {
     if (!work.checkStop()) return incumbent;
+    const prefixIncumbentScore = candidate.hasJet
+      ? {
+        fulfillment: 1,
+        damage: scorePlan(incumbent).damage - prefixOtherUpper,
+      }
+      : null;
     const evaluation = evaluateDetailedPlanScore({
       bases: [candidate.loadout],
       baseCacheKeys: [candidate.key],
+      cacheBaseRecords: false,
       baseIndexOffset: 0,
       captureFinalEnemySlots: true,
       enemy: prepared.enemy,
@@ -309,6 +339,7 @@ function combineTwoBaseTrajectories(
       combatContext: prepared.combatContext,
       scoreContext,
       ...prepared.simulationOptions,
+      ...(prefixIncumbentScore ? { incumbentScore: prefixIncumbentScore } : {}),
     });
     stats.prefixCandidatesEvaluated += 1;
     stats.dynamicAirBoundEvaluations += 1;
@@ -320,8 +351,21 @@ function combineTwoBaseTrajectories(
     stats.prefixStateSignatureProbes += evaluation.stateSignatureProbes ?? 1;
     stats.prefixDamageContributionSimulations +=
       evaluation.damageContributionSimulations ?? 0;
+    if (evaluation.prunedBySimulationBound) {
+      stats.prefixSimulationBoundPrunes += 1;
+      continue;
+    }
     if (evaluation.allWaveTargetFulfillmentProbability !== 1) continue;
-    const trajectoryKey = enemyTrajectoryKey(evaluation.finalEnemySlotsBySample);
+    let trajectoryKey = evaluation.enemyTrajectoryId == null
+      ? null
+      : trajectoryKeysById.get(evaluation.enemyTrajectoryId);
+    if (trajectoryKey == null) {
+      trajectoryKey = enemyTrajectoryKey(evaluation.finalEnemySlotsBySample);
+      stats.trajectoryKeySerializations += 1;
+      if (evaluation.enemyTrajectoryId != null) {
+        trajectoryKeysById.set(evaluation.enemyTrajectoryId, trajectoryKey);
+      }
+    }
     const group = trajectoryGroups.get(trajectoryKey) || {
       enemySlotsBySample: evaluation.finalEnemySlotsBySample,
       prefixes: [],
@@ -336,37 +380,69 @@ function combineTwoBaseTrajectories(
     }
   }
   stats.trajectoryCount = trajectoryGroups.size;
-  const initialIncumbentDamageTotal = Math.round(scorePlan(incumbent).damage * sampleCount);
-  stats.suffixCandidatesTotal = [...trajectoryGroups.values()].reduce((total, group) => {
-    const bestPrefixDamage = group.prefixes.reduce(
-      (maximum, prefix) => Math.max(maximum, prefix.damageTotal),
-      Number.NEGATIVE_INFINITY,
-    );
-    const firstExcluded = candidateSets[1].findIndex((candidate) =>
-      bestPrefixDamage + Math.round(candidate.maximumDamage * sampleCount) <
-        initialIncumbentDamageTotal);
-    return total + (firstExcluded < 0 ? candidateSets[1].length : firstExcluded);
-  }, 0);
-  emitProgress(solverOptions, work, 'building_prefix_trajectories', startedAt);
-
-  const used = new Uint16Array(prepared.groups.length);
-  emitProgress(solverOptions, work, 'evaluating_suffix_trajectories', startedAt);
   for (const group of trajectoryGroups.values()) {
-    if (!work.checkStop()) return incumbent;
     group.prefixes.sort((left, right) =>
       (right.damageTotal - left.damageTotal) ||
       compareDetailedCandidates(left.candidate, right.candidate));
-    const bestPrefixDamage = group.prefixes[0]?.damageTotal || 0;
-    let incumbentDamageTotal = Math.round(scorePlan(incumbent).damage * sampleCount);
-    const suffixes = [];
+    group.compatibilityIndex = buildPrefixCompatibilityIndex(
+      group.prefixes,
+      prepared.groups,
+    );
+    group.bestPrefixDamage = group.prefixes[0]?.damageTotal || 0;
+  }
+  emitProgress(solverOptions, work, 'building_prefix_trajectories', startedAt);
 
-    for (const candidate of candidateSets[1]) {
-      if (!work.checkStop()) return incumbent;
-      const candidateUpperTotal = Math.round(candidate.maximumDamage * sampleCount);
-      if (bestPrefixDamage + candidateUpperTotal < incumbentDamageTotal) break;
+  const used = new Uint16Array(prepared.groups.length);
+  stats.candidatesByBase[1] = 0;
+  emitProgress(solverOptions, work, 'evaluating_suffix_trajectories', startedAt);
+  enumerateBase(suffixContext, work, {
+    minimumDamage: suffixMinimumStaticDamage,
+    onCandidate(candidate) {
+      if (!work.checkStop()) return;
+      const preparedCandidate = prepareCandidate(
+        candidate,
+        1,
+        prepared,
+        damageBoundContext,
+      );
+      stats.damageUpperBoundEvaluations += 1;
+      if (preparedCandidate.maximumDamage + suffixOtherUpper < scorePlan(incumbent).damage) {
+        return;
+      }
+      stats.candidatesByBase[1] += 1;
+      stats.suffixCandidatesProcessed += 1;
+      stats.peakRetainedSuffixCandidates = Math.max(
+        stats.peakRetainedSuffixCandidates,
+        1,
+      );
+      const candidateUpperTotal = Math.round(preparedCandidate.maximumDamage * sampleCount);
+
+      for (const group of trajectoryGroups.values()) {
+        if (!work.checkStop()) return;
+        let incumbentDamageTotal = Math.round(scorePlan(incumbent).damage * sampleCount);
+        if (group.bestPrefixDamage + candidateUpperTotal < incumbentDamageTotal) continue;
+      stats.inventoryCompatibilityChecks += 1;
+      const compatiblePrefixIndex = firstCompatiblePrefix(
+          group.compatibilityIndex,
+          preparedCandidate,
+      );
+      if (compatiblePrefixIndex < 0 ||
+          group.prefixes[compatiblePrefixIndex].damageTotal + candidateUpperTotal <
+            incumbentDamageTotal) {
+        stats.inventoryCompatibilityPrunes += 1;
+        continue;
+      }
+      const compatiblePrefixDamage = group.prefixes[compatiblePrefixIndex].damageTotal;
+      const suffixIncumbentScore = preparedCandidate.hasJet
+        ? {
+          fulfillment: 1,
+          damage: (incumbentDamageTotal - compatiblePrefixDamage) / sampleCount,
+        }
+        : null;
       const evaluation = evaluateDetailedPlanScore({
-        bases: [candidate.loadout],
-        baseCacheKeys: [candidate.key],
+          bases: [preparedCandidate.loadout],
+          baseCacheKeys: [preparedCandidate.key],
+        cacheBaseRecords: false,
         baseIndexOffset: 1,
         initialEnemySlotsBySample: group.enemySlotsBySample,
         enemy: prepared.enemy,
@@ -375,6 +451,7 @@ function combineTwoBaseTrajectories(
         combatContext: prepared.combatContext,
         scoreContext,
         ...prepared.simulationOptions,
+        ...(suffixIncumbentScore ? { incumbentScore: suffixIncumbentScore } : {}),
       });
       stats.suffixCandidatesEvaluated += 1;
       stats.numericScoreEvaluations += 1;
@@ -384,53 +461,100 @@ function combineTwoBaseTrajectories(
       stats.suffixStateSignatureProbes += evaluation.stateSignatureProbes ?? 1;
       stats.suffixDamageContributionSimulations +=
         evaluation.damageContributionSimulations ?? 0;
-      if (evaluation.allWaveTargetFulfillmentProbability === 1) {
-        suffixes.push({
-          candidate,
-          damageTotal: evaluation.totalDamageAcrossSamples,
-        });
+      if (evaluation.prunedBySimulationBound) {
+        stats.suffixSimulationBoundPrunes += 1;
+        continue;
       }
-      if ((stats.suffixCandidatesEvaluated & 255) === 0) {
+      if (evaluation.allWaveTargetFulfillmentProbability === 1 &&
+          compatiblePrefixDamage + evaluation.totalDamageAcrossSamples >=
+            incumbentDamageTotal) {
+          for (const prefix of group.prefixes) {
+            if (!work.checkStop()) return;
+            incumbentDamageTotal = Math.round(scorePlan(incumbent).damage * sampleCount);
+            const combinedDamage = prefix.damageTotal + evaluation.totalDamageAcrossSamples;
+            if (combinedDamage < incumbentDamageTotal) break;
+            if (!reserveCandidate(prefix.candidate, used, prepared.groups)) continue;
+            if (!reserveCandidate(preparedCandidate, used, prepared.groups)) {
+              releaseCandidate(prefix.candidate, used);
+              continue;
+            }
+            stats.combinationsEvaluated += 1;
+            const loadouts = materializeLoadouts(
+              [prefix.candidate, preparedCandidate],
+              prepared,
+            );
+            const plan = summarizePlan(loadouts, prepared);
+            stats.simulationSamplesEvaluated +=
+              plan.simulation?.samplesEvaluated || sampleCount;
+            if (comparePlanScores(plan, incumbent) > 0) {
+              incumbent = plan;
+              solverOptions.onIncumbent?.(
+                incumbent,
+                progressSnapshot(work, work.progressPhase, startedAt),
+              );
+            }
+            releaseCandidate(preparedCandidate, used);
+            releaseCandidate(prefix.candidate, used);
+          }
+        }
+      }
+      if ((stats.suffixCandidatesProcessed & 255) === 0) {
         emitProgress(solverOptions, work, 'evaluating_suffix_trajectories', startedAt);
       }
-    }
-    suffixes.sort((left, right) =>
-      (right.damageTotal - left.damageTotal) ||
-      compareDetailedCandidates(left.candidate, right.candidate));
-    if (suffixes.length === 0) continue;
-
-    for (const prefix of group.prefixes) {
-      if (!work.checkStop()) return incumbent;
-      incumbentDamageTotal = Math.round(scorePlan(incumbent).damage * sampleCount);
-      if (prefix.damageTotal + suffixes[0].damageTotal < incumbentDamageTotal) break;
-      if (!reserveCandidate(prefix.candidate, used, prepared.groups)) continue;
-      for (const suffix of suffixes) {
-        const combinedDamage = prefix.damageTotal + suffix.damageTotal;
-        if (combinedDamage < incumbentDamageTotal) break;
-        if (!reserveCandidate(suffix.candidate, used, prepared.groups)) continue;
-        stats.combinationsEvaluated += 1;
-        const loadouts = materializeLoadouts(
-          [prefix.candidate, suffix.candidate],
-          prepared,
-        );
-        const plan = summarizePlan(loadouts, prepared);
-        stats.simulationSamplesEvaluated +=
-          plan.simulation?.samplesEvaluated || sampleCount;
-        if (comparePlanScores(plan, incumbent) > 0) {
-          incumbent = plan;
-          incumbentDamageTotal = Math.round(scorePlan(incumbent).damage * sampleCount);
-          solverOptions.onIncumbent?.(
-            incumbent,
-            progressSnapshot(work, 'proving_optimal', startedAt),
-          );
-        }
-        releaseCandidate(suffix.candidate, used);
-      }
-      releaseCandidate(prefix.candidate, used);
-    }
-    emitProgress(solverOptions, work, 'evaluating_suffix_trajectories', startedAt);
-  }
+    },
+  });
+  stats.suffixCandidatesTotal = stats.suffixCandidatesProcessed;
+  emitProgress(solverOptions, work, 'evaluating_suffix_trajectories', startedAt);
   return incumbent;
+}
+
+/** Builds count-aware conflict bitmaps over damage-sorted prefix candidates. */
+function buildPrefixCompatibilityIndex(prefixes, groups) {
+  const wordCount = Math.ceil(prefixes.length / 32);
+  const conflictsByGroup = groups.map(() => []);
+  prefixes.forEach((prefix, prefixIndex) => {
+    const wordIndex = Math.floor(prefixIndex / 32);
+    const bit = prefixIndex % 32;
+    for (const [groupIndex, count] of prefix.candidate.pairs) {
+      for (let threshold = 1; threshold <= count; threshold += 1) {
+        const bitmap = conflictsByGroup[groupIndex][threshold] ||
+          new Uint32Array(wordCount);
+        bitmap[wordIndex] = (bitmap[wordIndex] | (1 << bit)) >>> 0;
+        conflictsByGroup[groupIndex][threshold] = bitmap;
+      }
+    }
+  });
+  return {
+    capacities: groups.map((group) => group.instances.length),
+    conflictsByGroup,
+    prefixCount: prefixes.length,
+    wordCount,
+  };
+}
+
+/** Returns the highest-damage prefix that can share inventory with one suffix. */
+function firstCompatiblePrefix(index, suffix) {
+  if (index.prefixCount === 0) return -1;
+  const conflicts = [];
+  for (const [groupIndex, suffixCount] of suffix.pairs) {
+    const threshold = index.capacities[groupIndex] - suffixCount + 1;
+    if (threshold <= 0) return -1;
+    const bitmap = index.conflictsByGroup[groupIndex][threshold];
+    if (bitmap) conflicts.push(bitmap);
+  }
+  if (conflicts.length === 0) return 0;
+
+  for (let wordIndex = 0; wordIndex < index.wordCount; wordIndex += 1) {
+    let conflictWord = 0;
+    for (const bitmap of conflicts) conflictWord |= bitmap[wordIndex];
+    let availableWord = (~conflictWord) >>> 0;
+    const remaining = index.prefixCount - wordIndex * 32;
+    if (remaining < 32) availableWord &= (2 ** remaining) - 1;
+    if (availableWord === 0) continue;
+    const lowestBit = availableWord & -availableWord;
+    return wordIndex * 32 + (31 - Math.clz32(lowestBit));
+  }
+  return -1;
 }
 
 /** Canonicalizes every fixed-sample enemy slot vector for exact transition reuse. */
@@ -670,6 +794,9 @@ function prepareCandidate(candidate, baseIndex, prepared, damageBoundContext) {
     ...candidate,
     key: candidate.pairs.map(([groupIndex, count]) => `${groupIndex}:${count}`).join(','),
     loadout,
+    hasJet: loadout.some((plane) => Boolean(
+      plane && (plane.isJet === true || capabilitiesFor(plane).isJet === true)
+    )),
     maximumDamage: maximumDetailedExpectedDamage({
       bases: [loadout],
       baseIndexOffset: baseIndex,
@@ -772,6 +899,10 @@ function createWorkController(prepared, solverOptions, stats, startedAt) {
     stats,
     reason: null,
     stopped: false,
+    progressPhase: 'finding_feasible',
+    setProgressPhase(phase) {
+      this.progressPhase = phase;
+    },
     checkStop() {
       if (prepared.isCancelled?.() || solverOptions.isCancelled?.()) {
         this.stopped = true;
@@ -788,7 +919,7 @@ function createWorkController(prepared, solverOptions, stats, startedAt) {
       }
       stats.nodesExplored += 1;
       if ((stats.nodesExplored & 4095) === 0) {
-        solverOptions.onProgress?.(progressSnapshot(this, 'proving_optimal', startedAt));
+        solverOptions.onProgress?.(progressSnapshot(this, this.progressPhase, startedAt));
         return this.checkStop();
       }
       return true;
@@ -797,7 +928,13 @@ function createWorkController(prepared, solverOptions, stats, startedAt) {
 }
 
 function emitProgress(solverOptions, work, phase, startedAt) {
+  work.setProgressPhase(phase);
   solverOptions.onProgress?.(progressSnapshot(work, phase, startedAt));
+}
+
+function setSearchPhase(work, solverOptions, phase) {
+  work.setProgressPhase(phase);
+  solverOptions.onPhaseChange?.(phase);
 }
 
 function progressSnapshot(work, phase, startedAt) {
@@ -807,7 +944,7 @@ function progressSnapshot(work, phase, startedAt) {
     completedWork = work.stats?.prefixCandidatesEvaluated ?? 0;
     totalWork = work.stats?.prefixCandidatesTotal ?? null;
   } else if (phase === 'evaluating_suffix_trajectories') {
-    completedWork = work.stats?.suffixCandidatesEvaluated ?? 0;
+    completedWork = work.stats?.suffixCandidatesProcessed ?? 0;
     totalWork = work.stats?.suffixCandidatesTotal == null
       ? null
       : work.stats.suffixCandidatesTotal;
@@ -847,4 +984,4 @@ function validatePrepared(prepared) {
   }
 }
 
-module.exports = { solveDetailedExact };
+module.exports = { createWorkController, solveDetailedExact };

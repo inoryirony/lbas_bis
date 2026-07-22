@@ -28,6 +28,10 @@ const {
 } = require('./src/equipment-filter');
 const SimulatorPanel = require('./src/ui/SimulatorPanel');
 const OptimizerPanel = require('./src/ui/OptimizerPanel');
+const {
+  applyOptimizerProficiencyPolicy,
+  normalizeOptimizerProficiencyMode,
+} = require('./src/proficiency-policy');
 
 const h = React.createElement;
 const PLUGIN_ID = 'lbas_bis';
@@ -84,6 +88,7 @@ const FALLBACK_ZH_CN = {
   proficiency: '熟练',
   optimizerProficiency: '计算熟练度',
   proficiencyLost: '默认跳海',
+  proficiencyInventory: '仓库熟练度',
   proficiencyMax: '刷熟练度',
   baseSummary: '本队制空/半径/伤害',
   baseColumn: '基地',
@@ -266,7 +271,7 @@ class LbasOptimizerPanel extends React.Component {
     }
 
     const simulator = normalizeSimulatorState(this.state.simulator);
-    const optimizerInput = applyOptimizerProficiencyToInput(
+    const optimizerInput = applyOptimizerProficiencyPolicy(
       simulatorToOptimizerInput(simulator),
       this.state.optimizerProficiencyMode,
     );
@@ -285,13 +290,12 @@ class LbasOptimizerPanel extends React.Component {
         ...equipmentAdapterOptions,
       }),
     );
-    const equipment = filterOptimizationEquipment(unfilteredEquipment, {
-      ...equipmentFilters,
-      lockedInstanceIds: lockedInstanceIds(simulator),
-    }).map((plane) => planeWithOptimizerProficiency(
-      plane,
-      this.state.optimizerProficiencyMode,
-    ));
+    const equipment = applyOptimizerProficiencyPolicy({
+      equipment: filterOptimizationEquipment(unfilteredEquipment, {
+        ...equipmentFilters,
+        lockedInstanceIds: lockedInstanceIds(simulator),
+      }),
+    }, this.state.optimizerProficiencyMode).equipment;
     const searchOptions = {
       ...optimizerInput,
       equipment,
@@ -684,7 +688,7 @@ class LbasOptimizerPanel extends React.Component {
   };
 
   updateOptimizerProficiencyMode = (mode) => {
-    const optimizerProficiencyMode = mode === 'max' ? 'max' : 'lost';
+    const optimizerProficiencyMode = normalizeOptimizerProficiencyMode(mode);
     if (optimizerProficiencyMode === this.state.optimizerProficiencyMode) return;
     this.searchGeneration += 1;
     this.searchRunner?.cancel();
@@ -937,30 +941,6 @@ function readPoiState() {
   }
   const poiWindow = /** @type {Window & { getStore?: () => any }} */ (window);
   return typeof poiWindow.getStore === 'function' ? poiWindow.getStore() : null;
-}
-
-/** Applies the optimizer-wide visible proficiency assumption to one aircraft copy. */
-function planeWithOptimizerProficiency(plane, mode) {
-  if (!plane) return null;
-  return {
-    ...plane,
-    proficiency: mode === 'max' ? 7 : 0,
-    internalProficiency: undefined,
-  };
-}
-
-/** Applies the same assumption to every locked aircraft already present in search input. */
-function applyOptimizerProficiencyToInput(input, mode) {
-  return {
-    ...input,
-    lockedBases: (input.lockedBases || []).map((base) => ({
-      ...base,
-      slots: (base.slots || []).map((slot) => ({
-        ...slot,
-        plane: planeWithOptimizerProficiency(slot.plane, mode),
-      })),
-    })),
-  };
 }
 
 function effectiveEquipmentFilters(filters, equipment) {

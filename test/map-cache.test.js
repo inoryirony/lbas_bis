@@ -13,6 +13,41 @@ afterEach(async () => {
 });
 
 describe('map data cache', () => {
+  test('returns a valid cache immediately when cache preference is requested', async () => {
+    const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lbas-map-cache-'));
+    temporaryPaths.push(cacheDir);
+    const record = {
+      fetchedAt: 1000,
+      cells: { patterns: [{ a: 65, n: 'M', e: [] }] },
+      master: { maps: [], worlds: [], enemies: [], items: [] },
+    };
+    await fs.writeFile(
+      path.join(cacheDir, 'noro6-map-data.json'),
+      JSON.stringify(record),
+      'utf8',
+    );
+    let fetchCalls = 0;
+
+    const cached = await loadMapData({
+      cacheDir,
+      now: () => 2500,
+      preferCache: true,
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        throw new Error('remote refresh should be skipped');
+      },
+    });
+
+    expect(fetchCalls).toBe(0);
+    expect(cached).toMatchObject({
+      source: 'cache',
+      fetchedAt: 1000,
+      sourceAgeMs: 1500,
+      cells: record.cells,
+      master: record.master,
+    });
+  });
+
   test('caches valid remote data and falls back to it when refresh fails', async () => {
     const cacheDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lbas-map-cache-'));
     temporaryPaths.push(cacheDir);

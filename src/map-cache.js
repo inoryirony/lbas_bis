@@ -12,6 +12,13 @@ async function loadMapData(options = {}) {
   const now = options.now || Date.now;
   const cacheDir = options.cacheDir || defaultCacheDir();
   const cachePath = path.join(cacheDir, 'noro6-map-data.json');
+  if (options.preferCache) {
+    try {
+      return await readCache(cachePath, now);
+    } catch (_cacheError) {
+      // A missing or invalid cache still falls through to the remote source.
+    }
+  }
   try {
     if (typeof fetchImpl !== 'function') throw new Error('fetch is unavailable');
     const [cells, master] = await Promise.all([
@@ -24,18 +31,24 @@ async function loadMapData(options = {}) {
     return { ...record, source: 'remote', sourceAgeMs: 0 };
   } catch (remoteError) {
     try {
-      const record = JSON.parse(await fs.readFile(cachePath, 'utf8'));
-      validateMapData(record.cells, record.master);
       return {
-        ...record,
-        source: 'cache',
-        sourceAgeMs: Math.max(0, now() - Number(record.fetchedAt || 0)),
+        ...await readCache(cachePath, now),
         refreshError: remoteError.message,
       };
     } catch (cacheError) {
       throw new Error(`Unable to load map data: ${remoteError.message}; cache: ${cacheError.message}`);
     }
   }
+}
+
+async function readCache(cachePath, now) {
+  const record = JSON.parse(await fs.readFile(cachePath, 'utf8'));
+  validateMapData(record.cells, record.master);
+  return {
+    ...record,
+    source: 'cache',
+    sourceAgeMs: Math.max(0, now() - Number(record.fetchedAt || 0)),
+  };
 }
 
 async function fetchJson(fetchImpl, url) {

@@ -719,7 +719,7 @@ describe('wave simulator', () => {
       torpedo: 14,
     })];
     const scoreContext = createDetailedScoreContext({ ...common, baseCount: 1 });
-    evaluateDetailedPlanScore({
+    const initial = evaluateDetailedPlanScore({
       ...common,
       bases: [loadout],
       captureFinalEnemySlots: true,
@@ -745,6 +745,81 @@ describe('wave simulator', () => {
       totalDamageAcrossSamples: uncached.totalDamageAcrossSamples,
       finalEnemySlotsBySample: uncached.finalEnemySlotsBySample,
     });
+    expect(initial.enemyTrajectoryId).toEqual(expect.any(Number));
+    expect(cached.enemyTrajectoryId).toBe(initial.enemyTrajectoryId);
+  });
+
+  test('can score one-shot detailed candidates without retaining base records', () => {
+    const common = {
+      enemy: enemyFleet('one-shot-cache-enemy', 24),
+      targetStates: ['denial', 'denial'],
+      sampleCount: 8,
+      seed: 'one-shot-base-record',
+    };
+    const loadout = [fighter('one-shot-plane', { antiAir: 9 })];
+    const scoreContext = createDetailedScoreContext({ ...common, baseCount: 1 });
+    const oneShot = evaluateDetailedPlanScore({
+      ...common,
+      bases: [loadout],
+      baseCacheKeys: ['candidate'],
+      cacheBaseRecords: false,
+      captureFinalEnemySlots: true,
+      scoreContext,
+    });
+    const ordinary = evaluateDetailedPlanScore({
+      ...common,
+      bases: [loadout],
+      captureFinalEnemySlots: true,
+      disableConcentratedSegmentReuse: true,
+    });
+
+    expect(scoreContext.baseCache.size).toBe(0);
+    expect(oneShot).toMatchObject({
+      allWaveTargetFulfillmentProbability: ordinary.allWaveTargetFulfillmentProbability,
+      totalDamageAcrossSamples: ordinary.totalDamageAcrossSamples,
+      finalEnemySlotsBySample: ordinary.finalEnemySlotsBySample,
+    });
+  });
+
+  test('reuses exact slot-loss histograms across planes with different damage curves', () => {
+    const common = {
+      enemy: enemyFleet('loss-histogram-enemy', 24),
+      targetStates: ['denial', 'denial'],
+      sampleCount: 32,
+      seed: 'loss-histogram-reuse',
+    };
+    const lowDamage = fighter('loss-histogram-low', {
+      antiAir: 8,
+      equipType: 47,
+      isFighter: false,
+      isAttacker: true,
+      isLandAttacker: true,
+      torpedo: 8,
+    });
+    const highDamage = { ...lowDamage, instanceId: 'loss-histogram-high', torpedo: 18 };
+    const scoreContext = createDetailedScoreContext({ ...common, baseCount: 1 });
+    const low = evaluateDetailedPlanScore({
+      ...common,
+      bases: [[lowDamage]],
+      captureFinalEnemySlots: true,
+      scoreContext,
+    });
+    const reused = evaluateDetailedPlanScore({
+      ...common,
+      bases: [[highDamage]],
+      captureFinalEnemySlots: true,
+      scoreContext,
+    });
+    const uncached = evaluateDetailedPlanScore({
+      ...common,
+      bases: [[highDamage]],
+      captureFinalEnemySlots: true,
+      disableConcentratedSegmentReuse: true,
+    });
+
+    expect(reused.damageContributionSimulations).toBe(0);
+    expect(reused.totalDamageAcrossSamples).toBe(uncached.totalDamageAcrossSamples);
+    expect(reused.totalDamageAcrossSamples).toBeGreaterThan(low.totalDamageAcrossSamples);
   });
 
   test('reuses concentrated trajectories and exact damage contributions with enemy Stage 2', () => {

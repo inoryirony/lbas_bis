@@ -105,6 +105,43 @@ describe('plugin entry', () => {
     });
   });
 
+  test('can use each aircraft current inventory proficiency for optimization', () => {
+    const start = vi.fn();
+    const panel = new plugin.reactClass({
+      searchRunner: { start, cancel: vi.fn(() => true) },
+      readPoiState: () => equipmentPoiState(),
+    });
+    panel.setState = (updater) => {
+      const patch = typeof updater === 'function' ? updater(panel.state) : updater;
+      Object.assign(panel.state, patch);
+    };
+    panel.state.equipmentFilters = {
+      excludeCarrierAircraft: false,
+      blacklistedMasterIds: [],
+      blacklistedEquipTypes: [],
+    };
+    panel.updateSlotPlane(0, 0, 'land-1');
+    panel.updateSlotLock(0, 0, true);
+
+    const inventoryButton = findNodes(panel.render(), (node) =>
+      node.type === 'button' && collectText(node) === '仓库熟练度')[0];
+    expect(inventoryButton.props['aria-pressed']).toBe(false);
+    inventoryButton.props.onClick();
+    panel.runOptimizer();
+
+    const input = start.mock.calls[0][0];
+    expect(panel.state.optimizerProficiencyMode).toBe('inventory');
+    const proficiencyButtons = findNodes(panel.render(), (node) =>
+      node.type === 'button' && ['默认跳海', '仓库熟练度', '刷熟练度'].includes(collectText(node)));
+    expect(proficiencyButtons.map((button) => button.props['aria-pressed']))
+      .toEqual([false, true, false]);
+    expect(input.equipment.every((plane) => plane.proficiency === 7)).toBe(true);
+    expect(input.lockedBases[0].slots[0].plane).toMatchObject({
+      instanceId: 'land-1',
+      proficiency: 7,
+    });
+  });
+
   test('uses maximum proficiency for optimizer and invalidates an old search on mode change', () => {
     const start = vi.fn();
     const cancel = vi.fn(() => true);

@@ -319,6 +319,7 @@ function createDetailedScoreContext(options = {}) {
     combatContext: options.combatContext,
     baseCache: new Map(),
     planeCurveCache: new Map(),
+    nextEnemyTrajectoryId: 1,
     concentratedPrefixTrajectoryCache: createConcentratedSegmentCache(),
     concentratedContinuationTrajectoryCaches: new WeakMap(),
   };
@@ -362,12 +363,13 @@ function evaluateDetailedPlanScore(options = {}) {
     targetRanks,
   } = context;
   const baseCacheKeys = Array.isArray(options.baseCacheKeys) ? options.baseCacheKeys : [];
+  const cacheBaseRecords = options.cacheBaseRecords !== false;
   const baseRecords = sourceBases.map((sourceBase, baseIndex) => {
     const suppliedKey = baseCacheKeys[baseIndex];
     const cacheKey = suppliedKey == null
       ? null
       : `${baseIndexOffset + baseIndex}:${suppliedKey}`;
-    if (cacheKey != null && context.baseCache.has(cacheKey)) {
+    if (cacheBaseRecords && cacheKey != null && context.baseCache.has(cacheKey)) {
       return context.baseCache.get(cacheKey);
     }
     const normalizedBase = normalizeBases([sourceBase])[0];
@@ -381,7 +383,7 @@ function evaluateDetailedPlanScore(options = {}) {
         combatContext: options.combatContext,
       }),
     };
-    if (cacheKey != null) context.baseCache.set(cacheKey, record);
+    if (cacheBaseRecords && cacheKey != null) context.baseCache.set(cacheKey, record);
     return record;
   });
   const bases = baseRecords.map((record) => record.numeric);
@@ -659,12 +661,14 @@ function evaluateReusableConcentratedSegment({
         }
       }
       trajectory = {
+        enemyTrajectoryId: context.nextEnemyTrajectoryId++,
         allWaveTargetFulfillmentProbability: fulfilledSamples / sampleCount,
         finalEnemySlotsBySample,
         maximumFinalEnemyAir: [maximumFinalEnemyAir],
         firstWaveStateKeys: firstWaveStateRanks.map(airStateKeyForRank),
         secondWaveStateKeys,
         damageContributionTotals: new Map(),
+        lossSlotHistograms: new Map(),
       };
       trajectoryCache.byState.set(stateSignature, trajectory);
       enemyTrajectorySimulations = 1;
@@ -685,9 +689,18 @@ function evaluateReusableConcentratedSegment({
     ]);
     let contributionTotal = trajectory.damageContributionTotals.get(contributionKey);
     if (contributionTotal == null) {
-      contributionTotal = 0;
-      trajectory.secondWaveStateKeys.forEach((secondStateKey, sample) => {
-        [trajectory.firstWaveStateKeys[sample], secondStateKey].forEach((stateKey, waveInBase) => {
+      const lossHistogramKey = JSON.stringify([
+        currentSlot,
+        base.lossKeys[slotIndex],
+        plane.lossModifier,
+        plane.isStageTwoTarget,
+        plane.shootDownAvoidance,
+      ]);
+      let lossSlotHistogram = trajectory.lossSlotHistograms.get(lossHistogramKey);
+      if (!lossSlotHistogram) {
+        lossSlotHistogram = new Uint32Array(currentSlot + 1);
+        trajectory.secondWaveStateKeys.forEach((secondStateKey, sample) => {
+          [trajectory.firstWaveStateKeys[sample], secondStateKey].forEach((stateKey, waveInBase) => {
           const loss = stateKey === 'none' ? 0 : numericPlayerLoss(
             stateKey,
             currentSlot,
@@ -710,11 +723,17 @@ function evaluateReusableConcentratedSegment({
             baseIndexOffset * 2 + waveInBase,
             base.lossKeys[slotIndex],
           );
-          contributionTotal += plane.damageBySlot[afterStageTwo] || 0;
+            lossSlotHistogram[afterStageTwo] += 1;
+          });
         });
-      });
+        trajectory.lossSlotHistograms.set(lossHistogramKey, lossSlotHistogram);
+        damageContributionSimulations += 1;
+      }
+      contributionTotal = lossSlotHistogram.reduce(
+        (total, count, finalSlot) => total + count * (plane.damageBySlot[finalSlot] || 0),
+        0,
+      );
       trajectory.damageContributionTotals.set(contributionKey, contributionTotal);
-      damageContributionSimulations += 1;
     }
     totalDamage += contributionTotal;
   });
@@ -731,6 +750,7 @@ function evaluateReusableConcentratedSegment({
     enemyTrajectorySimulations,
     stateSignatureProbes,
     damageContributionSimulations,
+    enemyTrajectoryId: trajectory.enemyTrajectoryId,
     allWaveTargetFulfillmentProbability: trajectory.allWaveTargetFulfillmentProbability,
     expectedDamage: totalDamage / sampleCount,
     totalDamageAcrossSamples: totalDamage,

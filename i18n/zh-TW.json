@@ -52,6 +52,7 @@
   "includeMissing": "包含未持有理論裝備",
   "optimizerProficiency": "計算熟練度",
   "proficiencyLost": "預設跳海",
+  "proficiencyInventory": "倉庫熟練度",
   "proficiencyMax": "刷熟練度",
   "importToSimulator": "匯入到模擬器",
   "sixWaveState": "波次狀態",

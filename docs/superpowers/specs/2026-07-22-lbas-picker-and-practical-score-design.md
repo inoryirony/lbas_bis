@@ -41,6 +41,12 @@ existing localized label in other languages.
 
 ## Practical Damage Score
 
+Status note (2026-07-23): this section describes an intermediate proxy, not HP
+damage. The required target, hit/evasion, critical, armor, scratch, HP, and sink
+model is specified in
+`2026-07-23-lbas-combat-resolution-design.md`. UI/API text must not call the
+current additive attack-power score expected HP damage.
+
 The aircraft adapter retains the official accuracy stat. Damage scoring keeps
 the existing LBAS attack-power formula, then applies only reference-verified
 accuracy and proficiency expectation factors. The UI labels the result as an
