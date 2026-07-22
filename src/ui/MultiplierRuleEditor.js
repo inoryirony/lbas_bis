@@ -117,7 +117,9 @@ function textField({ label, value, onCommit, styles }) {
     h('input', {
       type: 'text',
       defaultValue: value,
-      onBlur: (event) => onCommit(event.target.value),
+      onBlur: (event) => {
+        if (onCommit(event.target.value) === false) event.target.value = value;
+      },
       style: styles.input,
       'aria-label': label,
     }),

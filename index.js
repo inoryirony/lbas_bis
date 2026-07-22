@@ -27,6 +27,7 @@ const h = React.createElement;
 const PLUGIN_ID = 'lbas_bis';
 const CUSTOM_ENEMY_SHIP_ID = '__custom__';
 const STATE_OPTIONS = ['denial', 'parity', 'superiority', 'supremacy'];
+const INVALID_MULTIPLIER_FIELD = Symbol('invalid-multiplier-field');
 
 const FALLBACK_ZH_CN = {
   title: '陆航优化',
@@ -152,6 +153,7 @@ const FALLBACK_ZH_CN = {
   enabled: '启用',
   addMultiplierRule: '增加倍率规则',
   removeMultiplierRule: '删除倍率规则',
+  invalidEquipmentSelector: '装备 Master ID / 类型必须是逗号分隔的正整数。',
   bossNode: 'Boss',
   difficulty_0: '通常',
   difficulty_1: '丁',
@@ -181,6 +183,7 @@ class LbasOptimizerPanel extends React.Component {
     };
     this.customEnemyDraft = cloneEnemy(this.state.simulator.enemy);
     this.searchRunner = props.searchRunner || null;
+    this.searchGeneration = 0;
     this.readPoiState = props.readPoiState || readPoiState;
     this.calculateSimulatorSummary = props.calculateSimulatorSummary || calculateSimulatorSummary;
     this.simulatorRenderCache = null;
@@ -242,7 +245,10 @@ class LbasOptimizerPanel extends React.Component {
       searchProgress: null,
     });
     this.searchRunner ||= createSearchRunner();
-    this.searchRunner.start(searchOptions, this.handleSearchEvent);
+    const searchGeneration = this.searchGeneration += 1;
+    this.searchRunner.start(searchOptions, (event) => {
+      if (searchGeneration === this.searchGeneration) this.handleSearchEvent(event);
+    });
   };
 
   handleSearchEvent = (event) => {
@@ -297,13 +303,22 @@ class LbasOptimizerPanel extends React.Component {
   };
 
   componentWillUnmount() {
+    this.searchGeneration += 1;
     this.searchRunner?.dispose();
     this.searchRunner = null;
   }
 
   updateSimulator = (updater) => {
+    this.searchGeneration += 1;
+    this.searchRunner?.cancel();
     this.setState((state) => ({
       simulator: normalizeSimulatorState(updater(state.simulator)),
+      messages: [],
+      results: [],
+      search: null,
+      isSearching: false,
+      searchPhase: null,
+      searchProgress: null,
     }));
   };
 
@@ -558,6 +573,11 @@ class LbasOptimizerPanel extends React.Component {
   };
 
   updateMultiplierRule = (ruleIndex, field, value) => {
+    const normalizedValue = normalizeMultiplierRuleField(field, value);
+    if (normalizedValue === INVALID_MULTIPLIER_FIELD) {
+      this.setState({ messages: [getT()('invalidEquipmentSelector')] });
+      return false;
+    }
     this.updateSimulator((simulator) => ({
       ...simulator,
       combatContext: {
@@ -566,13 +586,14 @@ class LbasOptimizerPanel extends React.Component {
           index === ruleIndex
             ? {
               ...rule,
-              [field]: normalizeMultiplierRuleField(field, value),
+              [field]: normalizedValue,
               source: 'custom',
               overridden: true,
             }
             : rule),
       },
     }));
+    return true;
   };
 
   removeMultiplierRule = (ruleIndex) => {
@@ -623,9 +644,7 @@ class LbasOptimizerPanel extends React.Component {
   };
 
   importPlan = (plan) => {
-    this.setState((state) => ({
-      simulator: applyPlanToSimulator(state.simulator, plan),
-    }));
+    this.updateSimulator((simulator) => applyPlanToSimulator(simulator, plan));
   };
 
   currentOwnedEquipment() {
@@ -754,7 +773,7 @@ function nextMultiplierRuleId(rules) {
 function normalizeMultiplierRuleField(field, value) {
   if (field === 'targetTags') return parseCommaSeparatedStrings(value);
   if (field === 'equipmentMasterIds' || field === 'equipmentTypes') {
-    return parseCommaSeparatedPositiveIntegers(value);
+    return parseCommaSeparatedPositiveIntegers(value) ?? INVALID_MULTIPLIER_FIELD;
   }
   if (field === 'multiplier') return Number(value);
   if (field === 'enabled') return Boolean(value);
@@ -769,10 +788,13 @@ function parseCommaSeparatedStrings(value) {
 }
 
 function parseCommaSeparatedPositiveIntegers(value) {
-  return [...new Set(String(value || '')
+  const tokens = String(value || '')
     .split(',')
-    .map(Number)
-    .filter((item) => Number.isInteger(item) && item > 0))];
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const numbers = tokens.map(Number);
+  if (numbers.some((item) => !Number.isInteger(item) || item <= 0)) return null;
+  return [...new Set(numbers)];
 }
 
 /** Creates a detached enemy draft whose ship and slot arrays can be replaced safely. */

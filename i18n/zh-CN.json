@@ -124,6 +124,7 @@
   "enabled": "启用",
   "addMultiplierRule": "增加倍率规则",
   "removeMultiplierRule": "删除倍率规则",
+  "invalidEquipmentSelector": "装备 Master ID / 类型必须是逗号分隔的正整数。",
   "bossNode": "Boss",
   "difficulty_0": "通常",
   "difficulty_1": "丁",

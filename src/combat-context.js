@@ -13,10 +13,12 @@ function normalizeCombatContext(context = {}) {
 /** Returns a canonical combat context together with explicit validation errors. */
 function validateCombatContext(context = {}) {
   const normalized = normalizeCombatContext(context);
+  const rawRules = Array.isArray(context.multiplierRules) ? context.multiplierRules : [];
   const errors = [];
   const seenIds = new Set();
 
   normalized.multiplierRules.forEach((rule, ruleIndex) => {
+    const rawRule = rawRules[ruleIndex] || {};
     if (!rule.id) {
       errors.push({ ruleIndex, field: 'id', message: 'Rule ID is required.' });
     } else if (seenIds.has(rule.id)) {
@@ -29,6 +31,15 @@ function validateCombatContext(context = {}) {
         field: 'equipmentSelectors',
         message: 'At least one equipment master ID or equipment type is required.',
       });
+    }
+    for (const field of ['equipmentMasterIds', 'equipmentTypes']) {
+      if (hasInvalidPositiveInteger(rawRule[field])) {
+        errors.push({
+          ruleIndex,
+          field,
+          message: 'Equipment selectors must contain only positive integers.',
+        });
+      }
     }
     if (!Number.isFinite(rule.multiplier) || rule.multiplier <= 0) {
       errors.push({
@@ -49,10 +60,10 @@ function equipmentDamageMultiplier(plane, context = {}) {
   for (const rule of context.multiplierRules || []) {
     if (!rule.enabled || !ruleMatchesPlane(rule, plane, targetTags)) continue;
     const group = rule.group || rule.id;
-    strongestByGroup.set(
-      group,
-      Math.max(strongestByGroup.get(group) || 1, rule.multiplier),
-    );
+    const current = strongestByGroup.get(group);
+    if (current === undefined || rule.multiplier > current) {
+      strongestByGroup.set(group, rule.multiplier);
+    }
   }
   return [...strongestByGroup.values()].reduce((total, multiplier) =>
     total * multiplier, 1);
@@ -95,6 +106,13 @@ function normalizePositiveIntegers(values) {
   return unique((Array.isArray(values) ? values : [])
     .map(Number)
     .filter((value) => Number.isInteger(value) && value > 0));
+}
+
+function hasInvalidPositiveInteger(values) {
+  return Array.isArray(values) && values.some((value) => {
+    const number = Number(value);
+    return !Number.isInteger(number) || number <= 0;
+  });
 }
 
 function normalizeString(value) {

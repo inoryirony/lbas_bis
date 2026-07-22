@@ -188,6 +188,90 @@ describe('plugin entry', () => {
     expect(panel.state.simulator.combatContext.multiplierRules).toEqual([]);
   });
 
+  test('invalidates stale search proof and cancels active work when combat context changes', () => {
+    const panel = createSynchronousPanel();
+    const cancel = vi.fn(() => true);
+    panel.searchRunner = { cancel };
+    panel.state.results = [{ totalDamagePower: 123 }];
+    panel.state.search = { status: 'optimal', provenOptimal: true, nodesExplored: 99 };
+    panel.state.isSearching = true;
+    panel.state.searchPhase = 'proving_optimal';
+
+    panel.updateCombatTargetTags('boss');
+
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(panel.state.results).toEqual([]);
+    expect(panel.state.search).toBeNull();
+    expect(panel.state.isSearching).toBe(false);
+    expect(panel.state.searchPhase).toBeNull();
+  });
+
+  test('ignores a stale worker completion after simulator input changes', () => {
+    /** @type {((event: any) => void) | undefined} */
+    let workerCallback;
+    const searchRunner = {
+      start: vi.fn((_options, callback) => { workerCallback = callback; }),
+      cancel: vi.fn(() => true),
+    };
+    const panel = new plugin.reactClass({
+      searchRunner,
+      readPoiState: () => ({ info: { equips: {} }, const: { $equips: {} } }),
+    });
+    panel.setState = (updater) => {
+      const patch = typeof updater === 'function' ? updater(panel.state) : updater;
+      Object.assign(panel.state, patch);
+    };
+    panel.runOptimizer();
+
+    panel.updateCombatTargetTags('boss');
+    expect(workerCallback).toBeTypeOf('function');
+    workerCallback?.({
+      type: 'completed',
+      result: {
+        messages: [],
+        results: [{ totalDamagePower: 999 }],
+        search: { status: 'optimal', provenOptimal: true, nodesExplored: 1 },
+      },
+    });
+
+    expect(panel.state.results).toEqual([]);
+    expect(panel.state.search).toBeNull();
+  });
+
+  test('invalidates an active search when importing its incumbent plan', () => {
+    const panel = createSynchronousPanel();
+    const cancel = vi.fn(() => true);
+    panel.searchRunner = { cancel };
+    panel.state.results = [{ totalDamagePower: 123 }];
+    panel.state.search = { status: 'searching', provenOptimal: false, nodesExplored: 99 };
+    panel.state.isSearching = true;
+
+    panel.importPlan({ bases: [] });
+
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(panel.state.results).toEqual([]);
+    expect(panel.state.search).toBeNull();
+    expect(panel.state.isSearching).toBe(false);
+  });
+
+  test('rejects malformed multiplier selectors without changing the committed rule', () => {
+    const panel = createSynchronousPanel();
+    panel.addMultiplierRule();
+    expect(panel.updateMultiplierRule(0, 'equipmentMasterIds', '301')).toBe(true);
+
+    const accepted = panel.updateMultiplierRule(0, 'equipmentMasterIds', '301, 30x');
+
+    expect(accepted).toBe(false);
+    expect(panel.state.simulator.combatContext.multiplierRules[0].equipmentMasterIds).toEqual([301]);
+    expect(panel.state.messages.join(' ')).toContain('正整数');
+
+    const masterIdInput = findNodes(panel.render(), (node) =>
+      node.type === 'input' && node.props?.['aria-label'] === '装备 Master ID')[0];
+    const target = { value: '301, 30x' };
+    masterIdInput.props.onBlur({ target });
+    expect(target.value).toBe('301');
+  });
+
   test('switches any selected map node to a clearly marked custom composition', () => {
     const panel = createSynchronousPanel();
     panel.state.mapSelection = { area: 99, node: 'Z', difficulty: null, formationId: '' };

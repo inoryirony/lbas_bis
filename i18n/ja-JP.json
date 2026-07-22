@@ -124,6 +124,7 @@
   "enabled": "有効",
   "addMultiplierRule": "倍率ルールを追加",
   "removeMultiplierRule": "倍率ルールを削除",
+  "invalidEquipmentSelector": "装備マスターIDと装備タイプは、正の整数をカンマ区切りで入力してください。",
   "bossNode": "ボス",
   "difficulty_0": "通常",
   "difficulty_1": "丁",

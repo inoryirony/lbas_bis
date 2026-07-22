@@ -124,6 +124,7 @@
   "enabled": "Enabled",
   "addMultiplierRule": "Add multiplier rule",
   "removeMultiplierRule": "Remove multiplier rule",
+  "invalidEquipmentSelector": "Equipment master IDs and types must be comma-separated positive integers.",
   "bossNode": "Boss",
   "difficulty_0": "Normal",
   "difficulty_1": "Casual",

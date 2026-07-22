@@ -56,6 +56,26 @@ describe('LBAS combat context', () => {
       .toBeCloseTo(1.2 * 1.15, 10);
   });
 
+  test('keeps the strongest matching sub-unit multiplier instead of replacing it with one', () => {
+    const context = normalizeCombatContext({
+      targetTags: ['boss'],
+      multiplierRules: [
+        rule('weakening-a', 0.8, {
+          targetTags: ['boss'],
+          group: 'a',
+          equipmentTypes: [47],
+        }),
+        rule('weakening-b', 0.7, {
+          targetTags: ['boss'],
+          group: 'a',
+          equipmentMasterIds: [301],
+        }),
+      ],
+    });
+
+    expect(equipmentDamageMultiplier({ masterId: 301, equipType: 47 }, context)).toBe(0.8);
+  });
+
   test('requires every target tag and either equipment selector to match', () => {
     const context = normalizeCombatContext({
       targetTags: ['event-e3'],
@@ -91,6 +111,20 @@ describe('LBAS combat context', () => {
       expect.objectContaining({ ruleIndex: 2, field: 'multiplier' }),
       expect.objectContaining({ ruleIndex: 3, field: 'multiplier' }),
     ]));
+  });
+
+  test('rejects malformed selector tokens before normalization can discard them', () => {
+    const result = validateCombatContext({
+      multiplierRules: [rule('mixed-selector', 1.2, {
+        equipmentMasterIds: ['301', '30x'],
+      })],
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContainEqual(expect.objectContaining({
+      ruleIndex: 0,
+      field: 'equipmentMasterIds',
+    }));
   });
 });
 
