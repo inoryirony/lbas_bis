@@ -394,7 +394,6 @@ function evaluateDetailedPlanScore(options = {}) {
     captureFinalEnemySlots: options.captureFinalEnemySlots,
     incumbentScore: options.incumbentScore,
     disableConcentratedSegmentReuse: options.disableConcentratedSegmentReuse,
-    stage2Modeled: enemies.some((enemy) => enemy.stage2Defense?.modeled === true),
   })) {
     return evaluateReusableConcentratedSegment({
       base: bases[0],
@@ -695,7 +694,17 @@ function evaluateReusableConcentratedSegment({
             ),
             plane.lossModifier,
           );
-          contributionTotal += plane.damageBySlot[currentSlot - loss] || 0;
+          const afterStageOne = currentSlot - loss;
+          const afterStageTwo = numericEnemyStageTwoAfter(
+            plane,
+            afterStageOne,
+            enemies[0].stage2Defense,
+            fixedRandom,
+            sample,
+            baseIndexOffset * 2 + waveInBase,
+            base.lossKeys[slotIndex],
+          );
+          contributionTotal += plane.damageBySlot[afterStageTwo] || 0;
         });
       });
       trajectory.damageContributionTotals.set(contributionKey, contributionTotal);
@@ -759,7 +768,6 @@ function canReuseConcentratedPrefixTrajectory(options) {
   const isContinuation = options.baseIndexOffset > 0 &&
     options.initialEnemySlotsBySample != null;
   return options.dispatchMode === 'concentrated' &&
-    options.stage2Modeled !== true &&
     options.disableConcentratedSegmentReuse !== true &&
     options.bases.length === 1 &&
     options.bases[0].hasJet === false &&
@@ -1338,30 +1346,54 @@ function applyNumericEnemyStageTwo(
     const isEligible = typeof options.isEligible === 'function'
       ? options.isEligible(plane)
       : plane?.isStageTwoTarget;
-    if (!isEligible || slots[slotIndex] <= 0) return;
-    const status = stageTwoShootdownStatus(defense, plane.shootDownAvoidance);
-    const shipCount = Math.min(status.rateFactors.length, status.fixedLosses.length);
-    if (!shipCount) return;
-    const coordinate = base.lossKeys[slotIndex];
-    const shipIndex = Math.min(
-      shipCount - 1,
-      Math.floor(fixedRandom(
-        sample,
-        waveIndex,
-        `${phasePrefix}-ship`,
-        coordinate,
-        0,
-      ) * shipCount),
+    if (!isEligible) return;
+    slots[slotIndex] = numericEnemyStageTwoAfter(
+      plane,
+      slots[slotIndex],
+      defense,
+      fixedRandom,
+      sample,
+      waveIndex,
+      base.lossKeys[slotIndex],
+      phasePrefix,
     );
-    let after = slots[slotIndex];
-    if (fixedRandom(sample, waveIndex, `${phasePrefix}-rate`, coordinate, 0) >= 0.5) {
-      after -= Math.floor(status.rateFactors[shipIndex] * after);
-    }
-    if (fixedRandom(sample, waveIndex, `${phasePrefix}-fixed`, coordinate, 0) >= 0.5) {
-      after -= status.fixedLosses[shipIndex];
-    }
-    slots[slotIndex] = Math.max(0, after);
   });
+}
+
+function numericEnemyStageTwoAfter(
+  plane,
+  currentSlot,
+  defense,
+  fixedRandom,
+  sample,
+  waveIndex,
+  coordinate,
+  phasePrefix = 'player-stage2',
+) {
+  if (!plane?.isStageTwoTarget || defense?.modeled !== true || currentSlot <= 0) {
+    return currentSlot;
+  }
+  const status = stageTwoShootdownStatus(defense, plane.shootDownAvoidance);
+  const shipCount = Math.min(status.rateFactors.length, status.fixedLosses.length);
+  if (!shipCount) return currentSlot;
+  const shipIndex = Math.min(
+    shipCount - 1,
+    Math.floor(fixedRandom(
+      sample,
+      waveIndex,
+      `${phasePrefix}-ship`,
+      coordinate,
+      0,
+    ) * shipCount),
+  );
+  let after = currentSlot;
+  if (fixedRandom(sample, waveIndex, `${phasePrefix}-rate`, coordinate, 0) >= 0.5) {
+    after -= Math.floor(status.rateFactors[shipIndex] * after);
+  }
+  if (fixedRandom(sample, waveIndex, `${phasePrefix}-fixed`, coordinate, 0) >= 0.5) {
+    after -= status.fixedLosses[shipIndex];
+  }
+  return Math.max(0, after);
 }
 
 /** Returns whether any physical plane in the base still has aircraft. */

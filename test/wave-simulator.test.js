@@ -738,6 +738,76 @@ describe('wave simulator', () => {
     });
   });
 
+  test('reuses concentrated trajectories and exact damage contributions with enemy Stage 2', () => {
+    const stage2Defense = {
+      modeled: true,
+      byAvoidance: {
+        0: { fixedLosses: [6], rateFactors: [0.2] },
+        1: { fixedLosses: [3], rateFactors: [0.12] },
+      },
+    };
+    const common = {
+      enemy: {
+        ...enemyFleet('stage2-cache-enemy', 24),
+        stage2Defense,
+      },
+      targetStates: ['denial', 'denial'],
+      sampleCount: 32,
+      seed: 'stage2-cache-equivalence',
+    };
+    const loadout = [
+      fighter('stage2-cache-ordinary', {
+        antiAir: 7,
+        equipType: 47,
+        isFighter: false,
+        isAttacker: true,
+        isLandAttacker: true,
+        torpedo: 14,
+        shootDownAvoidance: 0,
+      }),
+      fighter('stage2-cache-avoidance', {
+        antiAir: 8,
+        equipType: 47,
+        isFighter: false,
+        isAttacker: true,
+        isLandAttacker: true,
+        torpedo: 13,
+        shootDownAvoidance: 1,
+      }),
+    ];
+    const scoreContext = createDetailedScoreContext({ ...common, baseCount: 1 });
+    const first = evaluateDetailedPlanScore({
+      ...common,
+      bases: [loadout],
+      captureFinalEnemySlots: true,
+      scoreContext,
+    });
+    const cached = evaluateDetailedPlanScore({
+      ...common,
+      bases: [loadout.map((plane) => ({ ...plane }))],
+      captureFinalEnemySlots: true,
+      scoreContext,
+    });
+    const uncached = evaluateDetailedPlanScore({
+      ...common,
+      bases: [loadout],
+      captureFinalEnemySlots: true,
+      disableConcentratedSegmentReuse: true,
+    });
+
+    expect(first).toMatchObject({
+      enemyTrajectorySimulations: 1,
+      damageContributionSimulations: 2,
+    });
+    expect(cached).toMatchObject({
+      enemyTrajectorySimulations: 0,
+      damageContributionSimulations: 0,
+      allWaveTargetFulfillmentProbability: uncached.allWaveTargetFulfillmentProbability,
+      totalDamageAcrossSamples: uncached.totalDamageAcrossSamples,
+      finalEnemySlotsBySample: uncached.finalEnemySlotsBySample,
+    });
+  });
+
   test('does not reuse continuation trajectories across base offsets', () => {
     const sampleCount = 24;
     const initialEnemySlotsBySample = Array.from({ length: sampleCount }, () => [[18]]);
