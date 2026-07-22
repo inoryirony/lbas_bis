@@ -5,7 +5,13 @@ import scoreModule from '../src/search-score.js';
 import optimizerModule from '../src/optimizer.js';
 
 const { exhaustiveOptimize } = exhaustiveModule;
-const { combineCandidateSets, solveStaticExact } = exactModule;
+const {
+  combineCandidateSets,
+  createBaseContext,
+  enumerateBase,
+  featureForGroup,
+  solveStaticExact,
+} = exactModule;
 const { scorePlan } = scoreModule;
 const { prepareSearch } = optimizerModule;
 
@@ -26,6 +32,39 @@ describe('static exact solver', () => {
       provenOptimal: false,
       solverStats: { status: 'cancelled', stopReason: 'cancelled' },
     });
+  });
+
+  test('visits high-damage branches early enough for the exact upper bound to prune', () => {
+    const equipment = Array.from({ length: 80 }, (_, index) => plane(`ordered-${index}`, {
+      masterId: 10000 + index,
+      antiAir: 80 - index,
+      torpedo: 1 + index * 0.2,
+      radius: 80 - index,
+    }));
+    const prepared = prepareSearch({
+      equipment,
+      baseCount: 1,
+      targetRadius: 0,
+      enemyAir: 0,
+      targetStates: ['none', 'none'],
+      maxResults: 1,
+    });
+    const features = prepared.groups.map((group, groupIndex) =>
+      featureForGroup(group, groupIndex, prepared.inventoryCounts));
+    const context = createBaseContext(prepared, prepared.baseLocks[0], 0, features);
+    let nodesExplored = 0;
+    const work = {
+      stopped: false,
+      consume() {
+        nodesExplored += 1;
+        return true;
+      },
+    };
+
+    const result = enumerateBase(context, work, { findMaximum: true });
+
+    expect(result.maximumDamage).toBeGreaterThan(0);
+    expect(nodesExplored).toBeLessThan(150000);
   });
 
   test('polls cancellation after proof frontiers are enumerated', () => {

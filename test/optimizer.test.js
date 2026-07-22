@@ -132,6 +132,107 @@ describe('LBAS optimizer MVP', () => {
       .toContain(full.instanceId);
   });
 
+  test('does not let a short explicit slot size dominate a full explicit slot size', () => {
+    const short = Array.from({ length: 4 }, (_unused, index) => plane(
+      `short-explicit-slot-${index}`,
+      {
+        masterId: 3700 + index,
+        slotSize: 1,
+        torpedo: 15,
+        radius: 7,
+        role: 'attacker',
+      },
+    ));
+    const full = plane('full-explicit-slot', {
+      masterId: 9997,
+      slotSize: 18,
+      torpedo: 14,
+      radius: 7,
+      role: 'attacker',
+    });
+    const prepared = prepareSearch({
+      equipment: [...short, full],
+      baseCount: 1,
+      targetRadius: 7,
+      enemy: { mode: 'detailed', slots: [] },
+      targetStates: ['loss', 'loss'],
+      simulationOptions: { seed: 'explicit-slot-dominance', sampleCount: 1 },
+    });
+
+    expect(prepared.groups.flatMap((group) => group.instances.map((item) => item.instanceId)))
+      .toContain(full.instanceId);
+  });
+
+  test('removes an equal-damage fighter when full-inventory scarcity is non-worse', () => {
+    const stronger = Array.from({ length: 4 }, (_unused, index) => plane(
+      `full-inventory-stronger-${index}`,
+      { masterId: 3800, antiAir: 12, radius: 7, role: 'fighter' },
+    ));
+    const weaker = plane('full-inventory-weaker', {
+      masterId: 9996,
+      antiAir: 5,
+      radius: 7,
+      role: 'fighter',
+    });
+    const prepared = prepareSearch({
+      equipment: [...stronger, weaker],
+      baseCount: 1,
+      targetRadius: 7,
+      enemy: detailedEnemy(),
+      targetStates: ['parity', 'parity'],
+      simulationOptions: { seed: 'full-inventory-scarcity', sampleCount: 1 },
+    });
+
+    expect(prepared.groups.flatMap((group) => group.instances.map((item) => item.instanceId)))
+      .not.toContain(weaker.instanceId);
+  });
+
+  test('counts locked equivalent copies when comparing detailed scarcity', () => {
+    const lockedWeak = plane('locked-scarcity-weak', {
+      masterId: 3900,
+      antiAir: 5,
+      radius: 7,
+      role: 'fighter',
+    });
+    const freeWeak = plane('free-scarcity-weak', {
+      masterId: 3900,
+      antiAir: 5,
+      radius: 7,
+      role: 'fighter',
+    });
+    const freeStrong = plane('free-scarcity-strong', {
+      masterId: 1000,
+      antiAir: 12,
+      radius: 7,
+      role: 'fighter',
+    });
+    const prepared = prepareSearch({
+      equipment: [lockedWeak, freeWeak, freeStrong],
+      baseCount: 2,
+      targetRadius: 7,
+      enemy: { mode: 'detailed', slots: [] },
+      targetStates: ['supremacy', 'supremacy', 'supremacy', 'supremacy'],
+      lockedBases: [
+        { slots: [
+          { plane: lockedWeak, locked: true },
+          { plane: null, locked: true },
+          { plane: null, locked: true },
+          { plane: null, locked: true },
+        ] },
+        { slots: [
+          { locked: false },
+          { plane: null, locked: true },
+          { plane: null, locked: true },
+          { plane: null, locked: true },
+        ] },
+      ],
+      simulationOptions: { seed: 'locked-inventory-scarcity', sampleCount: 1 },
+    });
+
+    expect(prepared.groups.flatMap((group) => group.instances.map((item) => item.instanceId)))
+      .toContain(freeWeak.instanceId);
+  });
+
   test('finds a valid base plan without reusing the same equipment instance', () => {
     const equipment = [
       plane('f1', { antiAir: 11, intercept: 5, radius: 7, role: 'fighter' }),
@@ -1241,6 +1342,41 @@ describe('LBAS optimizer MVP', () => {
       backend: 'detailed-frontier',
     });
     expect(production.results[0].canonicalKey).toBe(exhaustive[0].canonicalKey);
+  });
+
+  test('reports countable progress while proving a two-base detailed optimum', () => {
+    const progress = [];
+    const result = optimizeLoadouts({
+      equipment: distinctFighters(8),
+      baseCount: 2,
+      targetRadius: 7,
+      enemy: detailedEnemy(),
+      targetStates: ['parity', 'parity', 'parity', 'parity'],
+      simulationOptions: { seed: 'countable-progress', sampleCount: 4 },
+      simulationWorkBudget: Infinity,
+      nodeBudget: Infinity,
+      maxResults: 1,
+      onProgress: (snapshot) => progress.push(snapshot),
+    });
+
+    expect(result.search.provenOptimal).toBe(true);
+    expect(progress).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        phase: 'building_prefix_trajectories',
+        completedWork: expect.any(Number),
+        totalWork: expect.any(Number),
+      }),
+      expect.objectContaining({
+        phase: 'evaluating_suffix_trajectories',
+        completedWork: expect.any(Number),
+        totalWork: expect.any(Number),
+      }),
+    ]));
+    expect(progress.filter((snapshot) => snapshot.totalWork != null).every((snapshot) =>
+      snapshot.completedWork <= snapshot.totalWork)).toBe(true);
+    expect(progress.filter((snapshot) => snapshot.phase === 'evaluating_suffix_trajectories')
+      .every((snapshot) =>
+        snapshot.totalWork === result.search.solverStats.suffixCandidatesTotal)).toBe(true);
   });
 
   test('does not prune a second-wave target made feasible by first-wave enemy losses', () => {

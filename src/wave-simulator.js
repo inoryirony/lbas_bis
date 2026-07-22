@@ -302,13 +302,37 @@ function createDetailedScoreContext(options = {}) {
     dispatchMode,
     enemies,
     targetRanks,
+    combatContext: options.combatContext,
     baseCache: new Map(),
+    planeCurveCache: new Map(),
   };
 }
 
-/** Evaluates only the exact fixed-sample score used to reject detailed candidates. */
+/** Creates reusable fixed-sample metadata for strict detailed damage bounds. */
+function createDetailedDamageBoundContext(options = {}) {
+  const sampleCount = requireSampleCount(
+    options.sampleCount ?? options.simulationOptions?.sampleCount,
+  );
+  const seed = options.seed ?? options.simulationOptions?.seed ?? 0;
+  return {
+    sampleCount,
+    fixedRandom: typeof options.fixedRandom === 'function'
+      ? options.fixedRandom
+      : createFixedSampleRandom(seed, sampleCount),
+    dispatchMode: options.dispatchMode === 'separate' ? 'separate' : 'concentrated',
+    combatContext: options.combatContext,
+    damageCurveCache: new Map(),
+    contributionCache: new Map(),
+  };
+}
+
+/**
+ * Evaluates only the exact fixed-sample score used to reject detailed candidates.
+ * @returns {Record<string, any>} A pruned prefix or a complete fixed-sample score.
+ */
 function evaluateDetailedPlanScore(options = {}) {
   const sourceBases = options.bases || options.loadouts || [];
+  const baseIndexOffset = Math.max(0, Math.floor(Number(options.baseIndexOffset) || 0));
   const context = options.scoreContext || createDetailedScoreContext({
     ...options,
     baseCount: sourceBases.length,
@@ -324,13 +348,19 @@ function evaluateDetailedPlanScore(options = {}) {
   const baseCacheKeys = Array.isArray(options.baseCacheKeys) ? options.baseCacheKeys : [];
   const baseRecords = sourceBases.map((sourceBase, baseIndex) => {
     const suppliedKey = baseCacheKeys[baseIndex];
-    const cacheKey = suppliedKey == null ? null : `${baseIndex}:${suppliedKey}`;
+    const cacheKey = suppliedKey == null
+      ? null
+      : `${baseIndexOffset + baseIndex}:${suppliedKey}`;
     if (cacheKey != null && context.baseCache.has(cacheKey)) {
       return context.baseCache.get(cacheKey);
     }
     const normalizedBase = normalizeBases([sourceBase])[0];
     const record = {
-      numeric: prepareNumericBase(normalizedBase, options.combatContext),
+      numeric: prepareNumericBase(
+        normalizedBase,
+        options.combatContext,
+        context.planeCurveCache,
+      ),
       maximumDamage: 2 * calculateBaseDamagePower(normalizedBase.filter(Boolean), {
         combatContext: options.combatContext,
       }),
@@ -346,17 +376,24 @@ function evaluateDetailedPlanScore(options = {}) {
   let fulfilledSamples = 0;
   let totalDamage = 0;
   const maximumFinalEnemyAir = enemies.map(() => 0);
+  const finalEnemySlotsBySample = options.captureFinalEnemySlots ? [] : null;
+  const initialEnemySlotsBySample = Array.isArray(options.initialEnemySlotsBySample)
+    ? options.initialEnemySlotsBySample
+    : null;
 
   for (let sample = 0; sample < sampleCount; sample += 1) {
     const ownSlots = bases.map((base) => Float64Array.from(base.initialSlots));
-    const enemySlots = enemies.map((enemy) => Float64Array.from(enemy.initialSlots));
+    const suppliedEnemySlots = initialEnemySlotsBySample?.[sample];
+    const enemySlots = enemies.map((enemy, enemyIndex) => Float64Array.from(
+      suppliedEnemySlots?.[enemyIndex] || enemy.initialSlots,
+    ));
     let allTargetsFulfilled = true;
 
     bases.forEach((base, baseIndex) => {
       const slots = ownSlots[baseIndex];
       let ownAir = numericBaseAirPower(base, slots, false);
       for (let waveInBase = 0; waveInBase < 2; waveInBase += 1) {
-        const waveIndex = baseIndex * 2 + waveInBase;
+        const waveIndex = (baseIndexOffset + baseIndex) * 2 + waveInBase;
         const enemyIndex = dispatchMode === 'separate' ? waveInBase : 0;
         const enemy = enemies[enemyIndex];
         const currentEnemySlots = enemySlots[enemyIndex];
@@ -422,6 +459,9 @@ function evaluateDetailedPlanScore(options = {}) {
         numericEnemyAirPower(enemy, enemySlots[enemyIndex]),
       );
     });
+    if (finalEnemySlotsBySample) {
+      finalEnemySlotsBySample.push(enemySlots.map((slots) => Array.from(slots)));
+    }
     if (allTargetsFulfilled) fulfilledSamples += 1;
     const samplesEvaluated = sample + 1;
     const remainingSamples = sampleCount - samplesEvaluated;
@@ -450,7 +490,9 @@ function evaluateDetailedPlanScore(options = {}) {
     samplesEvaluated: sampleCount,
     allWaveTargetFulfillmentProbability: fulfilledSamples / sampleCount,
     expectedDamage: totalDamage / sampleCount,
+    totalDamageAcrossSamples: totalDamage,
     maximumFinalEnemyAir,
+    ...(finalEnemySlotsBySample ? { finalEnemySlotsBySample } : {}),
   };
 }
 
@@ -459,46 +501,93 @@ function evaluateDetailedPlanScore(options = {}) {
  * ordinary player losses with the best possible air state.
  */
 function maximumDetailedExpectedDamage(options = {}) {
-  const sampleCount = requireSampleCount(
-    options.sampleCount ?? options.simulationOptions?.sampleCount,
-  );
-  const seed = options.seed ?? options.simulationOptions?.seed ?? 0;
-  const fixedRandom = typeof options.fixedRandom === 'function'
-    ? options.fixedRandom
-    : createFixedSampleRandom(seed, sampleCount);
-  const dispatchMode = options.dispatchMode === 'separate' ? 'separate' : 'concentrated';
+  const context = options.damageBoundContext || createDetailedDamageBoundContext(options);
   const baseIndexOffset = Math.max(0, Math.floor(Number(options.baseIndexOffset) || 0));
-  const initialBases = normalizeBases(options.bases || options.loadouts || []);
+  const bases = normalizeBases(options.bases || options.loadouts || []);
   let totalDamage = 0;
 
-  for (let sample = 0; sample < sampleCount; sample += 1) {
-    initialBases.forEach((initialBase, baseIndex) => {
-      const base = initialBase.map((plane) => plane ? { ...plane } : null);
-      const lossKeys = playerLossCoordinates(initialBase);
-      if (dispatchMode === 'concentrated') {
-        totalDamage += calculateBaseDamagePower(base.filter(Boolean), {
-          combatContext: options.combatContext,
-        });
-      }
-      const firstLossWave = dispatchMode === 'separate' ? 0 : 1;
-      for (let waveInBase = firstLossWave; waveInBase < 2; waveInBase += 1) {
-        const waveIndex = (baseIndexOffset + baseIndex) * 2 + waveInBase;
-        applyPlayerStageOne(
-          base,
-          'supremacy',
-          waveIndex,
-          (wave, side, slot, draw) =>
-            fixedRandom(sample, wave, side, slot, draw),
-          lossKeys,
-        );
-        totalDamage += calculateBaseDamagePower(base.filter(Boolean), {
-          combatContext: options.combatContext,
-        });
-      }
+  bases.forEach((base, baseIndex) => {
+    const lossKeys = playerLossCoordinates(base);
+    const reconModifier = landBasedReconDamageModifier(base.filter(Boolean));
+    base.forEach((plane, slotIndex) => {
+      if (!plane) return;
+      totalDamage += maximumPlaneDamageContribution(
+        context,
+        plane,
+        lossKeys[slotIndex],
+        baseIndexOffset + baseIndex,
+        reconModifier,
+      );
     });
-  }
+  });
 
-  return totalDamage / sampleCount;
+  return totalDamage / context.sampleCount;
+}
+
+/** Returns one plane's cached integer damage total across all fixed samples. */
+function maximumPlaneDamageContribution(
+  context,
+  plane,
+  lossCoordinate,
+  baseIndex,
+  reconModifier,
+) {
+  const planeKey = aircraftEquivalenceKey(plane);
+  const contributionKey = JSON.stringify([
+    planeKey,
+    reconModifier,
+    lossCoordinate,
+    baseIndex,
+  ]);
+  const cached = context.contributionCache.get(contributionKey);
+  if (cached != null) return cached;
+
+  const curve = detailedDamageCurve(context, plane, planeKey, reconModifier);
+  const firstLossWave = context.dispatchMode === 'separate' ? 0 : 1;
+  let total = 0;
+  for (let sample = 0; sample < context.sampleCount; sample += 1) {
+    let currentSlot = curve.initialSlot;
+    if (context.dispatchMode === 'concentrated') {
+      total += curve.damageBySlot[currentSlot] || 0;
+    }
+    for (let waveInBase = firstLossWave; waveInBase < 2; waveInBase += 1) {
+      const waveIndex = baseIndex * 2 + waveInBase;
+      currentSlot = Math.max(0, currentSlot - numericPlayerLoss(
+        'supremacy',
+        currentSlot,
+        context.fixedRandom(sample, waveIndex, 'player', lossCoordinate, 0),
+        curve.lossModifier,
+      ));
+      total += curve.damageBySlot[currentSlot] || 0;
+    }
+  }
+  context.contributionCache.set(contributionKey, total);
+  return total;
+}
+
+/** Returns a cached slot-to-damage curve for one plane and base recon modifier. */
+function detailedDamageCurve(context, plane, planeKey, reconModifier) {
+  const cacheKey = JSON.stringify([planeKey, reconModifier]);
+  const cached = context.damageCurveCache.get(cacheKey);
+  if (cached) return cached;
+
+  const capabilities = capabilitiesFor(plane);
+  const isJet = plane.isJet === true || capabilities.isJet === true;
+  const isAswPatrol = plane.isAswPatrol === true || capabilities.isAswPatrol === true;
+  const isAttacker = plane.isAttacker === true || capabilities.isAttacker === true;
+  const initialSlot = Math.max(0, Math.ceil(currentSlotForPlane(plane)));
+  const curve = {
+    initialSlot,
+    lossModifier: isJet ? 0.6 : isAswPatrol && !isAttacker ? 0.91 : 1,
+    damageBySlot: Array.from({ length: initialSlot + 1 }, (_unused, currentSlot) =>
+      calculatePlaneSurfaceTargetPowerProxy(plane, {
+        currentSlot,
+        reconModifier,
+        combatContext: context.combatContext,
+      })),
+  };
+  context.damageCurveCache.set(cacheKey, curve);
+  return curve;
 }
 
 /** Returns the best fulfillment and damage averages still reachable by this sample prefix. */
@@ -729,36 +818,16 @@ function finalizeWaveAccumulator(accumulator, sampleCount) {
 }
 
 /** Precomputes slot-indexed air, damage, and loss metadata for numeric scoring. */
-function prepareNumericBase(base, combatContext) {
-  const planes = base.map((plane) => {
-    if (!plane) return null;
-    const capabilities = capabilitiesFor(plane);
-    const isJet = plane.isJet === true || capabilities.isJet === true;
-    const isAswPatrol = plane.isAswPatrol === true || capabilities.isAswPatrol === true;
-    const isAttacker = plane.isAttacker === true || capabilities.isAttacker === true;
-    return {
-      plane,
-      isJet,
-      isRecon: plane.isRecon === true || capabilities.isRecon === true,
-      isEscortItem: plane.isEscortItem === true,
-      lossModifier: isJet ? 0.6 : isAswPatrol && !isAttacker ? 0.91 : 1,
-    };
-  });
+function prepareNumericBase(base, combatContext, planeCurveCache = null) {
   const sourcePlanes = base.filter(Boolean);
   const airCoefficient = landReconCoefficient(sourcePlanes);
   const damageCoefficient = landBasedReconDamageModifier(sourcePlanes);
-  planes.forEach((entry) => {
-    if (!entry) return;
-    const maximumSlot = Math.max(0, Math.ceil(currentSlotForPlane(entry.plane)));
-    entry.airBySlot = Array.from({ length: maximumSlot + 1 }, (_unused, slot) =>
-      calculateSlotAirPower({ ...entry.plane, currentSlot: slot }));
-    entry.damageBySlot = Array.from({ length: maximumSlot + 1 }, (_unused, slot) =>
-      calculatePlaneSurfaceTargetPowerProxy(entry.plane, {
-        currentSlot: slot,
-        reconModifier: damageCoefficient,
-        combatContext,
-      }));
-  });
+  const planes = base.map((plane) => prepareNumericPlane(
+    plane,
+    damageCoefficient,
+    combatContext,
+    planeCurveCache,
+  ));
   return {
     planes,
     initialSlots: base.map((plane) => plane?.currentSlot || 0),
@@ -766,6 +835,36 @@ function prepareNumericBase(base, combatContext) {
     airCoefficient,
     hasJet: planes.some((plane) => plane?.isJet),
   };
+}
+
+/** Reuses one aircraft's slot curves across every candidate with the same recon modifier. */
+function prepareNumericPlane(plane, damageCoefficient, combatContext, cache) {
+  if (!plane) return null;
+  const cacheKey = JSON.stringify([aircraftEquivalenceKey(plane), damageCoefficient]);
+  const cached = cache?.get(cacheKey);
+  if (cached) return cached;
+  const capabilities = capabilitiesFor(plane);
+  const isJet = plane.isJet === true || capabilities.isJet === true;
+  const isAswPatrol = plane.isAswPatrol === true || capabilities.isAswPatrol === true;
+  const isAttacker = plane.isAttacker === true || capabilities.isAttacker === true;
+  const maximumSlot = Math.max(0, Math.ceil(currentSlotForPlane(plane)));
+  const prepared = {
+    plane,
+    isJet,
+    isRecon: plane.isRecon === true || capabilities.isRecon === true,
+    isEscortItem: plane.isEscortItem === true,
+    lossModifier: isJet ? 0.6 : isAswPatrol && !isAttacker ? 0.91 : 1,
+    airBySlot: Array.from({ length: maximumSlot + 1 }, (_unused, slot) =>
+      calculateSlotAirPower({ ...plane, currentSlot: slot })),
+    damageBySlot: Array.from({ length: maximumSlot + 1 }, (_unused, slot) =>
+      calculatePlaneSurfaceTargetPowerProxy(plane, {
+        currentSlot: slot,
+        reconModifier: damageCoefficient,
+        combatContext,
+      })),
+  };
+  cache?.set(cacheKey, prepared);
+  return prepared;
 }
 
 /** Assigns common-random-number coordinates by canonical plane order, not UI slot order. */
@@ -997,6 +1096,7 @@ function divideNested(total, divisor) {
 module.exports = {
   DETAILED_LIMITATIONS,
   calculateEnemyAirPower,
+  createDetailedDamageBoundContext,
   createDetailedScoreContext,
   enemyStageOneLoss,
   evaluateDetailedPlanScore,

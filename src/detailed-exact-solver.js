@@ -2,6 +2,8 @@
 
 const { requiredAirForState } = require('./air-power');
 const {
+  createDetailedDamageBoundContext,
+  createDetailedScoreContext,
   evaluateDetailedPlanScore,
   maximumDetailedExpectedDamage,
 } = require('./wave-simulator');
@@ -39,9 +41,24 @@ function solveDetailedExact(prepared, solverOptions = {}) {
     numericScoreEvaluations: 0,
     dynamicAirBoundEvaluations: 0,
     prefixDamageBoundEvaluations: 0,
+    prefixCandidatesEvaluated: 0,
+    trajectoryCount: 0,
+    suffixCandidatesEvaluated: 0,
     elapsedMs: 0,
   };
   const work = createWorkController(prepared, solverOptions, stats, startedAt);
+  const damageBoundContext = createDetailedDamageBoundContext({
+    combatContext: prepared.combatContext,
+    ...prepared.simulationOptions,
+  });
+  const scoreContext = createDetailedScoreContext({
+    baseCount: prepared.baseCount,
+    combatContext: prepared.combatContext,
+    enemy: prepared.enemy,
+    enemyFleets: prepared.enemyFleets,
+    targetStates: prepared.waveTargets,
+    ...prepared.simulationOptions,
+  });
   solverOptions.onPhaseChange?.('finding_feasible');
 
   let incumbent = buildStaticSeed(prepared, work);
@@ -108,7 +125,12 @@ function solveDetailedExact(prepared, solverOptions = {}) {
     const candidates = [];
     for (const candidate of enumerated.candidates) {
       if (!work.checkStop()) break;
-      const preparedCandidate = prepareCandidate(candidate, baseIndex, prepared);
+      const preparedCandidate = prepareCandidate(
+        candidate,
+        baseIndex,
+        prepared,
+        damageBoundContext,
+      );
       stats.damageUpperBoundEvaluations += 1;
       if (preparedCandidate.maximumDamage + otherUpper >= incumbentDamage) {
         candidates.push(preparedCandidate);
@@ -121,6 +143,22 @@ function solveDetailedExact(prepared, solverOptions = {}) {
     if (work.stopped) break;
   }
   if (!work.checkStop()) return stoppedResult(stats, startedAt, work.reason, incumbent);
+
+  if (prepared.baseCount === 2) {
+    incumbent = combineTwoBaseTrajectories(
+      candidateSets,
+      prepared,
+      work,
+      stats,
+      scoreContext,
+      incumbent,
+      solverOptions,
+      startedAt,
+    );
+    stats.candidatesEvaluated = stats.combinationsEvaluated + stats.prefixCandidatesEvaluated;
+    if (!work.checkStop()) return stoppedResult(stats, startedAt, work.reason, incumbent);
+    return finishedResult(incumbent, stats, startedAt);
+  }
 
   const selected = Array(prepared.baseCount).fill(null);
   const used = new Uint16Array(prepared.groups.length);
@@ -144,6 +182,7 @@ function solveDetailedExact(prepared, solverOptions = {}) {
         enemyFleets: prepared.enemyFleets,
         targetStates: prepared.waveTargets,
         combatContext: prepared.combatContext,
+        scoreContext,
         ...prepared.simulationOptions,
         incumbentScore: scorePlan(incumbent),
       });
@@ -183,6 +222,8 @@ function solveDetailedExact(prepared, solverOptions = {}) {
           materializeLoadouts(selected.slice(0, baseIndex + 1), prepared),
           prepared,
           baseIndex + 1,
+          selected.slice(0, baseIndex + 1).map((candidate) => candidate.key),
+          scoreContext,
         );
         stats.prefixEvaluations += 1;
         stats.dynamicAirBoundEvaluations += 1;
@@ -212,6 +253,155 @@ function solveDetailedExact(prepared, solverOptions = {}) {
     (prepared.baseCount > 1 ? 1 : 0);
   if (!work.checkStop()) return stoppedResult(stats, startedAt, work.reason, incumbent);
   return finishedResult(incumbent, stats, startedAt);
+}
+
+/** Proves a two-base optimum by reusing exact suffix scores for equal enemy trajectories. */
+function combineTwoBaseTrajectories(
+  candidateSets,
+  prepared,
+  work,
+  stats,
+  scoreContext,
+  initialIncumbent,
+  solverOptions,
+  startedAt,
+) {
+  const sampleCount = prepared.simulationOptions.sampleCount;
+  const trajectoryGroups = new Map();
+  let incumbent = initialIncumbent;
+  stats.prefixCandidatesTotal = candidateSets[0].length;
+  stats.suffixCandidatesTotal = candidateSets[1].length;
+  emitProgress(solverOptions, work, 'building_prefix_trajectories', startedAt);
+
+  for (const candidate of candidateSets[0]) {
+    if (!work.checkStop()) return incumbent;
+    const evaluation = evaluateDetailedPlanScore({
+      bases: [candidate.loadout],
+      baseCacheKeys: [candidate.key],
+      baseIndexOffset: 0,
+      captureFinalEnemySlots: true,
+      enemy: prepared.enemy,
+      enemyFleets: prepared.enemyFleets,
+      targetStates: prepared.waveTargets,
+      combatContext: prepared.combatContext,
+      scoreContext,
+      ...prepared.simulationOptions,
+    });
+    stats.prefixCandidatesEvaluated += 1;
+    stats.dynamicAirBoundEvaluations += 1;
+    stats.prefixDamageBoundEvaluations += 1;
+    stats.numericScoreEvaluations += 1;
+    stats.simulationSamplesEvaluated += evaluation.samplesEvaluated || sampleCount;
+    if (evaluation.allWaveTargetFulfillmentProbability !== 1) continue;
+    const trajectoryKey = enemyTrajectoryKey(evaluation.finalEnemySlotsBySample);
+    const group = trajectoryGroups.get(trajectoryKey) || {
+      enemySlotsBySample: evaluation.finalEnemySlotsBySample,
+      prefixes: [],
+    };
+    group.prefixes.push({
+      candidate,
+      damageTotal: evaluation.totalDamageAcrossSamples,
+    });
+    trajectoryGroups.set(trajectoryKey, group);
+    if ((stats.prefixCandidatesEvaluated & 255) === 0) {
+      emitProgress(solverOptions, work, 'building_prefix_trajectories', startedAt);
+    }
+  }
+  stats.trajectoryCount = trajectoryGroups.size;
+  const initialIncumbentDamageTotal = Math.round(scorePlan(incumbent).damage * sampleCount);
+  stats.suffixCandidatesTotal = [...trajectoryGroups.values()].reduce((total, group) => {
+    const bestPrefixDamage = Math.max(...group.prefixes.map((prefix) => prefix.damageTotal));
+    const firstExcluded = candidateSets[1].findIndex((candidate) =>
+      bestPrefixDamage + Math.round(candidate.maximumDamage * sampleCount) <
+        initialIncumbentDamageTotal);
+    return total + (firstExcluded < 0 ? candidateSets[1].length : firstExcluded);
+  }, 0);
+  emitProgress(solverOptions, work, 'building_prefix_trajectories', startedAt);
+
+  const used = new Uint16Array(prepared.groups.length);
+  emitProgress(solverOptions, work, 'evaluating_suffix_trajectories', startedAt);
+  for (const group of trajectoryGroups.values()) {
+    if (!work.checkStop()) return incumbent;
+    group.prefixes.sort((left, right) =>
+      (right.damageTotal - left.damageTotal) ||
+      compareDetailedCandidates(left.candidate, right.candidate));
+    const bestPrefixDamage = group.prefixes[0]?.damageTotal || 0;
+    let incumbentDamageTotal = Math.round(scorePlan(incumbent).damage * sampleCount);
+    const suffixes = [];
+
+    for (const candidate of candidateSets[1]) {
+      if (!work.checkStop()) return incumbent;
+      const candidateUpperTotal = Math.round(candidate.maximumDamage * sampleCount);
+      if (bestPrefixDamage + candidateUpperTotal < incumbentDamageTotal) break;
+      const evaluation = evaluateDetailedPlanScore({
+        bases: [candidate.loadout],
+        baseCacheKeys: [candidate.key],
+        baseIndexOffset: 1,
+        initialEnemySlotsBySample: group.enemySlotsBySample,
+        enemy: prepared.enemy,
+        enemyFleets: prepared.enemyFleets,
+        targetStates: prepared.waveTargets,
+        combatContext: prepared.combatContext,
+        scoreContext,
+        ...prepared.simulationOptions,
+      });
+      stats.suffixCandidatesEvaluated += 1;
+      stats.numericScoreEvaluations += 1;
+      stats.simulationSamplesEvaluated += evaluation.samplesEvaluated || sampleCount;
+      if (evaluation.allWaveTargetFulfillmentProbability === 1) {
+        suffixes.push({
+          candidate,
+          damageTotal: evaluation.totalDamageAcrossSamples,
+        });
+      }
+      if ((stats.suffixCandidatesEvaluated & 255) === 0) {
+        emitProgress(solverOptions, work, 'evaluating_suffix_trajectories', startedAt);
+      }
+    }
+    suffixes.sort((left, right) =>
+      (right.damageTotal - left.damageTotal) ||
+      compareDetailedCandidates(left.candidate, right.candidate));
+    if (suffixes.length === 0) continue;
+
+    for (const prefix of group.prefixes) {
+      if (!work.checkStop()) return incumbent;
+      incumbentDamageTotal = Math.round(scorePlan(incumbent).damage * sampleCount);
+      if (prefix.damageTotal + suffixes[0].damageTotal < incumbentDamageTotal) break;
+      if (!reserveCandidate(prefix.candidate, used, prepared.groups)) continue;
+      for (const suffix of suffixes) {
+        const combinedDamage = prefix.damageTotal + suffix.damageTotal;
+        if (combinedDamage < incumbentDamageTotal) break;
+        if (!reserveCandidate(suffix.candidate, used, prepared.groups)) continue;
+        stats.combinationsEvaluated += 1;
+        const loadouts = materializeLoadouts(
+          [prefix.candidate, suffix.candidate],
+          prepared,
+        );
+        const plan = summarizePlan(loadouts, prepared);
+        stats.simulationSamplesEvaluated +=
+          plan.simulation?.samplesEvaluated || sampleCount;
+        if (comparePlanScores(plan, incumbent) > 0) {
+          incumbent = plan;
+          incumbentDamageTotal = Math.round(scorePlan(incumbent).damage * sampleCount);
+          solverOptions.onIncumbent?.(
+            incumbent,
+            progressSnapshot(work, 'proving_optimal', startedAt),
+          );
+        }
+        releaseCandidate(suffix.candidate, used);
+      }
+      releaseCandidate(prefix.candidate, used);
+    }
+    emitProgress(solverOptions, work, 'evaluating_suffix_trajectories', startedAt);
+  }
+  return incumbent;
+}
+
+/** Canonicalizes every fixed-sample enemy slot vector for exact transition reuse. */
+function enemyTrajectoryKey(enemySlotsBySample) {
+  return enemySlotsBySample
+    .map((sample) => sample.map((enemy) => enemy.join(',')).join('/'))
+    .join(';');
 }
 
 /** Re-optimizes later bases against the simulated remaining enemy air. */
@@ -317,7 +507,7 @@ function buildStaticSeed(prepared, work) {
 }
 
 /** Materializes one grouped base and calculates its strict no-loss damage bound once. */
-function prepareCandidate(candidate, baseIndex, prepared) {
+function prepareCandidate(candidate, baseIndex, prepared, damageBoundContext) {
   const loadout = materializeSingleBase(candidate, baseIndex, prepared);
   return {
     ...candidate,
@@ -326,6 +516,7 @@ function prepareCandidate(candidate, baseIndex, prepared) {
     maximumDamage: maximumDetailedExpectedDamage({
       bases: [loadout],
       baseIndexOffset: baseIndex,
+      damageBoundContext,
       combatContext: prepared.combatContext,
       ...prepared.simulationOptions,
     }),
@@ -354,7 +545,13 @@ function requiredAirAfterPrefix(prefix, prepared, nextBaseIndex) {
   );
 }
 
-function evaluatePrefix(loadouts, prepared, prefixBaseCount, baseCacheKeys = []) {
+function evaluatePrefix(
+  loadouts,
+  prepared,
+  prefixBaseCount,
+  baseCacheKeys = [],
+  scoreContext = null,
+) {
   return evaluateDetailedPlanScore({
     bases: loadouts,
     baseCacheKeys,
@@ -362,6 +559,7 @@ function evaluatePrefix(loadouts, prepared, prefixBaseCount, baseCacheKeys = [])
     enemyFleets: prepared.enemyFleets,
     targetStates: prepared.waveTargets.slice(0, prefixBaseCount * 2),
     combatContext: prepared.combatContext,
+    scoreContext: scoreContext || undefined,
     ...prepared.simulationOptions,
   });
 }
@@ -446,15 +644,26 @@ function emitProgress(solverOptions, work, phase, startedAt) {
 }
 
 function progressSnapshot(work, phase, startedAt) {
+  let completedWork = null;
+  let totalWork = null;
+  if (phase === 'building_prefix_trajectories') {
+    completedWork = work.stats?.prefixCandidatesEvaluated ?? 0;
+    totalWork = work.stats?.prefixCandidatesTotal ?? null;
+  } else if (phase === 'evaluating_suffix_trajectories') {
+    completedWork = work.stats?.suffixCandidatesEvaluated ?? 0;
+    totalWork = work.stats?.suffixCandidatesTotal == null
+      ? null
+      : work.stats.suffixCandidatesTotal;
+  }
   return {
     phase,
     nodesExplored: work.stats?.nodesExplored ?? null,
-    nodesPruned: null,
+    nodesPruned: work.stats?.nodesPruned ?? 0,
     candidatesEvaluated: work.stats?.combinationsEvaluated ?? null,
-    simulationSamplesEvaluated: null,
+    simulationSamplesEvaluated: work.stats?.simulationSamplesEvaluated ?? null,
     elapsedMs: Date.now() - startedAt,
-    completedWork: null,
-    totalWork: null,
+    completedWork,
+    totalWork,
   };
 }
 

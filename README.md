@@ -91,10 +91,26 @@ lbas-bis validate --scenario scenario.json
 lbas-bis optimize --scenario scenario.json --jsonl
 lbas-bis optimize --scenario scenario.json --poi http://127.0.0.1:17777 --jsonl
 lbas-bis optimize --scenario examples/poi-6-5-parity.json --poi http://127.0.0.1:17777 --jsonl
+lbas-bis optimize --scenario examples/poi-6-5-map-selection.json --poi http://127.0.0.1:17777 --jsonl
 lbas-bis enemy search --name 空母 --poi http://127.0.0.1:17777
 ```
 
 `--scenario` 的最小结构可参考随包发布的 `examples/cli-static.json`；读取实际库存的 6-5 四波均势可参考 `examples/poi-6-5-parity.json`。不传有限 `nodeBudget` 或 `simulationWorkBudget` 时，CLI 会继续搜索直到证明最优、确认无解或手动终止。
+
+`validate` 和 `optimize` 场景也可以用地图节点直接生成详细敌编成：
+
+```json
+{
+  "mapSelection": {
+    "area": 65,
+    "node": "M",
+    "difficulty": 0,
+    "formationIndex": 0
+  }
+}
+```
+
+`formationIndex` 是所选海域、节点和难度下的零基编成索引。CLI 会通过 noro6 地图数据填充 `enemy`、`enemySlots`、`enemyAir` 和 `targetRadius`，远程不可用时沿用本地缓存。场景中显式提供的 `enemy`、`enemySlots` 或 `enemyAir` 会优先于地图敌编成，显式 `targetRadius` 也不会被覆盖；因此自定义输入可作为地图数据缺失或过期时的离线兜底。
 
 启用 Poi 本地桥接后，默认地址为 `http://127.0.0.1:17777`：
 

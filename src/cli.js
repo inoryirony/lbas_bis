@@ -3,16 +3,22 @@
 const fs = require('fs/promises');
 const { buildEnemyCatalog } = require('./enemy-catalog');
 const { loadMapData } = require('./map-cache');
+const { buildMapCatalog } = require('./map-catalog');
 const { prepareSearch } = require('./optimizer');
 const { extractOptimizationPlanes } = require('./poi-data');
 const { createPoiClient } = require('./poi-client');
 const { runSearchSession } = require('./search-session');
 
-async function runCli(argv, io = process) {
+/**
+ * @param {string[]} argv
+ * @param {{stdout: {write(value: string): any}, stderr: {write(value: string): any}}} [io]
+ * @param {Record<string, any>} [dependencies]
+ */
+async function runCli(argv, io = process, dependencies = {}) {
   try {
     const parsed = parseArgs(argv);
-    if (parsed.command === 'validate') return validateCommand(parsed, io);
-    if (parsed.command === 'optimize') return optimizeCommand(parsed, io);
+    if (parsed.command === 'validate') return validateCommand(parsed, io, dependencies);
+    if (parsed.command === 'optimize') return optimizeCommand(parsed, io, dependencies);
     if (parsed.command === 'enemy' && parsed.positionals[0] === 'search') {
       return enemySearchCommand(parsed, io);
     }
@@ -23,9 +29,9 @@ async function runCli(argv, io = process) {
   }
 }
 
-async function validateCommand(parsed, io) {
+async function validateCommand(parsed, io, dependencies) {
   const scenario = await loadScenario(parsed.flags.scenario);
-  const options = await hydrateScenario(scenario, parsed.flags.poi);
+  const options = await hydrateScenario(scenario, parsed.flags.poi, dependencies);
   const prepared = prepareSearch(options);
   io.stdout.write(`${JSON.stringify({
     valid: prepared.valid,
@@ -35,9 +41,9 @@ async function validateCommand(parsed, io) {
   return prepared.valid ? 0 : 1;
 }
 
-async function optimizeCommand(parsed, io) {
+async function optimizeCommand(parsed, io, dependencies) {
   const scenario = await loadScenario(parsed.flags.scenario);
-  const options = await hydrateScenario(scenario, parsed.flags.poi);
+  const options = await hydrateScenario(scenario, parsed.flags.poi, dependencies);
   const { result } = runSearchSession({
     ...options,
     nodeBudget: normalizeExactBudget(options.nodeBudget),
@@ -64,16 +70,112 @@ async function enemySearchCommand(parsed, io) {
   return 0;
 }
 
-async function hydrateScenario(scenario, poiUrl) {
-  if (!poiUrl) return scenario;
-  const state = await createPoiClient(poiUrl).loadState();
+async function hydrateScenario(scenario, poiUrl, dependencies = {}) {
+  const hydrated = await hydrateMapSelection(
+    scenario,
+    dependencies.loadMapData || loadMapData,
+  );
+  if (!poiUrl) return hydrated;
+  const clientFactory = dependencies.createPoiClient || createPoiClient;
+  const extractPlanes = dependencies.extractOptimizationPlanes || extractOptimizationPlanes;
+  const state = await clientFactory(poiUrl).loadState();
   return {
-    ...scenario,
-    equipment: extractOptimizationPlanes(state, {
-      includeMissing: scenario.candidateMode === 'theoretical' || scenario.includeMissing === true,
-      missingCopiesPerMaster: scenario.missingCopiesPerMaster ?? 1,
+    ...hydrated,
+    equipment: extractPlanes(state, {
+      includeMissing: hydrated.candidateMode === 'theoretical' || hydrated.includeMissing === true,
+      missingCopiesPerMaster: hydrated.missingCopiesPerMaster ?? 1,
     }),
   };
+}
+
+/** Fills missing CLI enemy inputs from one noro6 map formation. */
+async function hydrateMapSelection(scenario, loadMapDataImpl) {
+  const selection = scenario?.mapSelection;
+  if (!selection) return scenario;
+
+  const needsRadius = !hasOwn(scenario, 'targetRadius');
+  const hasExplicitEnemy = ['enemy', 'enemySlots', 'enemyAir'].some((key) => hasOwn(scenario, key));
+  const needsEnemy = !hasExplicitEnemy;
+  if (!needsRadius && !needsEnemy) return scenario;
+
+  const normalized = normalizeMapSelection(selection);
+  let mapData;
+  try {
+    mapData = await loadMapDataImpl();
+  } catch (error) {
+    throw new Error(
+      `Unable to resolve map selection ${normalized.area}/${normalized.node}: ${error.message}`,
+    );
+  }
+  const catalog = buildMapCatalog(mapData);
+  const formations = catalog.formations(
+    normalized.area,
+    normalized.node,
+    normalized.difficulty,
+  );
+  if (!formations.length) {
+    throw new Error(
+      `No map formation found for area ${normalized.area} node ${normalized.node} ` +
+      `difficulty ${normalized.difficulty}.`,
+    );
+  }
+  const formation = formations[normalized.formationIndex];
+  if (!formation) {
+    throw new Error(
+      `Map formation index ${normalized.formationIndex} is unavailable for area ` +
+      `${normalized.area} node ${normalized.node} difficulty ${normalized.difficulty}; ` +
+      `available indexes are 0-${formations.length - 1}.`,
+    );
+  }
+
+  const resolved = { ...scenario };
+  if (needsRadius) {
+    if (!formation.radius.length || formation.radius.some((value) => !Number.isFinite(value))) {
+      throw new Error(`Map formation ${formation.id} does not provide a valid target radius.`);
+    }
+    resolved.targetRadius = Math.max(...formation.radius);
+  }
+  if (needsEnemy) {
+    if (formation.warnings.length) {
+      const codes = [...new Set(formation.warnings.map((warning) => warning.code))].join(', ');
+      throw new Error(`Map formation ${formation.id} has incomplete enemy data: ${codes}.`);
+    }
+    resolved.enemyAir = formation.enemyAir;
+    resolved.enemySlots = formation.enemySlots.map((slot) => ({ ...slot }));
+    resolved.enemy = {
+      mode: 'detailed',
+      dataSource: 'automatic',
+      areaId: formation.area,
+      nodeId: formation.node,
+      source: formation.source,
+      manualEnemyAir: formation.enemyAir,
+      ships: formation.ships.map((ship) => ({ ...ship })),
+      slots: resolved.enemySlots.map((slot) => ({ ...slot, overridden: false })),
+    };
+  }
+  return resolved;
+}
+
+/** Validates and canonicalizes the zero-based map formation selector. */
+function normalizeMapSelection(selection) {
+  const area = Number(selection.area);
+  const node = String(selection.node ?? '').trim();
+  const difficulty = Number(selection.difficulty ?? 0);
+  const formationIndex = Number(selection.formationIndex ?? 0);
+  if (!Number.isInteger(area) || area < 0 || !node) {
+    throw new Error('mapSelection.area and mapSelection.node are required.');
+  }
+  if (!Number.isInteger(difficulty) || difficulty < 0) {
+    throw new Error('mapSelection.difficulty must be a nonnegative integer.');
+  }
+  if (!Number.isInteger(formationIndex) || formationIndex < 0) {
+    throw new Error('mapSelection.formationIndex must be a nonnegative integer.');
+  }
+  return { area, node, difficulty, formationIndex };
+}
+
+function hasOwn(value, key) {
+  return Object.prototype.hasOwnProperty.call(value || {}, key);
 }
 
 async function loadScenario(filename) {
@@ -106,4 +208,4 @@ function parseArgs(argv) {
   return { command, flags, positionals };
 }
 
-module.exports = { parseArgs, runCli };
+module.exports = { hydrateScenario, parseArgs, runCli };

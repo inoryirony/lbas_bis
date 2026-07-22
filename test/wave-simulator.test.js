@@ -1,9 +1,12 @@
 import { describe, expect, test } from 'vitest';
 import waveSimulator from '../src/wave-simulator.js';
 import randomModule from '../src/random.js';
+import damageModule from '../src/damage.js';
+import aircraftModule from '../src/aircraft.js';
 
 const {
   enemyStageOneLoss,
+  createDetailedDamageBoundContext,
   evaluateDetailedPlanScore,
   maximumDetailedExpectedDamage,
   monteCarloWaveSequence,
@@ -11,6 +14,8 @@ const {
   simulateWaveSequence,
 } = waveSimulator;
 const { commonRandomNumber, createFixedSampleRandom, createSeededRandom } = randomModule;
+const { calculateBaseDamagePower } = damageModule;
+const { aircraftEquivalenceKey } = aircraftModule;
 
 describe('wave simulator', () => {
   test('provides repeatable sequential and coordinate-addressed random draws', () => {
@@ -434,7 +439,188 @@ describe('wave simulator', () => {
     expect(upper).toBeGreaterThanOrEqual(actual.expectedDamage);
     expect(upper).toBeGreaterThan(0);
   });
+
+  test('keeps the detailed damage bound above fractional-slot simulations', () => {
+    const attacker = fighter('fractional-slot-attacker', {
+      antiAir: 3,
+      equipType: 47,
+      isFighter: false,
+      isAttacker: true,
+      isLandAttacker: true,
+      torpedo: 14,
+      currentSlot: 17.9,
+      slotSize: 17.9,
+    });
+    const options = {
+      bases: [[attacker]],
+      enemy: { mode: 'detailed', slots: [] },
+      targetStates: ['loss', 'loss'],
+      sampleCount: 1,
+      seed: '0',
+    };
+
+    const actual = monteCarloWaveSequence(options);
+    const upper = maximumDetailedExpectedDamage(options);
+
+    expect(upper).toBeGreaterThanOrEqual(actual.expectedDamage);
+  });
+
+  test.each(['concentrated', 'separate'])(
+    'matches the explicit best-state damage bound in %s dispatch',
+    (dispatchMode) => {
+      const attacker = fighter(`upper-${dispatchMode}`, {
+        antiAir: 3,
+        equipType: 47,
+        isFighter: false,
+        isAttacker: true,
+        isLandAttacker: true,
+        torpedo: 14,
+      });
+      const recon = fighter(`recon-${dispatchMode}`, {
+        antiAir: 1,
+        equipType: 49,
+        isFighter: false,
+        isRecon: true,
+        isLandRecon: true,
+        scout: 9,
+        currentSlot: 4,
+        slotSize: 4,
+      });
+      const loadout = [attacker, recon];
+      const sampleCount = 32;
+      const fixedRandom = createFixedSampleRandom(`upper-${dispatchMode}`, sampleCount);
+      const expected = explicitMaximumDetailedDamage(loadout, {
+        dispatchMode,
+        fixedRandom,
+        sampleCount,
+      });
+      const damageBoundContext = createDetailedDamageBoundContext({
+        dispatchMode,
+        fixedRandom,
+        sampleCount,
+      });
+
+      expect(maximumDetailedExpectedDamage({
+        bases: [loadout],
+        damageBoundContext,
+        dispatchMode,
+        sampleCount,
+        fixedRandom,
+      })).toBe(expected);
+    },
+  );
+
+  test('reuses fixed-sample damage contributions across equivalent candidates', () => {
+    const loadout = [fighter('cached-upper', {
+      antiAir: 3,
+      equipType: 47,
+      isFighter: false,
+      isAttacker: true,
+      isLandAttacker: true,
+      torpedo: 14,
+    })];
+    const sourceRandom = createFixedSampleRandom('cached-upper', 16);
+    let randomDraws = 0;
+    const fixedRandom = (...coordinates) => {
+      randomDraws += 1;
+      return sourceRandom(...coordinates);
+    };
+    const damageBoundContext = createDetailedDamageBoundContext({
+      fixedRandom,
+      sampleCount: 16,
+    });
+
+    const first = maximumDetailedExpectedDamage({ bases: [loadout], damageBoundContext });
+    const firstDraws = randomDraws;
+    const second = maximumDetailedExpectedDamage({
+      bases: [loadout.map((plane) => ({ ...plane }))],
+      damageBoundContext,
+    });
+
+    expect(firstDraws).toBeGreaterThan(0);
+    expect(second).toBe(first);
+    expect(randomDraws).toBe(firstDraws);
+  });
+
+  test('continues from captured enemy slots without changing the full two-base score', () => {
+    const firstBase = [fighter('prefix-attacker', {
+      antiAir: 7,
+      equipType: 47,
+      isFighter: false,
+      isAttacker: true,
+      isLandAttacker: true,
+      torpedo: 13,
+    })];
+    const secondBase = [fighter('suffix-attacker', {
+      antiAir: 8,
+      equipType: 47,
+      isFighter: false,
+      isAttacker: true,
+      isLandAttacker: true,
+      torpedo: 14,
+    })];
+    const common = {
+      enemy: {
+        mode: 'detailed',
+        slots: [{ instanceId: 'continued-enemy', sortieAntiAir: 9, currentSlot: 18 }],
+      },
+      targetStates: ['denial', 'denial', 'denial', 'denial'],
+      sampleCount: 24,
+      seed: 'continued-score',
+    };
+
+    const full = evaluateDetailedPlanScore({ ...common, bases: [firstBase, secondBase] });
+    const prefix = evaluateDetailedPlanScore({
+      ...common,
+      bases: [firstBase],
+      captureFinalEnemySlots: true,
+    });
+    const suffix = evaluateDetailedPlanScore({
+      ...common,
+      bases: [secondBase],
+      baseIndexOffset: 1,
+      initialEnemySlotsBySample: prefix.finalEnemySlotsBySample,
+    });
+
+    expect(prefix.finalEnemySlotsBySample).toHaveLength(common.sampleCount);
+    expect(suffix.allWaveTargetFulfillmentProbability).toBe(1);
+    expect(prefix.totalDamageAcrossSamples + suffix.totalDamageAcrossSamples)
+      .toBe(full.totalDamageAcrossSamples);
+  });
 });
+
+function explicitMaximumDetailedDamage(loadout, options) {
+  const coordinates = Array(loadout.length).fill(null);
+  loadout
+    .map((plane, slotIndex) => ({
+      slotIndex,
+      key: aircraftEquivalenceKey(plane),
+    }))
+    .sort((left, right) => left.key.localeCompare(right.key) || left.slotIndex - right.slotIndex)
+    .forEach((entry, coordinate) => {
+      coordinates[entry.slotIndex] = coordinate;
+    });
+  let total = 0;
+  for (let sample = 0; sample < options.sampleCount; sample += 1) {
+    const current = loadout.map((plane) => ({ ...plane }));
+    if (options.dispatchMode === 'concentrated') {
+      total += calculateBaseDamagePower(current);
+    }
+    const firstLossWave = options.dispatchMode === 'separate' ? 0 : 1;
+    for (let waveIndex = firstLossWave; waveIndex < 2; waveIndex += 1) {
+      current.forEach((plane, slotIndex) => {
+        plane.currentSlot -= playerStageOneLoss(
+          'supremacy',
+          plane.currentSlot,
+          () => options.fixedRandom(sample, waveIndex, 'player', coordinates[slotIndex], 0),
+          plane,
+        );
+      });
+      total += calculateBaseDamagePower(current);
+    }
+  }
+  return total / options.sampleCount;
+}
 
 /** Returns deterministic values in call order for formula boundary tests. */
 function sequenceRandom(values) {

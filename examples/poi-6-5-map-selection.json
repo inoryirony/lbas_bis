@@ -1,0 +1,14 @@
+{
+  "baseCount": 2,
+  "mapSelection": {
+    "area": 65,
+    "node": "M",
+    "difficulty": 0,
+    "formationIndex": 0
+  },
+  "targetStates": ["parity", "parity", "parity", "parity"],
+  "candidateMode": "owned",
+  "nodeBudget": null,
+  "simulationWorkBudget": null,
+  "maxResults": 1
+}

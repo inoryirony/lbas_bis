@@ -616,6 +616,7 @@ function prepareSearch(options) {
     );
   }
   const combatContext = combatValidation.context;
+  const inventoryCounts = inventoryCountsFor(equipment);
 
   const reservedIds = new Set();
   for (const base of normalizedLocks.bases) {
@@ -647,7 +648,12 @@ function prepareSearch(options) {
       (total, base) => total + base.slots.filter((slot) => slot.kind === SLOT_KINDS.OPEN).length,
       0,
     );
-    groups = removeDetailedCapacityDominatedGroups(groups, openCapacity, combatContext);
+    groups = removeDetailedCapacityDominatedGroups(
+      groups,
+      openCapacity,
+      combatContext,
+      inventoryCounts,
+    );
   }
   const detailedGroupsRemoved = detailedGroupsBefore - groups.length;
   const rawSimulationOptions = {
@@ -728,7 +734,7 @@ function prepareSearch(options) {
     valid: true,
     equipment,
     inventoryById,
-    inventoryCounts: inventoryCountsFor(equipment),
+    inventoryCounts,
     baseCount,
     baseLocks: normalizedLocks.bases,
     groups,
@@ -852,9 +858,15 @@ function groupEquipment(equipment, combatContext) {
 }
 
 /** Removes a detailed group only when strictly stronger copies cover every open slot. */
-function removeDetailedCapacityDominatedGroups(groups, openCapacity, combatContext) {
+function removeDetailedCapacityDominatedGroups(
+  groups,
+  openCapacity,
+  combatContext,
+  inventoryCounts,
+) {
   if (openCapacity <= 0) return groups;
-  const features = groups.map((group) => detailedDominanceFeature(group, combatContext));
+  const features = groups.map((group) =>
+    detailedDominanceFeature(group, combatContext, inventoryCounts));
   return groups.filter((_group, candidateIndex) => {
     let dominatingCapacity = 0;
     for (let replacementIndex = 0; replacementIndex < groups.length; replacementIndex += 1) {
@@ -871,7 +883,7 @@ function removeDetailedCapacityDominatedGroups(groups, openCapacity, combatConte
 }
 
 /** Precomputes every slot-dependent value needed by conservative detailed dominance. */
-function detailedDominanceFeature(group, combatContext) {
+function detailedDominanceFeature(group, combatContext, inventoryCounts) {
   const plane = group.representative;
   const capabilities = capabilitiesFor(plane);
   const hasCapability = (name) => plane[name] === true || capabilities[name] === true;
@@ -898,7 +910,13 @@ function detailedDominanceFeature(group, combatContext) {
   ]);
   return {
     behaviorKey,
+    key: group.key,
     radius: Math.max(0, Number(plane.radius) || 0),
+    scarcity: (plane.missing || plane.available === false ? 1000 : 0) +
+      1 / Math.max(1, inventoryCounts.get(group.key) || 1),
+    jetSteelCost: isJet
+      ? Math.max(0, Number(plane.cost) || 0) * (hasCapability('isHeavyJet') ? 1.2 : 1)
+      : 0,
     airBySlot: Array.from({ length: slotSize + 1 }, (_unused, slot) =>
       calculateSlotAirPower({ ...plane, currentSlot: slot })),
     damageByCoefficient: DETAILED_DAMAGE_COEFFICIENTS.map((reconModifier) =>
@@ -918,9 +936,23 @@ function strictlyDominatesDetailed(replacement, candidate) {
       replacement.airBySlot.some((value, index) => value < candidate.airBySlot[index])) {
     return false;
   }
-  return replacement.damageByCoefficient.every((damageBySlot, coefficientIndex) =>
+  const damageNonWorse = replacement.damageByCoefficient.every((damageBySlot, coefficientIndex) =>
+    damageBySlot.every((value, slot) =>
+      value >= candidate.damageByCoefficient[coefficientIndex][slot]));
+  if (!damageNonWorse) return false;
+  const damageStrict = replacement.damageByCoefficient.every((damageBySlot, coefficientIndex) =>
     damageBySlot.slice(1).every((value, slotOffset) =>
       value > candidate.damageByCoefficient[coefficientIndex][slotOffset + 1]));
+  if (damageStrict) return true;
+  const damageEqual = replacement.damageByCoefficient.every((damageBySlot, coefficientIndex) =>
+    damageBySlot.every((value, slot) =>
+      value === candidate.damageByCoefficient[coefficientIndex][slot]));
+  const airStrict = replacement.airBySlot.slice(1).every((value, slotOffset) =>
+    value > candidate.airBySlot[slotOffset + 1]);
+  return damageEqual && airStrict &&
+    replacement.jetSteelCost <= candidate.jetSteelCost &&
+    replacement.scarcity <= candidate.scarcity &&
+    replacement.key < candidate.key;
 }
 
 /** Routes static rank-1 searches through the exact capacity-frontier solver. */

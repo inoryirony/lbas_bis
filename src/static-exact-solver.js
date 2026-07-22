@@ -129,12 +129,12 @@ function solveStaticExact(preparedOrOptions = {}, solverOptions = {}) {
 /** Enumerates every feasible base combination above a proven damage threshold. */
 function enumerateBase(context, work, options = {}) {
   const {
-    features,
     openSlots,
     requiredAir,
     targetRadius,
     targetState,
   } = context;
+  const features = [...context.features].sort(compareEnumerationFeatures);
   const maximumSlots = openSlots;
   const suffixDamage = buildSuffixUpperBounds(features, maximumSlots, (feature) => feature.damage[2]);
   const suffixAir = buildSuffixUpperBounds(features, maximumSlots, (feature) => feature.air);
@@ -448,13 +448,23 @@ function isFeasibleSummary(summary, targetState, targetRadius) {
 
 function candidateFromState(pairs, summary) {
   return {
-    pairs: pairs.map(([groupIndex, count]) => [groupIndex, count]),
+    pairs: pairs
+      .map(([groupIndex, count]) => [groupIndex, count])
+      .sort((left, right) => left[0] - right[0]),
     damage: summary.damage,
     resource: summary.resource,
     scarcity: summary.scarcity,
     air: summary.air,
     margin: summary.margin,
   };
+}
+
+/** Visits high-potential branches first so strict suffix bounds become useful immediately. */
+function compareEnumerationFeatures(left, right) {
+  return (right.damage[2] - left.damage[2]) ||
+    (right.air - left.air) ||
+    (right.radius - left.radius) ||
+    (left.groupIndex - right.groupIndex);
 }
 
 function compareBaseCandidates(left, right) {
