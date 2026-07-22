@@ -1,0 +1,112 @@
+'use strict';
+
+/** Normalizes target tags and equipment multiplier rules without mutating input. */
+function normalizeCombatContext(context = {}) {
+  return {
+    targetTags: normalizeTags(context.targetTags),
+    multiplierRules: Array.isArray(context.multiplierRules)
+      ? context.multiplierRules.map(normalizeMultiplierRule)
+      : [],
+  };
+}
+
+/** Returns a canonical combat context together with explicit validation errors. */
+function validateCombatContext(context = {}) {
+  const normalized = normalizeCombatContext(context);
+  const errors = [];
+  const seenIds = new Set();
+
+  normalized.multiplierRules.forEach((rule, ruleIndex) => {
+    if (!rule.id) {
+      errors.push({ ruleIndex, field: 'id', message: 'Rule ID is required.' });
+    } else if (seenIds.has(rule.id)) {
+      errors.push({ ruleIndex, field: 'id', message: 'Rule ID must be unique.' });
+    }
+    seenIds.add(rule.id);
+    if (!rule.equipmentMasterIds.length && !rule.equipmentTypes.length) {
+      errors.push({
+        ruleIndex,
+        field: 'equipmentSelectors',
+        message: 'At least one equipment master ID or equipment type is required.',
+      });
+    }
+    if (!Number.isFinite(rule.multiplier) || rule.multiplier <= 0) {
+      errors.push({
+        ruleIndex,
+        field: 'multiplier',
+        message: 'Multiplier must be a finite number greater than zero.',
+      });
+    }
+  });
+
+  return { valid: errors.length === 0, errors, context: normalized };
+}
+
+/** Calculates the deterministic post-cap multiplier for one equipment item. */
+function equipmentDamageMultiplier(plane, context = {}) {
+  const targetTags = new Set(context.targetTags || []);
+  const strongestByGroup = new Map();
+  for (const rule of context.multiplierRules || []) {
+    if (!rule.enabled || !ruleMatchesPlane(rule, plane, targetTags)) continue;
+    const group = rule.group || rule.id;
+    strongestByGroup.set(
+      group,
+      Math.max(strongestByGroup.get(group) || 1, rule.multiplier),
+    );
+  }
+  return [...strongestByGroup.values()].reduce((total, multiplier) =>
+    total * multiplier, 1);
+}
+
+/** Converts one untrusted rule to its canonical plain-object representation. */
+function normalizeMultiplierRule(rule = {}) {
+  const source = rule.source === 'automatic' ? 'automatic' : 'custom';
+  const id = normalizeString(rule.id);
+  return {
+    id,
+    label: normalizeString(rule.label),
+    enabled: rule.enabled !== false,
+    targetTags: normalizeTags(rule.targetTags),
+    equipmentMasterIds: normalizePositiveIntegers(rule.equipmentMasterIds),
+    equipmentTypes: normalizePositiveIntegers(rule.equipmentTypes),
+    group: normalizeString(rule.group) || id,
+    multiplier: Number(rule.multiplier),
+    source,
+    overridden: rule.overridden === true || source === 'custom',
+  };
+}
+
+/** Checks tag and equipment selectors for one already-normalized rule. */
+function ruleMatchesPlane(rule, plane, targetTags) {
+  if (!rule.targetTags.every((tag) => targetTags.has(tag))) return false;
+  const masterId = Number(plane?.masterId);
+  const equipType = Number(plane?.equipType);
+  return rule.equipmentMasterIds.includes(masterId) ||
+    rule.equipmentTypes.includes(equipType);
+}
+
+function normalizeTags(values) {
+  return unique((Array.isArray(values) ? values : [])
+    .map(normalizeString)
+    .filter(Boolean));
+}
+
+function normalizePositiveIntegers(values) {
+  return unique((Array.isArray(values) ? values : [])
+    .map(Number)
+    .filter((value) => Number.isInteger(value) && value > 0));
+}
+
+function normalizeString(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function unique(values) {
+  return [...new Set(values)];
+}
+
+module.exports = {
+  equipmentDamageMultiplier,
+  normalizeCombatContext,
+  validateCombatContext,
+};
