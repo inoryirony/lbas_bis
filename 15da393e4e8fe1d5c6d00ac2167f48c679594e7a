@@ -1,0 +1,12 @@
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.2",
+  "base_commit_sha": "15da393e4e8fe1d5c6d00ac2167f48c679594e7a",
+  "prompts": {},
+  "humans": {
+    "h_c8322ff1d99919": {
+      "author": "inoryirony"
+    }
+  }
+}
