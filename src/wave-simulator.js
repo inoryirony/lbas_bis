@@ -8,13 +8,17 @@ const {
   defaultSlotSizeForPlane,
   landReconCoefficient,
 } = require('./air-power');
-const { capabilitiesFor } = require('./aircraft');
-const { calculateBaseDamagePower } = require('./damage');
+const { aircraftEquivalenceKey, capabilitiesFor } = require('./aircraft');
+const {
+  calculateBaseDamagePower,
+  calculatePlaneSurfaceTargetPowerProxy,
+  landBasedReconDamageModifier,
+} = require('./damage');
 const {
   detailedEnemyValidationError,
   validateAndNormalizeDetailedEnemySlots,
 } = require('./enemy-slots');
-const { commonRandomNumber } = require('./random');
+const { createFixedSampleRandom } = require('./random');
 const { requireSampleCount } = require('./simulation-options');
 
 const PLAYER_STAGE_ONE_CONSTANTS = Object.freeze({
@@ -85,6 +89,7 @@ function calculateEnemyAirPower(enemy) {
  */
 function simulateWaveSequence(options = {}) {
   const bases = normalizeBases(options.bases || options.loadouts || []);
+  const playerLossKeys = bases.map(playerLossCoordinates);
   const dispatchMode = options.dispatchMode === 'separate' ? 'separate' : 'concentrated';
   const enemies = normalizeEnemyInputs(options, dispatchMode);
   const targetStates = normalizeTargets(options.targetStates, bases.length * 2);
@@ -104,7 +109,7 @@ function simulateWaveSequence(options = {}) {
       const runJet = !enemy.isAirRaidCell &&
         (dispatchMode === 'separate' || waveInBase === 0);
       const jetAssault = runJet
-        ? simulateJetAssault(base, waveIndex, random)
+        ? simulateJetAssault(base, waveIndex, random, playerLossKeys[baseIndex])
         : null;
       if (jetAssault) {
         ownAir = jetAssault.ownAirAfter;
@@ -123,7 +128,13 @@ function simulateWaveSequence(options = {}) {
       const enemyAirAfter = airPowerForEnemy(enemy);
       const applyPlayerLoss = dispatchMode === 'separate' || waveInBase === 1;
       const ownSlotDetails = applyPlayerLoss
-        ? applyPlayerStageOne(base, state.key, waveIndex, random)
+        ? applyPlayerStageOne(
+          base,
+          state.key,
+          waveIndex,
+          random,
+          playerLossKeys[baseIndex],
+        )
         : unchangedOwnSlotDetails(base);
       if (applyPlayerLoss) {
         ownAir = calculateBaseAirPower(base);
@@ -203,6 +214,9 @@ function monteCarloWaveSequence(options = {}) {
     options.sampleCount ?? options.simulationOptions?.sampleCount,
   );
   const seed = options.seed ?? options.simulationOptions?.seed ?? 0;
+  const fixedRandom = typeof options.fixedRandom === 'function'
+    ? options.fixedRandom
+    : createFixedSampleRandom(seed, sampleCount);
   const incumbentScore = options.incumbentScore;
   const maximumDamagePerSample = normalizeBases(options.bases || options.loadouts || [])
     .reduce((total, base) => total + 2 * calculateBaseDamagePower(base.filter(Boolean), {
@@ -213,7 +227,7 @@ function monteCarloWaveSequence(options = {}) {
     const result = simulateWaveSequence({
       ...options,
       random: (wave, side, slot, draw) =>
-        commonRandomNumber(seed, sample, wave, side, slot, draw),
+        fixedRandom(sample, wave, side, slot, draw),
     });
     accumulator = accumulator || createSimulationAccumulator(result);
     addSimulationSample(accumulator, result);
@@ -263,6 +277,230 @@ function monteCarloWaveSequence(options = {}) {
   };
 }
 
+/** Creates immutable enemy and sample metadata shared by one detailed search. */
+function createDetailedScoreContext(options = {}) {
+  const sampleCount = requireSampleCount(
+    options.sampleCount ?? options.simulationOptions?.sampleCount,
+  );
+  const seed = options.seed ?? options.simulationOptions?.seed ?? 0;
+  const fixedRandom = typeof options.fixedRandom === 'function'
+    ? options.fixedRandom
+    : createFixedSampleRandom(seed, sampleCount);
+  const dispatchMode = options.dispatchMode === 'separate' ? 'separate' : 'concentrated';
+  const enemies = normalizeEnemyInputs(options, dispatchMode).map(prepareNumericEnemy);
+  const targetCount = Math.max(
+    0,
+    Math.floor(Number(options.baseCount) || 0) * 2,
+    Array.isArray(options.targetStates) ? options.targetStates.length : 0,
+  );
+  const targetStates = normalizeTargets(options.targetStates, targetCount);
+  const targetRanks = targetStates.map((key) => AIR_STATES[key]?.rank ?? AIR_STATES.parity.rank);
+  return {
+    sampleCount,
+    seed,
+    fixedRandom,
+    dispatchMode,
+    enemies,
+    targetRanks,
+    baseCache: new Map(),
+  };
+}
+
+/** Evaluates only the exact fixed-sample score used to reject detailed candidates. */
+function evaluateDetailedPlanScore(options = {}) {
+  const sourceBases = options.bases || options.loadouts || [];
+  const context = options.scoreContext || createDetailedScoreContext({
+    ...options,
+    baseCount: sourceBases.length,
+  });
+  const {
+    sampleCount,
+    seed,
+    fixedRandom,
+    dispatchMode,
+    enemies,
+    targetRanks,
+  } = context;
+  const baseCacheKeys = Array.isArray(options.baseCacheKeys) ? options.baseCacheKeys : [];
+  const baseRecords = sourceBases.map((sourceBase, baseIndex) => {
+    const suppliedKey = baseCacheKeys[baseIndex];
+    const cacheKey = suppliedKey == null ? null : `${baseIndex}:${suppliedKey}`;
+    if (cacheKey != null && context.baseCache.has(cacheKey)) {
+      return context.baseCache.get(cacheKey);
+    }
+    const normalizedBase = normalizeBases([sourceBase])[0];
+    const record = {
+      numeric: prepareNumericBase(normalizedBase, options.combatContext),
+      maximumDamage: 2 * calculateBaseDamagePower(normalizedBase.filter(Boolean), {
+        combatContext: options.combatContext,
+      }),
+    };
+    if (cacheKey != null) context.baseCache.set(cacheKey, record);
+    return record;
+  });
+  const bases = baseRecords.map((record) => record.numeric);
+  const maximumDamagePerSample = baseRecords.reduce(
+    (total, record) => total + record.maximumDamage,
+    0,
+  );
+  let fulfilledSamples = 0;
+  let totalDamage = 0;
+  const maximumFinalEnemyAir = enemies.map(() => 0);
+
+  for (let sample = 0; sample < sampleCount; sample += 1) {
+    const ownSlots = bases.map((base) => Float64Array.from(base.initialSlots));
+    const enemySlots = enemies.map((enemy) => Float64Array.from(enemy.initialSlots));
+    let allTargetsFulfilled = true;
+
+    bases.forEach((base, baseIndex) => {
+      const slots = ownSlots[baseIndex];
+      let ownAir = numericBaseAirPower(base, slots, false);
+      for (let waveInBase = 0; waveInBase < 2; waveInBase += 1) {
+        const waveIndex = baseIndex * 2 + waveInBase;
+        const enemyIndex = dispatchMode === 'separate' ? waveInBase : 0;
+        const enemy = enemies[enemyIndex];
+        const currentEnemySlots = enemySlots[enemyIndex];
+        const runJet = !enemy.isAirRaidCell &&
+          (dispatchMode === 'separate' || waveInBase === 0);
+        if (runJet && base.hasJet) {
+          base.planes.forEach((plane, slotIndex) => {
+            if (!plane?.isJet || plane.isEscortItem) return;
+            const before = slots[slotIndex];
+            slots[slotIndex] = Math.max(0, before - numericPlayerLoss(
+              'supremacy',
+              before,
+              fixedRandom(sample, waveIndex, 'jet-player', base.lossKeys[slotIndex], 0),
+              plane.lossModifier,
+            ));
+          });
+          ownAir = numericBaseAirPower(base, slots, true);
+        }
+
+        const enemyAir = numericEnemyAirPower(enemy, currentEnemySlots);
+        const stateRank = numericAirStateRank(ownAir, enemyAir, baseHasPlane(base, slots));
+        const stateKey = airStateKeyForRank(stateRank);
+        if (stateRank < targetRanks[waveIndex]) allTargetsFulfilled = false;
+
+        if (stateKey !== 'none') {
+          enemy.sortieAntiAir.forEach((_antiAir, slotIndex) => {
+            const before = currentEnemySlots[slotIndex];
+            const constant = ENEMY_STAGE_ONE_CONSTANTS[stateKey];
+            const x = Math.floor(
+              fixedRandom(sample, waveIndex, 'enemy', enemy.instanceIds[slotIndex], 0) *
+              (constant + 1),
+            );
+            const y = Math.floor(
+              fixedRandom(sample, waveIndex, 'enemy', enemy.instanceIds[slotIndex], 1) *
+              (constant + 1),
+            );
+            const loss = Math.min(before, Math.floor(before * (0.65 * x + 0.35 * y) / 10));
+            currentEnemySlots[slotIndex] = Math.max(0, before - loss);
+          });
+        }
+
+        const applyPlayerLoss = dispatchMode === 'separate' || waveInBase === 1;
+        if (applyPlayerLoss && stateKey !== 'none') {
+          base.planes.forEach((plane, slotIndex) => {
+            if (!plane) return;
+            const before = slots[slotIndex];
+            slots[slotIndex] = Math.max(0, before - numericPlayerLoss(
+              stateKey,
+              before,
+              fixedRandom(sample, waveIndex, 'player', base.lossKeys[slotIndex], 0),
+              plane.lossModifier,
+            ));
+          });
+          ownAir = numericBaseAirPower(base, slots, false);
+        }
+        totalDamage += numericBaseDamage(base, slots);
+      }
+    });
+
+    enemies.forEach((enemy, enemyIndex) => {
+      maximumFinalEnemyAir[enemyIndex] = Math.max(
+        maximumFinalEnemyAir[enemyIndex],
+        numericEnemyAirPower(enemy, enemySlots[enemyIndex]),
+      );
+    });
+    if (allTargetsFulfilled) fulfilledSamples += 1;
+    const samplesEvaluated = sample + 1;
+    const remainingSamples = sampleCount - samplesEvaluated;
+    const optimisticScore = {
+      fulfillment: (fulfilledSamples + remainingSamples) / sampleCount,
+      damage: (totalDamage + remainingSamples * maximumDamagePerSample) / sampleCount,
+    };
+    if (cannotBeatDetailedIncumbent(optimisticScore, options.incumbentScore)) {
+      return {
+        calculationMode: 'detailed',
+        mode: 'detailed',
+        seed,
+        sampleCount,
+        samplesEvaluated,
+        prunedBySimulationBound: true,
+        optimisticScore,
+      };
+    }
+  }
+
+  return {
+    calculationMode: 'detailed',
+    mode: 'detailed',
+    seed,
+    sampleCount,
+    samplesEvaluated: sampleCount,
+    allWaveTargetFulfillmentProbability: fulfilledSamples / sampleCount,
+    expectedDamage: totalDamage / sampleCount,
+    maximumFinalEnemyAir,
+  };
+}
+
+/**
+ * Returns a fixed-sample damage upper bound by ignoring jet losses and applying
+ * ordinary player losses with the best possible air state.
+ */
+function maximumDetailedExpectedDamage(options = {}) {
+  const sampleCount = requireSampleCount(
+    options.sampleCount ?? options.simulationOptions?.sampleCount,
+  );
+  const seed = options.seed ?? options.simulationOptions?.seed ?? 0;
+  const fixedRandom = typeof options.fixedRandom === 'function'
+    ? options.fixedRandom
+    : createFixedSampleRandom(seed, sampleCount);
+  const dispatchMode = options.dispatchMode === 'separate' ? 'separate' : 'concentrated';
+  const baseIndexOffset = Math.max(0, Math.floor(Number(options.baseIndexOffset) || 0));
+  const initialBases = normalizeBases(options.bases || options.loadouts || []);
+  let totalDamage = 0;
+
+  for (let sample = 0; sample < sampleCount; sample += 1) {
+    initialBases.forEach((initialBase, baseIndex) => {
+      const base = initialBase.map((plane) => plane ? { ...plane } : null);
+      const lossKeys = playerLossCoordinates(initialBase);
+      if (dispatchMode === 'concentrated') {
+        totalDamage += calculateBaseDamagePower(base.filter(Boolean), {
+          combatContext: options.combatContext,
+        });
+      }
+      const firstLossWave = dispatchMode === 'separate' ? 0 : 1;
+      for (let waveInBase = firstLossWave; waveInBase < 2; waveInBase += 1) {
+        const waveIndex = (baseIndexOffset + baseIndex) * 2 + waveInBase;
+        applyPlayerStageOne(
+          base,
+          'supremacy',
+          waveIndex,
+          (wave, side, slot, draw) =>
+            fixedRandom(sample, wave, side, slot, draw),
+          lossKeys,
+        );
+        totalDamage += calculateBaseDamagePower(base.filter(Boolean), {
+          combatContext: options.combatContext,
+        });
+      }
+    });
+  }
+
+  return totalDamage / sampleCount;
+}
+
 /** Returns the best fulfillment and damage averages still reachable by this sample prefix. */
 function optimisticFixedSampleScore(
   accumulator,
@@ -294,7 +532,13 @@ function cannotBeatDetailedIncumbent(optimisticScore, incumbentScore) {
 }
 
 /** Applies one ordinary player Stage 1 draw to each current base slot. */
-function applyPlayerStageOne(base, stateKey, waveIndex, random) {
+function applyPlayerStageOne(
+  base,
+  stateKey,
+  waveIndex,
+  random,
+  lossKeys = playerLossCoordinates(base),
+) {
   if (stateKey === 'none') return unchangedOwnSlotDetails(base);
   return base.map((plane, slotIndex) => {
     if (!plane) return { slotIndex, before: 0, loss: 0, after: 0 };
@@ -302,7 +546,7 @@ function applyPlayerStageOne(base, stateKey, waveIndex, random) {
     const loss = playerStageOneLoss(
       stateKey,
       before,
-      () => random(waveIndex, 'player', slotIndex, 0),
+      () => random(waveIndex, 'player', lossKeys[slotIndex], 0),
       plane,
     );
     plane.currentSlot = Math.max(0, before - loss);
@@ -335,7 +579,12 @@ function applyEnemyStageOne(enemy, stateKey, waveIndex, random) {
 }
 
 /** Runs the kc-web jet Stage 1 and steel-cost phase while intentionally omitting Stage 2. */
-function simulateJetAssault(base, waveIndex, random) {
+function simulateJetAssault(
+  base,
+  waveIndex,
+  random,
+  lossKeys = playerLossCoordinates(base),
+) {
   if (!base.some((plane) => hasCapability(plane, 'isJet'))) return null;
   const ownSlotsBefore = slotsForPlanes(base);
   let usedSteel = 0;
@@ -352,7 +601,7 @@ function simulateJetAssault(base, waveIndex, random) {
     const loss = playerStageOneLoss(
       'supremacy',
       before,
-      () => random(waveIndex, 'jet-player', slotIndex, 0),
+      () => random(waveIndex, 'jet-player', lossKeys[slotIndex], 0),
       { ...plane, isJet: true },
     );
     plane.currentSlot = Math.max(0, before - loss);
@@ -477,6 +726,129 @@ function finalizeWaveAccumulator(accumulator, sampleCount) {
     expectedOwnSlotLoss: accumulator.ownSlotLoss / sampleCount,
     expectedEnemySlotLoss: accumulator.enemySlotLoss / sampleCount,
   };
+}
+
+/** Precomputes slot-indexed air, damage, and loss metadata for numeric scoring. */
+function prepareNumericBase(base, combatContext) {
+  const planes = base.map((plane) => {
+    if (!plane) return null;
+    const capabilities = capabilitiesFor(plane);
+    const isJet = plane.isJet === true || capabilities.isJet === true;
+    const isAswPatrol = plane.isAswPatrol === true || capabilities.isAswPatrol === true;
+    const isAttacker = plane.isAttacker === true || capabilities.isAttacker === true;
+    return {
+      plane,
+      isJet,
+      isRecon: plane.isRecon === true || capabilities.isRecon === true,
+      isEscortItem: plane.isEscortItem === true,
+      lossModifier: isJet ? 0.6 : isAswPatrol && !isAttacker ? 0.91 : 1,
+    };
+  });
+  const sourcePlanes = base.filter(Boolean);
+  const airCoefficient = landReconCoefficient(sourcePlanes);
+  const damageCoefficient = landBasedReconDamageModifier(sourcePlanes);
+  planes.forEach((entry) => {
+    if (!entry) return;
+    const maximumSlot = Math.max(0, Math.ceil(currentSlotForPlane(entry.plane)));
+    entry.airBySlot = Array.from({ length: maximumSlot + 1 }, (_unused, slot) =>
+      calculateSlotAirPower({ ...entry.plane, currentSlot: slot }));
+    entry.damageBySlot = Array.from({ length: maximumSlot + 1 }, (_unused, slot) =>
+      calculatePlaneSurfaceTargetPowerProxy(entry.plane, {
+        currentSlot: slot,
+        reconModifier: damageCoefficient,
+        combatContext,
+      }));
+  });
+  return {
+    planes,
+    initialSlots: base.map((plane) => plane?.currentSlot || 0),
+    lossKeys: playerLossCoordinates(base),
+    airCoefficient,
+    hasJet: planes.some((plane) => plane?.isJet),
+  };
+}
+
+/** Assigns common-random-number coordinates by canonical plane order, not UI slot order. */
+function playerLossCoordinates(base) {
+  const coordinates = Array(base.length).fill(null);
+  base
+    .map((plane, slotIndex) => plane ? {
+      slotIndex,
+      key: aircraftEquivalenceKey(plane),
+    } : null)
+    .filter(Boolean)
+    .sort((left, right) => left.key.localeCompare(right.key) || left.slotIndex - right.slotIndex)
+    .forEach((entry, coordinate) => {
+      coordinates[entry.slotIndex] = coordinate;
+    });
+  return coordinates;
+}
+
+/** Prepares immutable detailed-enemy coefficients for numeric scoring. */
+function prepareNumericEnemy(enemy) {
+  return {
+    isAirRaidCell: enemy.isAirRaidCell === true,
+    sortieAntiAir: enemy.slots.map((slot) => slot.sortieAntiAir),
+    initialSlots: enemy.slots.map((slot) => slot.currentSlot),
+    instanceIds: enemy.slots.map((slot, index) => slot.instanceId ?? index),
+  };
+}
+
+/** Calculates current base air power from slot lookup tables. */
+function numericBaseAirPower(base, slots, excludeRecon) {
+  let rawAir = 0;
+  base.planes.forEach((plane, slotIndex) => {
+    if (!plane || (excludeRecon && plane.isRecon)) return;
+    rawAir += plane.airBySlot[Math.max(0, Math.floor(slots[slotIndex]))] || 0;
+  });
+  return Math.floor(rawAir * base.airCoefficient);
+}
+
+/** Calculates current base damage from slot lookup tables. */
+function numericBaseDamage(base, slots) {
+  return base.planes.reduce((total, plane, slotIndex) =>
+    total + (plane?.damageBySlot[Math.max(0, Math.floor(slots[slotIndex]))] || 0), 0);
+}
+
+/** Calculates detailed enemy air power from numeric slots. */
+function numericEnemyAirPower(enemy, slots) {
+  return enemy.sortieAntiAir.reduce(
+    (total, antiAir, index) => total + Math.floor(antiAir * Math.sqrt(slots[index])),
+    0,
+  );
+}
+
+/** Returns the numeric air-state rank without allocating a descriptor object. */
+function numericAirStateRank(ownAir, enemyAir, hasPlane) {
+  if (enemyAir === 0 && ownAir === 0 && !hasPlane) return AIR_STATES.none.rank;
+  if (enemyAir === 0 || ownAir >= enemyAir * 3) return AIR_STATES.supremacy.rank;
+  if (ownAir >= Math.ceil(enemyAir * 1.5)) return AIR_STATES.superiority.rank;
+  if (ownAir >= Math.floor(enemyAir / 1.5) + 1) return AIR_STATES.parity.rank;
+  if (ownAir >= Math.floor(enemyAir / 3) + 1) return AIR_STATES.denial.rank;
+  return AIR_STATES.loss.rank;
+}
+
+/** Maps numeric ranks back to the Stage 1 constant key. */
+function airStateKeyForRank(rank) {
+  if (rank === AIR_STATES.none.rank) return 'none';
+  if (rank === AIR_STATES.supremacy.rank) return 'supremacy';
+  if (rank === AIR_STATES.superiority.rank) return 'superiority';
+  if (rank === AIR_STATES.parity.rank) return 'parity';
+  if (rank === AIR_STATES.denial.rank) return 'denial';
+  return 'loss';
+}
+
+/** Applies the player Stage 1 formula with a precomputed aircraft modifier. */
+function numericPlayerLoss(stateKey, currentSlot, random, modifier) {
+  const constant = PLAYER_STAGE_ONE_CONSTANTS[stateKey];
+  const k = Math.floor(random * ((1000 * constant / 3) + 1));
+  const raw = currentSlot * ((k / 1000) + constant / 4) / 10;
+  return Math.min(currentSlot, Math.floor(raw * modifier));
+}
+
+/** Returns whether any physical plane in the base still has aircraft. */
+function baseHasPlane(base, slots) {
+  return base.planes.some((plane, index) => plane && slots[index] > 0);
 }
 
 /** Converts base summaries, loadouts, or simulator slots to cloned current-slot planes. */
@@ -625,7 +997,10 @@ function divideNested(total, divisor) {
 module.exports = {
   DETAILED_LIMITATIONS,
   calculateEnemyAirPower,
+  createDetailedScoreContext,
   enemyStageOneLoss,
+  evaluateDetailedPlanScore,
+  maximumDetailedExpectedDamage,
   monteCarloWaveSequence,
   normalizeEnemyFleet,
   playerStageOneLoss,

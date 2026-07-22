@@ -4,11 +4,13 @@ import randomModule from '../src/random.js';
 
 const {
   enemyStageOneLoss,
+  evaluateDetailedPlanScore,
+  maximumDetailedExpectedDamage,
   monteCarloWaveSequence,
   playerStageOneLoss,
   simulateWaveSequence,
 } = waveSimulator;
-const { commonRandomNumber, createSeededRandom } = randomModule;
+const { commonRandomNumber, createFixedSampleRandom, createSeededRandom } = randomModule;
 
 describe('wave simulator', () => {
   test('provides repeatable sequential and coordinate-addressed random draws', () => {
@@ -178,7 +180,7 @@ describe('wave simulator', () => {
 
     expect(result.waves.map((wave) => wave.state.key)).toEqual(['denial', 'parity']);
     expect(calls.filter(([, side]) => side === 'player')).toEqual([
-      [1, 'player', 0, 0],
+      [1, 'player', expect.any(Number), 0],
     ]);
     expect(result.waves[1].ownSlotLoss)
       .toBe(playerStageOneLoss('parity', 18, () => 0.999999, basePlane));
@@ -201,6 +203,29 @@ describe('wave simulator', () => {
     expect(result.expectedFinalEnemyAir).toHaveLength(1);
     expect(monteCarloWaveSequence({ ...options, seed: 'different' }))
       .not.toEqual(result);
+  });
+
+  test('uses a supplied fixed-sample random table without changing simulation semantics', () => {
+    const options = {
+      bases: [[fighter('fixed-table-fighter')]],
+      enemy: enemyFleet('fixed-table-enemy', 18),
+      targetStates: ['parity', 'parity'],
+      seed: 'fixed-table',
+      sampleCount: 32,
+    };
+    const fixedRandom = createFixedSampleRandom(options.seed, options.sampleCount);
+
+    expect(monteCarloWaveSequence({ ...options, fixedRandom }))
+      .toEqual(monteCarloWaveSequence(options));
+
+    const zeroRandomResult = monteCarloWaveSequence({
+      ...options,
+      fixedRandom: () => 0,
+    });
+    const exactZeroRandom = simulateWaveSequence({ ...options, random: () => 0 });
+    expect(zeroRandomResult.expectedDamage).toBe(exactZeroRandom.totalDamage);
+    expect(zeroRandomResult.expectedEnemySlotLoss).toBe(exactZeroRandom.totalEnemySlotLoss);
+    expect(zeroRandomResult.expectedOwnSlotLoss).toBe(exactZeroRandom.totalOwnSlotLoss);
   });
 
   test('applies the same equipment multiplier to both detailed waves', () => {
@@ -256,6 +281,107 @@ describe('wave simulator', () => {
     }));
   });
 
+  test.each(['concentrated', 'separate'])(
+    'matches the full Monte Carlo score in %s dispatch mode',
+    (dispatchMode) => {
+      const firstEnemy = enemyFleet('score-enemy-a', 18);
+      const secondEnemy = enemyFleet('score-enemy-b', 12);
+      const options = {
+        bases: [[fighter('score-fighter')], [fighter('score-attacker', {
+          equipType: 47,
+          isFighter: false,
+          isAttacker: true,
+          isLandAttacker: true,
+          torpedo: 14,
+        })]],
+        ...(dispatchMode === 'separate'
+          ? { enemyFleets: [firstEnemy, secondEnemy] }
+          : { enemy: firstEnemy }),
+        dispatchMode,
+        targetStates: ['parity', 'parity', 'denial', 'denial'],
+        seed: `numeric-score-${dispatchMode}`,
+        sampleCount: 64,
+      };
+      const full = monteCarloWaveSequence(options);
+      const score = evaluateDetailedPlanScore(options);
+
+      expect(score).toEqual(expect.objectContaining({
+        samplesEvaluated: full.samplesEvaluated,
+        allWaveTargetFulfillmentProbability: full.allWaveTargetFulfillmentProbability,
+        expectedDamage: full.expectedDamage,
+      }));
+    },
+  );
+
+  test('uses the same fixed-sample stopping boundary as the full simulator', () => {
+    const options = {
+      bases: [[fighter('numeric-prune')]],
+      enemy: { mode: 'detailed', slots: [] },
+      targetStates: ['loss', 'loss'],
+      seed: 'numeric-prune',
+      sampleCount: 32,
+      incumbentScore: { fulfillment: 1, damage: Number.MAX_SAFE_INTEGER },
+    };
+
+    expect(evaluateDetailedPlanScore(options)).toEqual(expect.objectContaining({
+      prunedBySimulationBound: true,
+      samplesEvaluated: monteCarloWaveSequence(options).samplesEvaluated,
+    }));
+  });
+
+  test('keeps fixed-sample player losses stable when equipment slots are permuted', () => {
+    const stronger = fighter('permutation-stronger', {
+      antiAir: 3,
+      equipType: 47,
+      isFighter: false,
+      isAttacker: true,
+      isLandAttacker: true,
+      torpedo: 18,
+    });
+    const weaker = fighter('permutation-weaker', {
+      antiAir: 3,
+      equipType: 47,
+      isFighter: false,
+      isAttacker: true,
+      isLandAttacker: true,
+      torpedo: 8,
+    });
+    const common = {
+      enemy: enemyFleet('permutation-enemy', 18),
+      targetStates: ['loss', 'loss'],
+      sampleCount: 32,
+      seed: 'player-slot-permutation',
+    };
+    const forward = { ...common, bases: [[stronger, weaker]] };
+    const reversed = { ...common, bases: [[weaker, stronger]] };
+
+    expect(monteCarloWaveSequence(forward).expectedDamage)
+      .toBe(monteCarloWaveSequence(reversed).expectedDamage);
+    expect(evaluateDetailedPlanScore(forward).expectedDamage)
+      .toBe(evaluateDetailedPlanScore(reversed).expectedDamage);
+  });
+
+  test('returns the exact maximum remaining enemy air across fixed samples', () => {
+    const sampleCount = 16;
+    const seed = 'maximum-final-enemy-air';
+    const fixedRandom = createFixedSampleRandom(seed, sampleCount);
+    const options = {
+      bases: [[fighter('enemy-air-prefix')]],
+      enemy: enemyFleet('enemy-air-prefix-target', 18),
+      targetStates: ['parity', 'parity'],
+      sampleCount,
+      seed,
+      fixedRandom,
+    };
+    const expected = Math.max(...Array.from({ length: sampleCount }, (_unused, sample) =>
+      simulateWaveSequence({
+        ...options,
+        random: (wave, side, slot, draw) => fixedRandom(sample, wave, side, slot, draw),
+      }).finalEnemyAir[0]));
+
+    expect(evaluateDetailedPlanScore(options).maximumFinalEnemyAir).toEqual([expected]);
+  });
+
   test.each([0, 0.5, -1, Number.NaN, Number.POSITIVE_INFINITY, 10001])(
     'rejects invalid direct Monte Carlo sampleCount %s',
     (sampleCount) => {
@@ -267,19 +393,46 @@ describe('wave simulator', () => {
     },
   );
 
-  test('keeps physical slot indices stable when a loadout contains null slots', () => {
-    const calls = [];
-    simulateWaveSequence({
-      bases: [[null, fighter('second-slot')]],
-      enemy: enemyFleet('same-node', 18),
-      random: (...coordinates) => {
-        calls.push(coordinates);
-        return 0.5;
-      },
-    });
+  test('keeps player loss coordinates stable when a loadout contains null slots', () => {
+    const playerCoordinate = (base) => {
+      const calls = [];
+      simulateWaveSequence({
+        bases: [base],
+        enemy: enemyFleet('same-node', 18),
+        random: (...coordinates) => {
+          calls.push(coordinates);
+          return 0.5;
+        },
+      });
+      return calls.find(([, side]) => side === 'player')?.[2];
+    };
 
-    expect(calls.filter(([, side]) => side === 'player').map(([, , slot]) => slot))
-      .toEqual([1]);
+    expect(playerCoordinate([null, fighter('second-slot')]))
+      .toBe(playerCoordinate([fighter('second-slot')]));
+  });
+
+  test('bounds detailed damage by assuming minimum possible player losses', () => {
+    const attacker = fighter('attacker', {
+      antiAir: 3,
+      equipType: 47,
+      isFighter: false,
+      isAttacker: true,
+      isLandAttacker: true,
+      torpedo: 14,
+    });
+    const options = {
+      bases: [[attacker]],
+      enemy: enemyFleet('damage-bound-enemy', 18),
+      targetStates: ['loss', 'loss'],
+      sampleCount: 128,
+      seed: 'damage-upper-bound',
+    };
+
+    const actual = monteCarloWaveSequence(options);
+    const upper = maximumDetailedExpectedDamage(options);
+
+    expect(upper).toBeGreaterThanOrEqual(actual.expectedDamage);
+    expect(upper).toBeGreaterThan(0);
   });
 });
 

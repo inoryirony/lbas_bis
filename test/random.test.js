@@ -4,6 +4,7 @@ import randomModule from '../src/random.js';
 const {
   commonRandomNumber,
   coordinateKey64,
+  createFixedSampleRandom,
   createSeededRandom,
 } = randomModule;
 
@@ -44,5 +45,24 @@ describe('counter-based random helpers', () => {
     expect(values.every((value) => Number.isFinite(value) && value >= 0 && value < 1)).toBe(true);
     expect(commonRandomNumber('wide-state', 1, 2, 'enemy', 3, 4))
       .toBe(commonRandomNumber('wide-state', 1, 2, 'enemy', 3, 4));
+  });
+
+  test('precomputes each fixed-sample coordinate once for reuse across candidates', () => {
+    const sampleCount = 50;
+    let generated = 0;
+    const fixedRandom = createFixedSampleRandom('shared-search', sampleCount, (...coordinates) => {
+      generated += 1;
+      return commonRandomNumber(...coordinates);
+    });
+
+    const firstPass = Array.from({ length: sampleCount }, (_, sample) =>
+      fixedRandom(sample, 2, 'enemy', 'slot-15', 1));
+    const secondPass = Array.from({ length: sampleCount }, (_, sample) =>
+      fixedRandom(sample, 2, 'enemy', 'slot-15', 1));
+
+    expect(firstPass).toEqual(Array.from({ length: sampleCount }, (_, sample) =>
+      commonRandomNumber('shared-search', sample, 2, 'enemy', 'slot-15', 1)));
+    expect(secondPass).toEqual(firstPass);
+    expect(generated).toBe(sampleCount);
   });
 });

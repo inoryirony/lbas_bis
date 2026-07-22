@@ -16,7 +16,13 @@ const {
   landBasedReconDamageModifier,
 } = require('./damage');
 const { validateAndNormalizeDetailedEnemySlots } = require('./enemy-slots');
+const { createFixedSampleRandom } = require('./random');
 const { validateSampleCount } = require('./simulation-options');
+const {
+  createDetailedScoreContext,
+  evaluateDetailedPlanScore,
+  maximumDetailedExpectedDamage,
+} = require('./wave-simulator');
 const {
   comparePlanScores,
   comparePlansForSort,
@@ -36,6 +42,7 @@ const DEFAULT_NODE_BUDGET = 100000;
 const DEFAULT_SIMULATION_WORK_BUDGET = Number.POSITIVE_INFINITY;
 const STATIC_AIR_BOUND_WEIGHTS = Object.freeze([0, 0.125, 0.25, 0.5, 1, 2, 4, 8, 16, 32]);
 const STATIC_RECON_DAMAGE_MODIFIERS = Object.freeze([1, 1.125, 1.15]);
+const DETAILED_DAMAGE_COEFFICIENTS = Object.freeze([1, 1.125, 1.15]);
 const SLOT_KINDS = Object.freeze({
   LOCKED_ITEM: 'LOCKED_ITEM',
   LOCKED_EMPTY: 'LOCKED_EMPTY',
@@ -62,6 +69,11 @@ function optimizeLoadouts(options = {}) {
   if (!prepared.detailed && prepared.maxResults === 1 && !Number.isFinite(prepared.budget)) {
     return optimizeStaticRankOne(prepared, options);
   }
+  if (prepared.detailed && prepared.maxResults === 1 &&
+      !Number.isFinite(prepared.budget) && !Number.isFinite(prepared.simulationBudget)) {
+    const exact = optimizeDetailedRankOne(prepared, options);
+    if (exact) return exact;
+  }
 
   const {
     baseCount,
@@ -75,6 +87,7 @@ function optimizeLoadouts(options = {}) {
     targetRadius,
     waveTargets,
   } = prepared;
+  prepared.detailedRequiredAirByBase = Array(baseCount).fill(null);
   const remainingCounts = groups.map((group) => group.instances.length);
   const relaxedBaseDamageUpperBounds = baseLocks.map((baseLock, baseIndex) => {
     const searchOrder = orderedGroupIndices(prepared, baseIndex, 0);
@@ -99,7 +112,12 @@ function optimizeLoadouts(options = {}) {
   const retained = [];
   const retainedByKey = new Map();
   const simulationBudgetState = createSimulationBudgetState(prepared.simulationBudget);
+  const detailedDamageUpperCache = new Map();
+  const detailedAirBoundCache = new Map();
   let candidatesEvaluated = 0;
+  let damageUpperBoundEvaluations = 0;
+  let numericScoreEvaluations = 0;
+  let dynamicAirBoundEvaluations = 0;
   let hasFeasibleIncumbent = false;
   let cancelled = false;
   let currentPhase = 'finding_feasible';
@@ -124,14 +142,58 @@ function optimizeLoadouts(options = {}) {
   };
 
   function considerCompletePlan() {
+    const incumbentScore = retained.length >= maxResults
+      ? scorePlan(retained[retained.length - 1])
+      : null;
+    const loadouts = materializeLoadouts(selected, prepared);
+    if (detailed && incumbentScore?.fulfillment === 1) {
+      const maximumDamage = loadouts.reduce(
+        (total, base, baseIndex) => total + detailedDamageUpperForBase(base, baseIndex),
+        0,
+      );
+      if (maximumDamage < incumbentScore.damage) {
+        candidatesEvaluated += 1;
+        return false;
+      }
+    }
+    if (detailed && incumbentScore) {
+      if (!reserveSimulationSamples(
+        simulationBudgetState,
+        prepared.simulationOptions.sampleCount,
+      )) return false;
+      const evaluation = evaluateDetailedPlanScore({
+        bases: loadouts,
+        baseCacheKeys: selected.map((candidate) => candidate.score.canonicalKey),
+        enemy: prepared.enemy,
+        enemyFleets: prepared.enemyFleets,
+        targetStates: waveTargets,
+        combatContext: prepared.combatContext,
+        ...prepared.simulationOptions,
+        incumbentScore,
+      });
+      numericScoreEvaluations += 1;
+      recordSimulationSamples(
+        simulationBudgetState,
+        evaluation.samplesEvaluated ?? prepared.simulationOptions.sampleCount,
+      );
+      if (evaluation.prunedBySimulationBound) {
+        candidatesEvaluated += 1;
+        return false;
+      }
+    }
     if (detailed && !reserveSimulationSamples(
       simulationBudgetState,
       prepared.simulationOptions.sampleCount,
     )) return false;
-    const incumbentScore = retained.length >= maxResults
-      ? scorePlan(retained[retained.length - 1])
-      : null;
-    const plan = materializePlan(selected, prepared, incumbentScore);
+    const plan = summarizePlan(loadouts, incumbentScore
+      ? {
+        ...prepared,
+        simulationOptions: {
+          ...prepared.simulationOptions,
+          incumbentScore,
+        },
+      }
+      : prepared);
     if (detailed) {
       recordSimulationSamples(
         simulationBudgetState,
@@ -143,6 +205,64 @@ function optimizeLoadouts(options = {}) {
       return false;
     }
     return considerPlan(plan);
+  }
+
+  /** Returns a cached fixed-sample damage upper bound for one selected base. */
+  function detailedDamageUpperForBase(base, baseIndex) {
+    const cacheKey = `${baseIndex}:${selected[baseIndex].score.canonicalKey}`;
+    if (!detailedDamageUpperCache.has(cacheKey)) {
+      detailedDamageUpperCache.set(cacheKey, maximumDetailedExpectedDamage({
+        bases: [base],
+        baseIndexOffset: baseIndex,
+        combatContext: prepared.combatContext,
+        ...prepared.simulationOptions,
+      }));
+      damageUpperBoundEvaluations += 1;
+    }
+    return detailedDamageUpperCache.get(cacheKey);
+  }
+
+  /** Returns the necessary initial air for the next base from exact prefix enemy states. */
+  function detailedRequiredAirForPrefix(baseIndex) {
+    if (!detailed || baseIndex <= 0 || !selected.length) return 0;
+    const cacheKey = selected.map((candidate) => candidate.score.canonicalKey).join('|');
+    if (detailedAirBoundCache.has(cacheKey)) return detailedAirBoundCache.get(cacheKey);
+    if (!reserveSimulationSamples(
+      simulationBudgetState,
+      prepared.simulationOptions.sampleCount,
+    )) return Number.POSITIVE_INFINITY;
+    const evaluation = evaluateDetailedPlanScore({
+      bases: materializeLoadouts(selected, prepared),
+      baseCacheKeys: selected.map((candidate) => candidate.score.canonicalKey),
+      enemy: prepared.enemy,
+      enemyFleets: prepared.enemyFleets,
+      targetStates: waveTargets.slice(0, selected.length * WAVES_PER_BASE),
+      combatContext: prepared.combatContext,
+      ...prepared.simulationOptions,
+    });
+    recordSimulationSamples(
+      simulationBudgetState,
+      evaluation.samplesEvaluated ?? prepared.simulationOptions.sampleCount,
+    );
+    dynamicAirBoundEvaluations += 1;
+    const firstWaveIndex = baseIndex * WAVES_PER_BASE;
+    let requiredAir;
+    if (prepared.simulationOptions.dispatchMode === 'separate') {
+      requiredAir = Math.max(
+        ...evaluation.maximumFinalEnemyAir.map((enemyAirValue, targetIndex) =>
+          requiredAirForState(
+            enemyAirValue,
+            waveTargets[firstWaveIndex + targetIndex] || waveTargets[firstWaveIndex] || 'parity',
+          )),
+      );
+    } else {
+      requiredAir = requiredAirForState(
+        evaluation.maximumFinalEnemyAir[0] || 0,
+        waveTargets[firstWaveIndex] || waveTargets[0] || 'parity',
+      );
+    }
+    detailedAirBoundCache.set(cacheKey, requiredAir);
+    return requiredAir;
   }
 
   function considerPlan(plan) {
@@ -181,6 +301,11 @@ function optimizeLoadouts(options = {}) {
     if (baseIndex === baseCount) {
       considerCompletePlan();
       return;
+    }
+
+    if (detailed && baseIndex > 0) {
+      prepared.detailedRequiredAirByBase[baseIndex] = detailedRequiredAirForPrefix(baseIndex);
+      if (simulationBudgetState.exhausted) return;
     }
 
     walkBaseAssignments(
@@ -250,7 +375,7 @@ function optimizeLoadouts(options = {}) {
     );
   }
 
-  function seedStaticIncumbent() {
+  function seedIncumbent() {
     const candidatesByBase = baseLocks.map((baseLock, baseIndex) =>
       buildStaticSeedCandidates(baseLock, prepared, baseIndex, options));
     if (candidatesByBase.some((candidates) => candidates.length === 0)) return;
@@ -276,8 +401,9 @@ function optimizeLoadouts(options = {}) {
         return;
       }
       if (baseIndex === baseCount) {
+        const seedContext = detailed ? { ...prepared, detailed: false } : prepared;
         retainPlan(
-          summarizePlan(seedLoadouts, prepared),
+          summarizePlan(seedLoadouts, seedContext),
           seedPlans,
           seedPlansByKey,
           maxResults,
@@ -304,14 +430,29 @@ function optimizeLoadouts(options = {}) {
     combine(0, 0);
     seedPlans.sort(comparePlansForSort);
     for (let index = seedPlans.length - 1; index >= 0; index -= 1) {
-      considerPlan(seedPlans[index]);
+      let plan = seedPlans[index];
+      if (detailed) {
+        if (!reserveSimulationSamples(
+          simulationBudgetState,
+          prepared.simulationOptions.sampleCount,
+        )) break;
+        plan = summarizePlan(
+          plan.bases.map((base) => base.loadout),
+          prepared,
+        );
+        recordSimulationSamples(
+          simulationBudgetState,
+          plan.simulation?.samplesEvaluated ?? prepared.simulationOptions.sampleCount,
+        );
+      }
+      considerPlan(plan);
       if (prepared.isCancelled()) break;
     }
     options.onProgress?.(progressSnapshot());
   }
 
-  if (!detailed && baseCount > 1 && maxResults === 1 && !Number.isFinite(budget)) {
-    seedStaticIncumbent();
+  if (baseCount > 1 && maxResults === 1 && !Number.isFinite(budget)) {
+    seedIncumbent();
   }
   visit(0);
   if (detailed && !hasFeasibleIncumbent) {
@@ -348,6 +489,9 @@ function optimizeLoadouts(options = {}) {
       budget,
       simulationSamplesEvaluated: simulationBudgetState.samplesEvaluated,
       candidatesEvaluated,
+      damageUpperBoundEvaluations,
+      numericScoreEvaluations,
+      dynamicAirBoundEvaluations,
       simulationBudget: simulationBudgetState.budget,
       provenOptimal: status === 'optimal' || status === 'infeasible',
     },
@@ -490,13 +634,22 @@ function prepareSearch(options) {
     equipment,
     Math.max(0, Number(options.targetRadius) || 0),
   );
-  const groups = groupEquipment(relevantEquipment, combatContext);
+  let groups = groupEquipment(relevantEquipment, combatContext);
   const enemyFleetInputs = Array.isArray(options.enemyFleets)
     ? options.enemyFleets
     : Array.isArray(options.targets) ? options.targets : null;
   const detailed = isDetailedEnemy(options.enemy) ||
     Array.isArray(options.enemySlots) ||
     Boolean(enemyFleetInputs?.length);
+  const detailedGroupsBefore = groups.length;
+  if (detailed) {
+    const openCapacity = normalizedLocks.bases.reduce(
+      (total, base) => total + base.slots.filter((slot) => slot.kind === SLOT_KINDS.OPEN).length,
+      0,
+    );
+    groups = removeDetailedCapacityDominatedGroups(groups, openCapacity, combatContext);
+  }
+  const detailedGroupsRemoved = detailedGroupsBefore - groups.length;
   const rawSimulationOptions = {
     ...(options.simulation || {}),
     ...(options.simulationOptions || {}),
@@ -551,6 +704,26 @@ function prepareSearch(options) {
   const detailedEnemyAir = detailed
     ? initialDetailedEnemyAir(enemyFleets?.[0] || enemy)
     : Math.max(0, Number(options.enemyAir) || 0);
+  const fixedRandom = detailed
+    ? (typeof rawSimulationOptions.fixedRandom === 'function'
+      ? rawSimulationOptions.fixedRandom
+      : createFixedSampleRandom(
+        rawSimulationOptions.seed ?? 0,
+        sampleValidation.sampleCount,
+      ))
+    : null;
+  const waveTargets = normalizeWaveTargets(options.targetStates, baseCount);
+  const scoreContext = detailed ? createDetailedScoreContext({
+    enemy,
+    enemyFleets,
+    targetStates: waveTargets,
+    baseCount,
+    combatContext,
+    ...rawSimulationOptions,
+    sampleCount: sampleValidation.sampleCount,
+    dispatchMode,
+    fixedRandom,
+  }) : null;
   return {
     valid: true,
     equipment,
@@ -566,12 +739,16 @@ function prepareSearch(options) {
     enemyFleets,
     combatContext,
     detailed,
+    detailedGroupsBefore,
+    detailedGroupsRemoved,
     simulationOptions: {
       ...rawSimulationOptions,
       ...(detailed ? { sampleCount: sampleValidation.sampleCount } : {}),
       dispatchMode,
+      ...(detailed ? { fixedRandom } : {}),
+      ...(detailed ? { scoreContext } : {}),
     },
-    waveTargets: normalizeWaveTargets(options.targetStates, baseCount),
+    waveTargets,
     maxResults: Math.max(1, Math.floor(Number(options.maxResults) || DEFAULT_MAX_RESULTS)),
     budget: normalizeBudget(
       options.nodeBudget,
@@ -674,6 +851,78 @@ function groupEquipment(equipment, combatContext) {
     .sort((left, right) => left.key.localeCompare(right.key));
 }
 
+/** Removes a detailed group only when strictly stronger copies cover every open slot. */
+function removeDetailedCapacityDominatedGroups(groups, openCapacity, combatContext) {
+  if (openCapacity <= 0) return groups;
+  const features = groups.map((group) => detailedDominanceFeature(group, combatContext));
+  return groups.filter((_group, candidateIndex) => {
+    let dominatingCapacity = 0;
+    for (let replacementIndex = 0; replacementIndex < groups.length; replacementIndex += 1) {
+      if (replacementIndex === candidateIndex ||
+          !strictlyDominatesDetailed(
+            features[replacementIndex],
+            features[candidateIndex],
+          )) continue;
+      dominatingCapacity += groups[replacementIndex].instances.length;
+      if (dominatingCapacity >= openCapacity) return false;
+    }
+    return true;
+  });
+}
+
+/** Precomputes every slot-dependent value needed by conservative detailed dominance. */
+function detailedDominanceFeature(group, combatContext) {
+  const plane = group.representative;
+  const capabilities = capabilitiesFor(plane);
+  const hasCapability = (name) => plane[name] === true || capabilities[name] === true;
+  const slotSize = Math.max(
+    0,
+    Math.ceil(Number(
+      plane.currentSlot ?? plane.slotSize ?? defaultSlotSizeForPlane(plane),
+    ) || 0),
+  );
+  const isJet = hasCapability('isJet');
+  const lossModifier = isJet
+    ? 0.6
+    : hasCapability('isAswPatrol') && !hasCapability('isAttacker') ? 0.91 : 1;
+  const behaviorKey = JSON.stringify([
+    slotSize,
+    hasCapability('isRecon'),
+    hasCapability('isLandRecon'),
+    hasCapability('blocksRangeExtension'),
+    isJet,
+    plane.isEscortItem === true,
+    lossModifier,
+    landReconCoefficient([plane]),
+    landBasedReconDamageModifier([plane]),
+  ]);
+  return {
+    behaviorKey,
+    radius: Math.max(0, Number(plane.radius) || 0),
+    airBySlot: Array.from({ length: slotSize + 1 }, (_unused, slot) =>
+      calculateSlotAirPower({ ...plane, currentSlot: slot })),
+    damageByCoefficient: DETAILED_DAMAGE_COEFFICIENTS.map((reconModifier) =>
+      Array.from({ length: slotSize + 1 }, (_unused, slot) =>
+        calculatePlaneSurfaceTargetPowerProxy(plane, {
+          currentSlot: slot,
+          reconModifier,
+          combatContext,
+        }))),
+  };
+}
+
+/** Requires a one-for-one replacement that cannot lose in any simulated score field. */
+function strictlyDominatesDetailed(replacement, candidate) {
+  if (replacement.behaviorKey !== candidate.behaviorKey ||
+      replacement.radius < candidate.radius ||
+      replacement.airBySlot.some((value, index) => value < candidate.airBySlot[index])) {
+    return false;
+  }
+  return replacement.damageByCoefficient.every((damageBySlot, coefficientIndex) =>
+    damageBySlot.slice(1).every((value, slotOffset) =>
+      value > candidate.damageByCoefficient[coefficientIndex][slotOffset + 1]));
+}
+
 /** Routes static rank-1 searches through the exact capacity-frontier solver. */
 function optimizeStaticRankOne(prepared, options) {
   const { solveStaticExact } = require('./static-exact-solver');
@@ -717,10 +966,14 @@ function optimizeStaticRankOne(prepared, options) {
 
 /** Builds a small, diverse physical-aircraft pool for fast incumbent construction. */
 function buildStaticSeedPool(prepared, options) {
-  const maximumPoolSize = Math.max(8, Number(options.seedPoolLimit) || 64);
+  if (options.isCancelled?.()) return [];
+  const maximumPoolSize = Math.max(8, Number(options.seedPoolLimit) || 32);
   const maximumCopies = prepared.baseCount * SLOTS_PER_BASE;
   const bySignature = new Map();
+  let visitedPlanes = 0;
   for (const plane of prepared.groups.flatMap((group) => group.instances)) {
+    visitedPlanes += 1;
+    if ((visitedPlanes & 255) === 0 && options.isCancelled?.()) return [];
     const features = staticSeedFeatures(plane, prepared.combatContext);
     const signature = Object.values(features).join(':');
     const copies = bySignature.get(signature) || [];
@@ -733,6 +986,7 @@ function buildStaticSeedPool(prepared, options) {
   for (let layer = 0;
     (layer < layerCount || pool.length < maximumCopies) && remaining.length;
     layer += 1) {
+    if (options.isCancelled?.()) return [];
     const frontier = remaining.filter((candidate, candidateIndex) =>
       !remaining.some((other, otherIndex) => otherIndex !== candidateIndex &&
         dominatesStaticSeedFeatures(other.features, candidate.features)));
@@ -777,6 +1031,7 @@ function dominatesStaticSeedFeatures(left, right) {
 
 /** Enumerates feasible per-base seeds from the bounded Pareto pool. */
 function buildStaticSeedCandidates(baseLock, prepared, baseIndex, options) {
+  if (options.isCancelled?.()) return [];
   const pool = buildStaticSeedPool(prepared, options);
   const openIndices = baseLock.slots
     .map((slot, slotIndex) => slot.kind === SLOT_KINDS.OPEN ? slotIndex : -1)
@@ -786,8 +1041,15 @@ function buildStaticSeedCandidates(baseLock, prepared, baseIndex, options) {
     slot.kind === SLOT_KINDS.LOCKED_ITEM ? slot.plane : null);
   const candidates = [];
   const maximumCandidates = Math.max(1, Number(options.seedCandidateLimit) || 4096);
+  let visits = 0;
+  let cancelled = false;
 
   function enumerate(startIndex, openIndex) {
+    visits += 1;
+    if ((visits & 1023) === 0 && options.isCancelled?.()) {
+      cancelled = true;
+      return;
+    }
     if (openIndex === openIndices.length) {
       const summary = summarizeBase(
         loadout,
@@ -817,11 +1079,13 @@ function buildStaticSeedCandidates(baseLock, prepared, baseIndex, options) {
     for (let poolIndex = startIndex; poolIndex <= pool.length - needed; poolIndex += 1) {
       loadout[openIndices[openIndex]] = pool[poolIndex];
       enumerate(poolIndex + 1, openIndex + 1);
+      if (cancelled) return;
     }
     loadout[openIndices[openIndex]] = null;
   }
 
   enumerate(0, 0);
+  if (cancelled) return [];
   candidates.sort((left, right) => -comparePlanScores(left.score, right.score));
   return candidates.slice(0, maximumCandidates);
 }
@@ -901,8 +1165,8 @@ function walkBaseAssignments(
   onCandidate,
   prunePartial = null,
 ) {
-  if (!prepared.detailed && mode === 'branch') {
-    return walkStaticBaseAssignmentsBySlots(
+  if (mode === 'branch') {
+    return walkBaseAssignmentsBySlots(
       baseLock,
       remainingCounts,
       prepared,
@@ -1027,8 +1291,8 @@ function walkBaseAssignments(
   return enumerate(0, openSlots, 0);
 }
 
-/** Enumerates only selected static slots instead of recursing through hundreds of zero-count groups. */
-function walkStaticBaseAssignmentsBySlots(
+/** Enumerates selected slots directly instead of recursing through zero-count groups. */
+function walkBaseAssignmentsBySlots(
   baseLock,
   remainingCounts,
   prepared,
@@ -1044,8 +1308,16 @@ function walkStaticBaseAssignmentsBySlots(
     .reduce((total, slot) => total + calculateSlotAirPower(slot.plane), 0);
   const targetState = targetStateForBase(prepared.waveTargets, baseIndex);
   const requiredAir = requiredAirForState(prepared.enemyAir, targetState);
+  const dynamicDetailedRequiredAir = prepared.detailedRequiredAirByBase?.[baseIndex];
+  const searchRequiredAir = prepared.detailed
+    ? (dynamicDetailedRequiredAir != null && Number.isFinite(dynamicDetailedRequiredAir)
+      ? dynamicDetailedRequiredAir
+      : baseIndex === 0 && prepared.canPruneZeroFulfillment?.()
+        ? requiredAirForState(prepared.enemyAir, prepared.waveTargets[0] || 'parity')
+        : 0)
+    : requiredAir;
   let searchOrder = orderedGroupIndices(prepared, baseIndex, requiredAir);
-  if (prepared.maxResults === 1) {
+  if (!prepared.detailed && prepared.maxResults === 1) {
     const remainingSlotCapacity = prepared.baseLocks
       .slice(baseIndex)
       .reduce((total, lock) => total +
@@ -1089,7 +1361,7 @@ function walkStaticBaseAssignmentsBySlots(
     }
     const optimisticRawAir = selectedAirPower + lockedAirPower +
       staticBoundContext().maximumRawAir(startPosition, slotsLeft);
-    if (Math.floor(optimisticRawAir * 1.18) < requiredAir) {
+    if (Math.floor(optimisticRawAir * 1.18) < searchRequiredAir) {
       budgetState.nodesPruned += 1;
       return consumeBudget(budgetState);
     }
@@ -1100,8 +1372,11 @@ function walkStaticBaseAssignmentsBySlots(
         if (counts[groupIndex] >= remainingCounts[groupIndex]) continue;
         counts[groupIndex] += 1;
         selectedGroupIndices.push(groupIndex);
+        const nextPosition = counts[groupIndex] >= remainingCounts[groupIndex]
+          ? position + 1
+          : position;
         const completed = enumerate(
-          position,
+          nextPosition,
           slotsLeft - 1,
           selectedAirPower + prepared.groups[groupIndex].slotAirPower,
         );
@@ -1119,7 +1394,10 @@ function walkStaticBaseAssignmentsBySlots(
       prepared.inventoryCounts,
       { details: false, combatContext: prepared.combatContext },
     );
-    if (!isBaseFeasible(summary, prepared.targetRadius)) {
+    const feasible = prepared.detailed
+      ? summary.radius >= prepared.targetRadius
+      : isBaseFeasible(summary, prepared.targetRadius);
+    if (!feasible) {
       return consumeBudget(budgetState);
     }
     return onCandidate({
@@ -1222,6 +1500,46 @@ function maximumStaticBaseDamage(
     }
   }
   return Number.isFinite(maximum) ? maximum : 0;
+}
+
+/** Routes unlimited detailed rank-1 searches through reusable per-base frontiers. */
+function optimizeDetailedRankOne(prepared, options) {
+  const { solveDetailedExact } = require('./detailed-exact-solver');
+  const exact = solveDetailedExact(prepared, {
+    isCancelled: options.isCancelled,
+    onIncumbent: options.onIncumbent,
+    onPhaseChange: options.onPhaseChange,
+    onProgress: options.onProgress,
+  });
+  if (exact.solverStats.stopReason === 'no_full_fulfillment_seed') return null;
+  const cancelled = exact.solverStats.status === 'cancelled';
+  const status = exact.provenOptimal
+    ? exact.plan ? 'optimal' : 'infeasible'
+    : cancelled ? 'cancelled' : 'budget_exhausted';
+  return {
+    messages: cancelled
+      ? ['Search cancelled; the current best plan is preserved but is not proven optimal.']
+      : exact.provenOptimal ? []
+        : ['Search work stopped before optimality was proven.'],
+    results: exact.plan ? [exact.plan] : [],
+    search: {
+      mode: 'branch-and-bound',
+      backend: exact.solverStats.backend,
+      status,
+      nodesExplored: exact.solverStats.nodesExplored,
+      budget: prepared.budget,
+      simulationSamplesEvaluated: exact.solverStats.simulationSamplesEvaluated,
+      candidatesEvaluated: exact.solverStats.candidatesEvaluated ??
+        exact.solverStats.combinationsEvaluated,
+      damageUpperBoundEvaluations: exact.solverStats.damageUpperBoundEvaluations,
+      numericScoreEvaluations: exact.solverStats.numericScoreEvaluations,
+      dynamicAirBoundEvaluations: exact.solverStats.dynamicAirBoundEvaluations,
+      prefixDamageBoundEvaluations: exact.solverStats.prefixDamageBoundEvaluations,
+      simulationBudget: prepared.simulationBudget,
+      provenOptimal: exact.provenOptimal,
+      solverStats: exact.solverStats,
+    },
+  };
 }
 
 /** Precomputes relaxed suffix contribution tables shared by every static slot prefix. */
@@ -1670,7 +1988,7 @@ function materializeConcreteCandidateLoadout(baseLock, counts, groups) {
 }
 
 /** Materializes stable instance IDs only after a complete count plan is found. */
-function materializePlan(selected, prepared, incumbentScore = null) {
+function materializeLoadouts(selected, prepared) {
   const cursors = prepared.groups.map(() => 0);
   const loadouts = selected.map((candidate, baseIndex) => {
     const loadout = prepared.baseLocks[baseIndex].slots.map((slot) =>
@@ -1691,15 +2009,7 @@ function materializePlan(selected, prepared, incumbentScore = null) {
     });
     return loadout;
   });
-  return summarizePlan(loadouts, incumbentScore
-    ? {
-      ...prepared,
-      simulationOptions: {
-        ...prepared.simulationOptions,
-        incumbentScore,
-      },
-    }
-    : prepared);
+  return loadouts;
 }
 
 /** Retains a deduplicated Top K without limiting the search itself. */
@@ -1921,6 +2231,7 @@ function invalidResult(mode, budget, message, errors = [], simulationBudget = 0)
 
 module.exports = {
   SLOT_KINDS,
+  buildStaticSeedCandidates,
   generateBaseCandidates,
   normalizeLockedBases,
   normalizeWaveTargets,

@@ -609,7 +609,10 @@ function isPreparedSearch(value) {
 
 module.exports = {
   combineCandidateSets,
+  createBaseContext,
   dominatesInEveryContext,
+  enumerateBase,
+  featureForGroup,
   removeCapacityDominatedGroups,
   solveStaticExact,
 };

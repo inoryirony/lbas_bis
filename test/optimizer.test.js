@@ -2,10 +2,136 @@ import { describe, expect, test } from 'vitest';
 import optimizer from '../src/optimizer.js';
 import scoreModule from '../src/search-score.js';
 
-const { optimizeLoadouts } = optimizer;
+const { buildStaticSeedCandidates, optimizeLoadouts, prepareSearch } = optimizer;
 const { comparePlansForSort } = scoreModule;
 
 describe('LBAS optimizer MVP', () => {
+  test('cancels bounded seed generation before enumerating its Pareto pool', () => {
+    const prepared = prepareSearch({
+      equipment: Array.from({ length: 8 }, (_unused, index) => plane(`cancel-seed-${index}`, {
+        antiAir: index,
+        radius: 7,
+        role: 'attacker',
+        torpedo: 20 - index,
+        isLandBased: true,
+      })),
+      baseCount: 1,
+      targetRadius: 7,
+      enemy: detailedEnemy(),
+      targetStates: ['loss', 'loss'],
+    });
+    let checks = 0;
+
+    const candidates = buildStaticSeedCandidates(
+      prepared.baseLocks[0],
+      prepared,
+      0,
+      { isCancelled: () => { checks += 1; return true; } },
+    );
+
+    expect(candidates).toEqual([]);
+    expect(checks).toBe(1);
+  });
+
+  test('prepares one shared fixed-sample random table for every detailed candidate', () => {
+    const prepared = prepareSearch({
+      equipment: [plane('shared-random', { antiAir: 8, radius: 7, role: 'fighter' })],
+      baseCount: 1,
+      targetRadius: 7,
+      enemy: detailedEnemy(),
+      targetStates: ['parity', 'parity'],
+      simulationOptions: { seed: 'shared-random', sampleCount: 8 },
+    });
+
+    expect(prepared.valid).toBe(true);
+    expect(prepared.simulationOptions.fixedRandom).toEqual(expect.any(Function));
+    expect(prepared.simulationOptions.scoreContext).toEqual(expect.objectContaining({
+      baseCache: expect.any(Map),
+    }));
+  });
+
+  test('removes only capacity-covered detailed groups with identical loss behavior', () => {
+    const stronger = Array.from({ length: 8 }, (_unused, index) => plane(
+      `detailed-dominator-${index}`,
+      {
+        masterId: 3300 + index,
+        torpedo: 20,
+        radius: 7,
+        role: 'attacker',
+        isLandBased: true,
+      },
+    ));
+    const ordinaryWeak = plane('detailed-dominated', {
+      masterId: 3400,
+      torpedo: 5,
+      radius: 7,
+      role: 'attacker',
+      isLandBased: true,
+    });
+    const mislabeledWeak = plane('detailed-dominated-label-mismatch', {
+      masterId: 3402,
+      torpedo: 5,
+      radius: 7,
+      role: 'fighter',
+      isLandBased: true,
+    });
+    const jetWeak = plane('detailed-jet-not-dominated', {
+      masterId: 3401,
+      torpedo: 5,
+      radius: 7,
+      role: 'attacker',
+      isLandBased: true,
+      isJet: true,
+    });
+    const prepared = prepareSearch({
+      equipment: [...stronger, ordinaryWeak, mislabeledWeak, jetWeak],
+      baseCount: 2,
+      targetRadius: 7,
+      enemy: detailedEnemy(),
+      targetStates: ['loss', 'loss', 'loss', 'loss'],
+      simulationOptions: { seed: 'detailed-dominance', sampleCount: 1 },
+    });
+
+    expect(prepared.groups.flatMap((group) => group.instances.map((item) => item.instanceId)))
+      .not.toContain(ordinaryWeak.instanceId);
+    expect(prepared.groups.flatMap((group) => group.instances.map((item) => item.instanceId)))
+      .not.toContain(mislabeledWeak.instanceId);
+    expect(prepared.groups.flatMap((group) => group.instances.map((item) => item.instanceId)))
+      .toContain(jetWeak.instanceId);
+    expect(prepared.detailedGroupsRemoved).toBe(2);
+  });
+
+  test('does not let a short custom slot dominate a full custom slot', () => {
+    const short = Array.from({ length: 4 }, (_unused, index) => plane(
+      `short-custom-slot-${index}`,
+      {
+        masterId: 3600 + index,
+        currentSlot: 1,
+        torpedo: 15,
+        radius: 7,
+        role: 'attacker',
+      },
+    ));
+    const full = plane('full-custom-slot', {
+      masterId: 9998,
+      currentSlot: 18,
+      torpedo: 14,
+      radius: 7,
+      role: 'attacker',
+    });
+    const prepared = prepareSearch({
+      equipment: [...short, full],
+      baseCount: 1,
+      targetRadius: 7,
+      enemy: { mode: 'detailed', slots: [] },
+      targetStates: ['loss', 'loss'],
+      simulationOptions: { seed: 'custom-slot-dominance', sampleCount: 1 },
+    });
+
+    expect(prepared.groups.flatMap((group) => group.instances.map((item) => item.instanceId)))
+      .toContain(full.instanceId);
+  });
+
   test('finds a valid base plan without reusing the same equipment instance', () => {
     const equipment = [
       plane('f1', { antiAir: 11, intercept: 5, radius: 7, role: 'fighter' }),
@@ -607,6 +733,42 @@ describe('LBAS optimizer MVP', () => {
     }));
   });
 
+  test('does not spend detailed node budget walking zero-count equipment groups', () => {
+    const equipment = Array.from({ length: 80 }, (_unused, index) => plane(
+      `sparse-detailed-${index}`,
+      {
+        masterId: 3000 + index,
+        torpedo: 10,
+        radius: 7,
+        role: 'attacker',
+        isLandBased: true,
+      },
+    ));
+    const result = optimizeLoadouts({
+      equipment,
+      baseCount: 1,
+      targetRadius: 7,
+      enemy: { mode: 'detailed', slots: [] },
+      targetStates: ['loss', 'loss'],
+      lockedBases: [{ slots: [
+        { locked: false },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+      ] }],
+      simulationOptions: { seed: 'sparse-detailed-groups', sampleCount: 1 },
+      nodeBudget: 100,
+      simulationWorkBudget: Infinity,
+      maxResults: 1,
+    });
+
+    expect(result.search).toEqual(expect.objectContaining({
+      status: 'optimal',
+      provenOptimal: true,
+    }));
+    expect(result.search.nodesExplored).toBeLessThanOrEqual(100);
+  });
+
   test('does not cap default detailed simulation work before proving optimality', () => {
     const result = optimizeLoadouts({
       equipment: distinctFighters(8),
@@ -659,19 +821,30 @@ describe('LBAS optimizer MVP', () => {
   });
 
   test('passes the incumbent into detailed simulation for fixed-sample pruning', () => {
-    const equipment = [30, 29].map((torpedo, index) => plane(`close-damage-${index}`, {
-      masterId: 2100 + index,
-      torpedo,
-      radius: 7,
-      role: 'attacker',
-      isLandBased: true,
-    }));
+    const equipment = [
+      plane('close-damage-high-air', {
+        masterId: 2100,
+        torpedo: 14,
+        antiAir: 12,
+        radius: 7,
+        role: 'attacker',
+        isLandBased: true,
+      }),
+      plane('close-damage-low-air', {
+        masterId: 2101,
+        torpedo: 14,
+        antiAir: 0,
+        radius: 7,
+        role: 'attacker',
+        isLandBased: true,
+      }),
+    ];
     const sampleCount = 32;
     const result = optimizeLoadouts({
       equipment,
       baseCount: 1,
       targetRadius: 7,
-      enemy: { mode: 'detailed', slots: [] },
+      enemy: detailedEnemy(),
       targetStates: ['loss', 'loss'],
       lockedBases: [{ slots: [
         { locked: false },
@@ -689,7 +862,93 @@ describe('LBAS optimizer MVP', () => {
     expect(result.search.provenOptimal).toBe(true);
     expect(result.search.simulationSamplesEvaluated).toBeGreaterThanOrEqual(sampleCount);
     expect(result.search.simulationSamplesEvaluated).toBeLessThan(2 * sampleCount);
-    expect(result.results[0].bases[0].loadout[0].instanceId).toBe('close-damage-0');
+    expect(result.search.numericScoreEvaluations).toBeGreaterThan(0);
+    expect(result.results[0].bases[0].loadout[0].instanceId).toBe('close-damage-high-air');
+  });
+
+  test('skips full detailed simulation when minimum-loss damage cannot win', () => {
+    const equipment = [
+      plane('minimum-loss-bound-jet', {
+        masterId: 2150,
+        torpedo: 14,
+        radius: 7,
+        role: 'attacker',
+        isLandBased: true,
+        isJet: true,
+        isEscortItem: true,
+      }),
+      plane('minimum-loss-bound-normal', {
+        masterId: 2151,
+        torpedo: 14,
+        radius: 7,
+        role: 'attacker',
+        isLandBased: true,
+      }),
+    ];
+    const sampleCount = 128;
+    const result = optimizeLoadouts({
+      equipment,
+      baseCount: 1,
+      targetRadius: 7,
+      enemy: { mode: 'detailed', slots: [] },
+      targetStates: ['loss', 'loss'],
+      lockedBases: [{ slots: [
+        { locked: false },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+      ] }],
+      simulationOptions: { seed: 'minimum-loss-bound', sampleCount },
+      nodeBudget: Infinity,
+      simulationWorkBudget: Infinity,
+      maxResults: 1,
+    });
+
+    expect(result.search).toEqual(expect.objectContaining({
+      status: 'optimal',
+      provenOptimal: true,
+      simulationSamplesEvaluated: sampleCount,
+    }));
+    expect(result.results[0].bases[0].loadout[0].instanceId)
+      .toBe('minimum-loss-bound-jet');
+  });
+
+  test('reuses per-base detailed damage bounds across global combinations', () => {
+    const equipment = Array.from({ length: 6 }, (_unused, index) => plane(
+      `cached-damage-bound-${index}`,
+      {
+        masterId: 2170 + index,
+        torpedo: 20 - index,
+        radius: 7,
+        role: 'attacker',
+        isLandBased: true,
+      },
+    ));
+    const result = optimizeLoadouts({
+      equipment,
+      baseCount: 2,
+      targetRadius: 7,
+      enemy: { mode: 'detailed', slots: [] },
+      targetStates: ['loss', 'loss', 'loss', 'loss'],
+      lockedBases: [0, 1].map(() => ({ slots: [
+        { locked: false },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+      ] })),
+      simulationOptions: { seed: 'cached-damage-bound', sampleCount: 8 },
+      nodeBudget: Infinity,
+      simulationWorkBudget: Infinity,
+      maxResults: 1,
+    });
+
+    expect(result.search).toEqual(expect.objectContaining({
+      status: 'optimal',
+      provenOptimal: true,
+    }));
+    expect(result.search.damageUpperBoundEvaluations).toBe(
+      result.search.solverStats.candidatesByBase.reduce((total, count) => total + count, 0),
+    );
   });
 
   test('does not grant a free land-recon modifier to detailed damage bounds', () => {
@@ -715,9 +974,9 @@ describe('LBAS optimizer MVP', () => {
     expect(result.search).toEqual(expect.objectContaining({
       status: 'optimal',
       provenOptimal: true,
-      candidatesEvaluated: 1,
-      simulationSamplesEvaluated: 1,
     }));
+    expect(result.search.damageUpperBoundEvaluations).toBeLessThan(equipment.length);
+    expect(result.search.candidatesEvaluated).toBeLessThan(equipment.length);
     expect(result.results[0].bases[0].loadout.filter(Boolean).map((item) => item.instanceId))
       .toEqual(['plain-0', 'plain-1', 'plain-2', 'plain-3']);
   });
@@ -942,6 +1201,46 @@ describe('LBAS optimizer MVP', () => {
     expect(production.search.status).toBe('optimal');
     expect(production.results.map((plan) => plan.canonicalKey))
       .toEqual(exhaustive.map((plan) => plan.canonicalKey));
+  });
+
+  test('proves detailed rank one through a reusable base frontier', () => {
+    const equipment = distinctFighters(4);
+    const common = {
+      equipment,
+      baseCount: 1,
+      targetRadius: 7,
+      enemy: detailedEnemy(),
+      targetStates: ['parity', 'parity'],
+      simulationOptions: { seed: 'rank-one-frontier', sampleCount: 8 },
+      simulationWorkBudget: Infinity,
+      nodeBudget: Infinity,
+      maxResults: 1,
+    };
+    const production = optimizeLoadouts({
+      ...common,
+      lockedBases: [{ slots: [
+        { locked: false },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+      ] }],
+    });
+    const exhaustive = equipment.flatMap((item) => optimizeLoadouts({
+      ...common,
+      lockedBases: [{ slots: [
+        { plane: item, locked: true },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+      ] }],
+    }).results).sort(comparePlansForSort);
+
+    expect(production.search).toMatchObject({
+      status: 'optimal',
+      provenOptimal: true,
+      backend: 'detailed-frontier',
+    });
+    expect(production.results[0].canonicalKey).toBe(exhaustive[0].canonicalKey);
   });
 
   test('does not prune a second-wave target made feasible by first-wave enemy losses', () => {
@@ -1267,6 +1566,141 @@ describe('LBAS optimizer MVP', () => {
     }));
     expect(result.search.nodesExplored).toBeGreaterThan(0);
   });
+
+  test('detailed frontier keeps a candidate that reaches a stricter second wave after losses', () => {
+    const fighter = plane('frontier-second-wave-fighter', {
+      antiAir: 20,
+      radius: 7,
+      role: 'fighter',
+      isLandBased: true,
+    });
+    const attacker = plane('frontier-second-wave-attacker', {
+      antiAir: 10,
+      radius: 7,
+      role: 'attacker',
+      torpedo: 20,
+      bombing: 20,
+      isLandBased: true,
+    });
+    const common = {
+      equipment: [fighter, attacker],
+      baseCount: 1,
+      targetRadius: 7,
+      enemy: detailedEnemy(),
+      targetStates: ['parity', 'superiority'],
+      simulationOptions: { seed: 's48', sampleCount: 1 },
+      simulationWorkBudget: Infinity,
+      nodeBudget: Infinity,
+      maxResults: 1,
+    };
+    const production = optimizeLoadouts({
+      ...common,
+      lockedBases: [{ slots: [
+        { locked: false },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+      ] }],
+    });
+    const exhaustive = [fighter, attacker].flatMap((item) => optimizeLoadouts({
+      ...common,
+      nodeBudget: 100,
+      lockedBases: [{ slots: [
+        { plane: item, locked: true },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+      ] }],
+    }).results).sort(comparePlansForSort);
+
+    expect(production.search).toMatchObject({
+      backend: 'detailed-frontier',
+      status: 'optimal',
+      provenOptimal: true,
+    });
+    expect(production.results[0].canonicalKey).toBe(exhaustive[0].canonicalKey);
+    expect(production.results[0].bases[0].loadout[0].instanceId)
+      .toBe('frontier-second-wave-attacker');
+  });
+
+  test('emits a detailed multi-base seed before spending exact proof nodes', () => {
+    const equipment = [
+      plane('detailed-seed-fighter-1', { antiAir: 14, radius: 7, role: 'fighter' }),
+      plane('detailed-seed-fighter-2', { antiAir: 13, radius: 7, role: 'fighter' }),
+      ...Array.from({ length: 6 }, (_unused, index) => plane(
+        `detailed-seed-attacker-${index}`,
+        {
+          antiAir: 4,
+          radius: 7,
+          role: 'attacker',
+          torpedo: 20 - index,
+          isLandBased: true,
+        },
+      )),
+    ];
+    let cancel = false;
+
+    const result = optimizeLoadouts({
+      equipment,
+      baseCount: 2,
+      targetRadius: 7,
+      enemy: detailedEnemy(),
+      targetStates: ['parity', 'parity', 'parity', 'parity'],
+      simulationOptions: { seed: 'detailed-seed', sampleCount: 2 },
+      maxResults: 1,
+      nodeBudget: Infinity,
+      simulationWorkBudget: Infinity,
+      isCancelled: () => cancel,
+      onIncumbent: () => {
+        cancel = true;
+      },
+    });
+
+    expect(result.results[0].allWaveTargetFulfillmentProbability).toBeGreaterThan(0);
+    expect(result.search).toEqual(expect.objectContaining({
+      status: 'cancelled',
+      provenOptimal: false,
+      nodesExplored: 0,
+    }));
+  });
+
+  test('derives later-base air constraints from fixed-sample remaining enemy air', () => {
+    const equipment = [
+      plane('dynamic-air-fighter-1', { antiAir: 14, radius: 7, role: 'fighter' }),
+      plane('dynamic-air-fighter-2', { antiAir: 13, radius: 7, role: 'fighter' }),
+      ...Array.from({ length: 6 }, (_unused, index) => plane(
+        `dynamic-air-attacker-${index}`,
+        {
+          antiAir: 4,
+          radius: 7,
+          role: 'attacker',
+          torpedo: 20 - index,
+          isLandBased: true,
+        },
+      )),
+    ];
+    const result = optimizeLoadouts({
+      equipment,
+      baseCount: 2,
+      targetRadius: 7,
+      enemy: detailedEnemy(),
+      targetStates: ['parity', 'parity', 'parity', 'parity'],
+      simulationOptions: { seed: 'dynamic-air-bound', sampleCount: 8 },
+      nodeBudget: Infinity,
+      simulationWorkBudget: Infinity,
+      maxResults: 1,
+    });
+
+    expect(result.search).toEqual(expect.objectContaining({
+      status: 'optimal',
+      provenOptimal: true,
+    }));
+    expect(result.search.dynamicAirBoundEvaluations).toBeGreaterThan(0);
+    expect(result.search.prefixDamageBoundEvaluations).toBeGreaterThan(0);
+    expect(result.results[0].allWaveTargetFulfillmentProbability).toBe(1);
+    expect(result.results[0].bases.some((base) => base.fighterCount > 0)).toBe(true);
+  });
+
 });
 
 /** Creates a legacy optimizer fixture with explicit aircraft capabilities. */

@@ -25,6 +25,39 @@ function createCommonRandom(seed) {
     commonRandomNumber(seed, sample, wave, side, slot, draw);
 }
 
+/** Precomputes each non-sample coordinate across a fixed Monte Carlo sample set. */
+function createFixedSampleRandom(seed, sampleCount, source = commonRandomNumber) {
+  const count = Math.max(1, Math.floor(Number(sampleCount) || 0));
+  const waves = new Map();
+
+  return function fixedSampleRandom(sample, wave, side, slot, draw) {
+    let sides = waves.get(wave);
+    if (!sides) {
+      sides = new Map();
+      waves.set(wave, sides);
+    }
+    let slots = sides.get(side);
+    if (!slots) {
+      slots = new Map();
+      sides.set(side, slots);
+    }
+    let draws = slots.get(slot);
+    if (!draws) {
+      draws = new Map();
+      slots.set(slot, draws);
+    }
+    let values = draws.get(draw);
+    if (!values) {
+      values = new Float64Array(count);
+      for (let sampleIndex = 0; sampleIndex < count; sampleIndex += 1) {
+        values[sampleIndex] = source(seed, sampleIndex, wave, side, slot, draw);
+      }
+      draws.set(draw, values);
+    }
+    return values[sample];
+  };
+}
+
 /** Hashes a length-delimited coordinate tuple to a stable unsigned 64-bit key. */
 function coordinateKey64(seed, sample, wave, side, slot, draw) {
   const serialized = [seed, sample, wave, side, slot, draw]
@@ -66,6 +99,7 @@ module.exports = {
   commonRandomNumber,
   coordinateKey64,
   createCommonRandom,
+  createFixedSampleRandom,
   createSeededRandom,
   hashString64,
   splitMix64,
