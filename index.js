@@ -82,6 +82,9 @@ const FALLBACK_ZH_CN = {
   equipment: '装备',
   lock: '锁定',
   proficiency: '熟练',
+  optimizerProficiency: '计算熟练度',
+  proficiencyLost: '默认跳海',
+  proficiencyMax: '刷熟练度',
   baseSummary: '本队制空/半径/伤害',
   baseColumn: '基地',
   enemyShipName: '敌舰名',
@@ -223,6 +226,7 @@ class LbasOptimizerPanel extends React.Component {
       },
       equipmentBlacklistOpen: false,
       equipmentBlacklistQuery: '',
+      optimizerProficiencyMode: 'lost',
     };
     this.customEnemyDraft = cloneEnemy(this.state.simulator.enemy);
     this.searchRunner = props.searchRunner || null;
@@ -262,7 +266,10 @@ class LbasOptimizerPanel extends React.Component {
     }
 
     const simulator = normalizeSimulatorState(this.state.simulator);
-    const optimizerInput = simulatorToOptimizerInput(simulator);
+    const optimizerInput = applyOptimizerProficiencyToInput(
+      simulatorToOptimizerInput(simulator),
+      this.state.optimizerProficiencyMode,
+    );
     const equipmentAdapterOptions = { noro6Master: this.state.noro6Master };
     const ownedEquipment = extractOwnedPlanes(poiState, equipmentAdapterOptions);
     const unfilteredEquipment = extractOptimizationPlanes(poiState, {
@@ -281,7 +288,10 @@ class LbasOptimizerPanel extends React.Component {
     const equipment = filterOptimizationEquipment(unfilteredEquipment, {
       ...equipmentFilters,
       lockedInstanceIds: lockedInstanceIds(simulator),
-    });
+    }).map((plane) => planeWithOptimizerProficiency(
+      plane,
+      this.state.optimizerProficiencyMode,
+    ));
     const searchOptions = {
       ...optimizerInput,
       equipment,
@@ -673,6 +683,22 @@ class LbasOptimizerPanel extends React.Component {
     }));
   };
 
+  updateOptimizerProficiencyMode = (mode) => {
+    const optimizerProficiencyMode = mode === 'max' ? 'max' : 'lost';
+    if (optimizerProficiencyMode === this.state.optimizerProficiencyMode) return;
+    this.searchGeneration += 1;
+    this.searchRunner?.cancel();
+    this.setState({
+      optimizerProficiencyMode,
+      messages: [],
+      results: [],
+      search: null,
+      isSearching: false,
+      searchPhase: null,
+      searchProgress: null,
+    });
+  };
+
   updateEquipmentFilters = (updater) => {
     const catalogEquipment = this.currentOptimizationEquipment(true);
     const current = effectiveEquipmentFilters(this.state.equipmentFilters, catalogEquipment);
@@ -868,6 +894,7 @@ class LbasOptimizerPanel extends React.Component {
       }),
       h(OptimizerPanel, {
         candidateMode: simulator.candidateMode,
+        optimizerProficiencyMode: this.state.optimizerProficiencyMode,
         combatContext: simulator.combatContext,
         equipmentCount: this.state.equipmentCount || ownedEquipment.length,
         theoreticalCount: this.state.isSearching
@@ -884,6 +911,7 @@ class LbasOptimizerPanel extends React.Component {
         equipmentBlacklistOpen: this.state.equipmentBlacklistOpen,
         equipmentBlacklistQuery: this.state.equipmentBlacklistQuery,
         onCandidateModeChange: this.updateCandidateMode,
+        onOptimizerProficiencyModeChange: this.updateOptimizerProficiencyMode,
         onExcludeCarrierAircraftChange: this.updateExcludeCarrierAircraft,
         onEquipmentBlacklistOpen: () => this.setState({ equipmentBlacklistOpen: true }),
         onEquipmentBlacklistClose: () => this.setState({ equipmentBlacklistOpen: false }),
@@ -909,6 +937,30 @@ function readPoiState() {
   }
   const poiWindow = /** @type {Window & { getStore?: () => any }} */ (window);
   return typeof poiWindow.getStore === 'function' ? poiWindow.getStore() : null;
+}
+
+/** Applies the optimizer-wide visible proficiency assumption to one aircraft copy. */
+function planeWithOptimizerProficiency(plane, mode) {
+  if (!plane) return null;
+  return {
+    ...plane,
+    proficiency: mode === 'max' ? 7 : 0,
+    internalProficiency: undefined,
+  };
+}
+
+/** Applies the same assumption to every locked aircraft already present in search input. */
+function applyOptimizerProficiencyToInput(input, mode) {
+  return {
+    ...input,
+    lockedBases: (input.lockedBases || []).map((base) => ({
+      ...base,
+      slots: (base.slots || []).map((slot) => ({
+        ...slot,
+        plane: planeWithOptimizerProficiency(slot.plane, mode),
+      })),
+    })),
+  };
 }
 
 function effectiveEquipmentFilters(filters, equipment) {
@@ -1385,6 +1437,23 @@ const styles = {
     flexWrap: 'wrap',
     gap: 10,
     marginBottom: 8,
+  },
+  segmentedControl: {
+    border: border,
+    borderRadius: 4,
+    display: 'inline-flex',
+    overflow: 'hidden',
+  },
+  segmentButton: {
+    background: 'transparent',
+    border: 0,
+    cursor: 'pointer',
+    fontSize: 12,
+    padding: '5px 9px',
+  },
+  segmentButtonActive: {
+    background: 'rgba(33, 150, 243, 0.18)',
+    fontWeight: 600,
   },
   searchMeta: {
     margin: '6px 0',

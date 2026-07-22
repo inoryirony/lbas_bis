@@ -10,6 +10,7 @@ const h = React.createElement;
 function OptimizerPanel(props) {
   const {
     candidateMode,
+    optimizerProficiencyMode,
     equipmentCount,
     theoreticalCount,
     messages,
@@ -24,6 +25,7 @@ function OptimizerPanel(props) {
     equipmentBlacklistOpen,
     equipmentBlacklistQuery,
     onCandidateModeChange,
+    onOptimizerProficiencyModeChange,
     onExcludeCarrierAircraftChange,
     onEquipmentBlacklistOpen,
     onEquipmentBlacklistClose,
@@ -69,6 +71,37 @@ function OptimizerPanel(props) {
           onChange: () => onCandidateModeChange('theoretical'),
         }),
         t('includeMissing'),
+      ),
+      h('span', { style: styles.meta }, t('optimizerProficiency')),
+      h(
+        'div',
+        { role: 'group', 'aria-label': t('optimizerProficiency'), style: styles.segmentedControl },
+        h(
+          'button',
+          {
+            type: 'button',
+            'aria-pressed': optimizerProficiencyMode !== 'max',
+            onClick: () => onOptimizerProficiencyModeChange('lost'),
+            style: {
+              ...styles.segmentButton,
+              ...(optimizerProficiencyMode !== 'max' ? styles.segmentButtonActive : {}),
+            },
+          },
+          t('proficiencyLost'),
+        ),
+        h(
+          'button',
+          {
+            type: 'button',
+            'aria-pressed': optimizerProficiencyMode === 'max',
+            onClick: () => onOptimizerProficiencyModeChange('max'),
+            style: {
+              ...styles.segmentButton,
+              ...(optimizerProficiencyMode === 'max' ? styles.segmentButtonActive : {}),
+            },
+          },
+          t('proficiencyMax'),
+        ),
       ),
       h(
         'button',

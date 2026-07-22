@@ -71,6 +71,78 @@ describe('plugin entry', () => {
     expect(start.mock.calls[0][0].equipment.map((plane) => plane.instanceId)).toEqual(['land-1']);
   });
 
+  test('defaults optimizer candidates and locked planes to lost proficiency', () => {
+    const start = vi.fn();
+    const panel = new plugin.reactClass({
+      searchRunner: { start, cancel: vi.fn(() => true) },
+      readPoiState: () => equipmentPoiState(),
+    });
+    panel.setState = (updater) => {
+      const patch = typeof updater === 'function' ? updater(panel.state) : updater;
+      Object.assign(panel.state, patch);
+    };
+    panel.state.equipmentFilters = {
+      excludeCarrierAircraft: false,
+      blacklistedMasterIds: [],
+      blacklistedEquipTypes: [],
+    };
+    panel.updateSlotPlane(0, 0, 'land-1');
+    panel.updateSlotLock(0, 0, true);
+
+    const lostButton = findNodes(panel.render(), (node) =>
+      node.type === 'button' && collectText(node) === '默认跳海')[0];
+    expect(lostButton.props['aria-pressed']).toBe(true);
+    panel.runOptimizer();
+
+    const input = start.mock.calls[0][0];
+    expect(panel.state.optimizerProficiencyMode).toBe('lost');
+    expect(input.equipment.every((plane) =>
+      plane.proficiency === 0 && plane.internalProficiency === undefined)).toBe(true);
+    expect(input.lockedBases[0].slots[0].plane).toMatchObject({
+      instanceId: 'land-1',
+      proficiency: 0,
+      internalProficiency: undefined,
+    });
+  });
+
+  test('uses maximum proficiency for optimizer and invalidates an old search on mode change', () => {
+    const start = vi.fn();
+    const cancel = vi.fn(() => true);
+    const panel = new plugin.reactClass({
+      searchRunner: { start, cancel },
+      readPoiState: () => equipmentPoiState(),
+    });
+    panel.setState = (updater) => {
+      const patch = typeof updater === 'function' ? updater(panel.state) : updater;
+      Object.assign(panel.state, patch);
+    };
+    panel.updateSlotPlane(0, 0, 'land-1');
+    panel.updateSlotLock(0, 0, true);
+    const maxButton = findNodes(panel.render(), (node) =>
+      node.type === 'button' && collectText(node) === '刷熟练度')[0];
+    expect(maxButton.props['aria-pressed']).toBe(false);
+    cancel.mockClear();
+    panel.state.results = [{ totalDamagePower: 1 }];
+    panel.state.search = { status: 'optimal', provenOptimal: true };
+    panel.state.isSearching = true;
+
+    maxButton.props.onClick();
+    expect(panel.state.results).toEqual([]);
+    expect(panel.state.search).toBeNull();
+    panel.runOptimizer();
+
+    const input = start.mock.calls[0][0];
+    expect(cancel).toHaveBeenCalled();
+    expect(panel.state.optimizerProficiencyMode).toBe('max');
+    expect(input.equipment.every((plane) =>
+      plane.proficiency === 7 && plane.internalProficiency === undefined)).toBe(true);
+    expect(input.lockedBases[0].slots[0].plane).toMatchObject({
+      instanceId: 'land-1',
+      proficiency: 7,
+      internalProficiency: undefined,
+    });
+  });
+
   test('rejects a newly selected blacklisted plane but preserves one selected earlier', () => {
     const panel = new plugin.reactClass({ readPoiState: () => equipmentPoiState() });
     panel.setState = (updater) => {
