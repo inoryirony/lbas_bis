@@ -231,7 +231,19 @@ describe('CLI map scenario hydration', () => {
         dataSource: 'automatic',
         areaId: 65,
         nodeId: 'M',
+        battleType: 2,
+        formation: 13,
         manualEnemyAir: 42,
+        ships: [expect.objectContaining({
+          sourceShipIndex: 0,
+          fleet: 'main',
+          fleetShipIndex: 0,
+          isFlagship: true,
+          type: 11,
+          hp: 350,
+          armor: 180,
+          speed: 0,
+        })],
         slots: [expect.objectContaining({ equipmentMasterId: 1601 })],
       },
     });
@@ -371,12 +383,21 @@ function mapDataFixture() {
   return {
     source: 'test',
     cells: {
-      patterns: [{ a: 65, n: 'M', l: 0, e: [1], r: [5], d: 'boss', t: 0, f: 1 }],
+      patterns: [{ a: 65, n: 'M', l: 0, e: [1], r: [5], d: 'boss', t: 2, f: 13 }],
     },
     master: {
       maps: [{ area: 65, name: '6-5', boss: ['M'] }],
       worlds: [{ world: 6, name: 'World 6' }],
-      enemies: [{ id: 1501, name: 'Test carrier', slots: [18], items: [1601] }],
+      enemies: [{
+        id: 1501,
+        name: 'Test carrier',
+        type: 11,
+        hp: 350,
+        armor: 180,
+        speed: 0,
+        slots: [18],
+        items: [1601],
+      }],
       items: [{ id: 1601, name: 'Test fighter', type: 6, antiAir: 10 }],
     },
   };

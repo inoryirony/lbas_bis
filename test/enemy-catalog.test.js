@@ -115,6 +115,39 @@ describe('enemy ship catalog', () => {
     expect(first[0].instanceId).not.toBe(second[0].instanceId);
     expect(new Set([...first, ...second].map((slot) => slot.instanceId)).size).toBe(2);
   });
+
+  test('uses official combat stats and fills absent fields from noro6 master data', () => {
+    const poiState = samplePoiState();
+    poiState.const.$ships[1764] = {
+      ...poiState.const.$ships[1764],
+      api_taik: [500, 500],
+      api_souk: [180, 180],
+      api_soku: 0,
+    };
+    const catalog = buildEnemyCatalog(poiState, {
+      noro6Master: {
+        enemies: [
+          { id: 1764, type: 99, hp: 499, armor: 179, speed: 1, slots: [], items: [] },
+          { id: 1776, type: 3, hp: 220, armor: 110, speed: 1, slots: [], items: [] },
+        ],
+        items: [],
+      },
+      abyssalData: {},
+    });
+
+    expect(catalog.byId.get(1764)).toMatchObject({
+      type: 11,
+      hp: 500,
+      armor: 180,
+      speed: 0,
+    });
+    expect(catalog.byId.get(1776)).toMatchObject({
+      type: 3,
+      hp: 220,
+      armor: 110,
+      speed: 1,
+    });
+  });
 });
 
 function samplePoiState() {

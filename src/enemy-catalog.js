@@ -50,12 +50,18 @@ function buildEnemyCatalog(poiState = {}, options = {}) {
 function buildCatalogShip(master, shipTypes, equips, sources, warnings) {
   const id = Number(master.api_id);
   const typeMaster = shipTypes?.[master.api_stype] || shipTypes?.[String(master.api_stype)] || {};
+  const noroEnemy = sources.noroEnemies.get(id);
+  const album = sources.abyssalData?.[id] || sources.abyssalData?.[String(id)];
   const base = {
     id,
     name: master.api_name || `Enemy ${id}`,
     reading: master.api_yomi || '',
     typeId: Number(master.api_stype) || 0,
     typeName: typeMaster.api_name || typeMaster.name || '',
+    type: combatStat(master.api_stype, noroEnemy?.type),
+    hp: combatStat(master.api_taik, noroEnemy?.hp),
+    armor: combatStat(master.api_souk, noroEnemy?.armor),
+    speed: combatStat(master.api_soku, noroEnemy?.speed),
   };
   const officialSlots = Array.isArray(master.api_maxeq) ? master.api_maxeq : null;
   const officialEquips = firstArray(
@@ -63,8 +69,6 @@ function buildCatalogShip(master, shipTypes, equips, sources, warnings) {
     master.api_slotitems,
     master.api_equip,
   );
-  const noroEnemy = sources.noroEnemies.get(id);
-  const album = sources.abyssalData?.[id] || sources.abyssalData?.[String(id)];
   let slotSizes = null;
   let equipmentIds = null;
   let source = null;
@@ -139,6 +143,17 @@ function buildCatalogShip(master, shipTypes, equips, sources, warnings) {
       0,
     ),
   };
+}
+
+/** Uses an official scalar/range first and a normalized noro6 value as fallback. */
+function combatStat(officialValue, fallbackValue) {
+  return finiteStat(officialValue) ?? finiteStat(fallbackValue);
+}
+
+function finiteStat(value) {
+  const candidate = Array.isArray(value) ? value[0] : value;
+  const number = Number(candidate);
+  return candidate != null && Number.isFinite(number) ? number : null;
 }
 
 function isAircraftEquipment(equipment) {

@@ -478,8 +478,16 @@ class LbasOptimizerPanel extends React.Component {
             id: selected.id,
             name: selected.name,
             typeName: selected.typeName,
+            type: selected.type,
+            hp: selected.hp,
+            armor: selected.armor,
+            speed: selected.speed,
             airPower: selected.airPower,
             dataStatus: selected.dataStatus,
+            sourceShipIndex: previous?.sourceShipIndex ?? shipIndex,
+            fleet: previous?.fleet,
+            fleetShipIndex: previous?.fleetShipIndex,
+            isFlagship: previous?.isFlagship,
           }
           : { id: null, name: '', airPower: 0, dataStatus: null }
         : ship);
@@ -548,6 +556,8 @@ class LbasOptimizerPanel extends React.Component {
           areaId: formation.area,
           nodeId: formation.node,
           source: formation.source,
+          battleType: formation.battleType,
+          formation: formation.formation,
           manualEnemyAir: Number.isFinite(Number(formation.enemyAir))
             ? Math.max(0, Number(formation.enemyAir))
             : formation.ships.reduce((total, ship) => total + (Number(ship.airPower) || 0), 0),

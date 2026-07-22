@@ -152,6 +152,8 @@ function createDefaultEnemy() {
     manualEnemyAir: DEFAULT_ENEMY_AIR,
     areaId: null,
     nodeId: null,
+    battleType: null,
+    formation: null,
     isAirRaidCell: false,
     stage2Defense: null,
     slots: [],
@@ -210,6 +212,8 @@ function normalizeEnemy(enemy = {}) {
     areaId: enemy.areaId ?? null,
     nodeId: enemy.nodeId ?? null,
     source: enemy.source ?? null,
+    battleType: optionalNonNegativeInteger(enemy.battleType),
+    formation: optionalNonNegativeInteger(enemy.formation),
     isAirRaidCell: enemy.isAirRaidCell === true,
     stage2Defense: enemy.stage2Defense?.modeled === true
       ? enemy.stage2Defense
@@ -364,6 +368,12 @@ function positiveNumber(value, fallback) {
 function nonNegativeNumber(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? number : fallback;
+}
+
+function optionalNonNegativeInteger(value) {
+  if (value == null) return null;
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 0 ? number : null;
 }
 
 module.exports = {

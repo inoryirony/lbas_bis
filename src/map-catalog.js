@@ -92,6 +92,7 @@ function normalizeFormation(pattern, sourceIndex, formationIndex, enemiesById, i
   const enemyIds = (pattern.e || []).map((value) => Number(value) + 1500);
   const warnings = [];
   const ships = enemyIds.map((enemyId, sourceShipIndex) => {
+    const position = enemyFleetPosition(pattern.t, sourceShipIndex);
     const master = enemiesById.get(enemyId);
     if (!master) {
       warnings.push({ code: 'MISSING_NORO6_ENEMY_MASTER', enemyId, sourceShipIndex });
@@ -102,6 +103,7 @@ function normalizeFormation(pattern, sourceIndex, formationIndex, enemiesById, i
         dataStatus: 'missing',
         source: 'noro6',
         slots: [],
+        ...position,
       };
     }
     const count = Math.min(master.slots?.length || 0, master.items?.length || 0);
@@ -144,6 +146,11 @@ function normalizeFormation(pattern, sourceIndex, formationIndex, enemiesById, i
         : 'complete',
       source: 'noro6',
       slots,
+      type: finiteNumberOrNull(master.type),
+      hp: finiteNumberOrNull(master.hp),
+      armor: finiteNumberOrNull(master.armor),
+      speed: finiteNumberOrNull(master.speed),
+      ...position,
     };
   });
   const enemySlots = ships.flatMap((ship) => ship.slots);
@@ -180,6 +187,24 @@ function normalizeFormation(pattern, sourceIndex, formationIndex, enemiesById, i
     warnings,
     source: 'noro6',
   };
+}
+
+/** Identifies main/escort positions used by combined enemy fleets. */
+function enemyFleetPosition(battleType, sourceShipIndex) {
+  const escort = Number(battleType) === 2 && sourceShipIndex >= 6;
+  const fleetShipIndex = escort ? sourceShipIndex - 6 : sourceShipIndex;
+  return {
+    sourceShipIndex,
+    fleet: escort ? 'escort' : 'main',
+    fleetShipIndex,
+    isFlagship: fleetShipIndex === 0,
+  };
+}
+
+/** Preserves a numeric master field while keeping absent data explicit. */
+function finiteNumberOrNull(value) {
+  const number = Number(value);
+  return value != null && Number.isFinite(number) ? number : null;
 }
 
 function isAircraftEquipment(item) {

@@ -96,6 +96,58 @@ describe('noro6-compatible map catalog', () => {
     expect(catalog.formations(65, 'M', 0)[0].stage2Defense)
       .toMatchObject({ modeled: true, formation: 1, isUnion: false });
   });
+
+  test('preserves combat stats and combined-fleet positions for every enemy ship', () => {
+    const enemies = Array.from({ length: 7 }, (_, index) => ({
+      id: 1501 + index,
+      name: `Enemy ${index + 1}`,
+      type: 10 + index,
+      hp: 100 + index,
+      armor: 70 + index,
+      speed: index % 2,
+      slots: [],
+      items: [],
+    }));
+    const catalog = buildMapCatalog({
+      cells: {
+        patterns: [{ a: 65, n: 'M', l: 0, t: 2, f: 13, r: [5], e: [1, 2, 3, 4, 5, 6, 7] }],
+      },
+      master: {
+        maps: [{ area: 65, name: '6-5', boss: ['M'] }],
+        worlds: [{ world: 6, name: 'World 6' }],
+        enemies,
+        items: [],
+      },
+    });
+
+    const formation = catalog.formations(65, 'M', 0)[0];
+    expect(formation.ships[0]).toMatchObject({
+      sourceShipIndex: 0,
+      fleet: 'main',
+      fleetShipIndex: 0,
+      isFlagship: true,
+      type: 10,
+      hp: 100,
+      armor: 70,
+      speed: 0,
+    });
+    expect(formation.ships[5]).toMatchObject({
+      sourceShipIndex: 5,
+      fleet: 'main',
+      fleetShipIndex: 5,
+      isFlagship: false,
+    });
+    expect(formation.ships[6]).toMatchObject({
+      sourceShipIndex: 6,
+      fleet: 'escort',
+      fleetShipIndex: 0,
+      isFlagship: true,
+      type: 16,
+      hp: 106,
+      armor: 76,
+      speed: 0,
+    });
+  });
 });
 
 function realSubset() {

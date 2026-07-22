@@ -762,6 +762,8 @@ describe('plugin entry', () => {
       area: 65,
       node: 'M',
       source: 'test',
+      battleType: 2,
+      formation: 13,
       radius: [5],
       ships,
       enemySlots: [],
@@ -769,6 +771,10 @@ describe('plugin entry', () => {
 
     expect(panel.state.simulator.enemy.ships).toHaveLength(12);
     expect(panel.state.simulator.enemy.ships.at(-1)).toMatchObject({ id: 1511 });
+    expect(simulatorToOptimizerInput(panel.state.simulator).enemy).toMatchObject({
+      battleType: 2,
+      formation: 13,
+    });
   });
 
   test('localizes the worker cancellation message', () => {
@@ -793,6 +799,10 @@ describe('plugin entry', () => {
       id: 2000,
       name: 'Enriched enemy',
       typeName: 'Carrier',
+      type: 11,
+      hp: 500,
+      armor: 180,
+      speed: 0,
       airPower: 80,
       dataStatus: 'complete',
     };
@@ -814,7 +824,13 @@ describe('plugin entry', () => {
 
     panel.updateEnemyShip(0, selected.id);
 
-    expect(panel.state.simulator.enemy.ships[0]).toMatchObject({ id: 2000 });
+    expect(panel.state.simulator.enemy.ships[0]).toMatchObject({
+      id: 2000,
+      type: 11,
+      hp: 500,
+      armor: 180,
+      speed: 0,
+    });
     expect(panel.state.simulator.enemy.slots).toEqual([
       expect.objectContaining({ instanceId: 'enriched-slot', sourceShipIndex: 0 }),
     ]);
