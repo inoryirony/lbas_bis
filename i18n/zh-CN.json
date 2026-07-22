@@ -130,5 +130,12 @@
   "difficulty_1": "丁",
   "difficulty_2": "丙",
   "difficulty_3": "乙",
-  "difficulty_4": "甲"
+  "difficulty_4": "甲",
+  "excludeCarrierAircraft": "不使用舰载机",
+  "equipmentBlacklist": "装备黑名单",
+  "searchEquipment": "搜索装备名称或 Master ID",
+  "restoreDefaults": "恢复默认",
+  "clearBlacklist": "清空黑名单",
+  "noMatchingEquipment": "没有匹配的装备",
+  "close": "关闭"
 }

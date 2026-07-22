@@ -305,6 +305,8 @@ function createDetailedScoreContext(options = {}) {
     combatContext: options.combatContext,
     baseCache: new Map(),
     planeCurveCache: new Map(),
+    concentratedPrefixTrajectoryCache: createConcentratedSegmentCache(),
+    concentratedContinuationTrajectoryCaches: new WeakMap(),
   };
 }
 
@@ -373,13 +375,30 @@ function evaluateDetailedPlanScore(options = {}) {
     (total, record) => total + record.maximumDamage,
     0,
   );
+  const initialEnemySlotsBySample = Array.isArray(options.initialEnemySlotsBySample)
+    ? options.initialEnemySlotsBySample
+    : null;
+  if (canReuseConcentratedPrefixTrajectory({
+    bases,
+    baseIndexOffset,
+    dispatchMode,
+    initialEnemySlotsBySample,
+    captureFinalEnemySlots: options.captureFinalEnemySlots,
+    incumbentScore: options.incumbentScore,
+    disableConcentratedSegmentReuse: options.disableConcentratedSegmentReuse,
+  })) {
+    return evaluateReusableConcentratedSegment({
+      base: bases[0],
+      context,
+      baseIndexOffset,
+      initialEnemySlotsBySample,
+      captureFinalEnemySlots: options.captureFinalEnemySlots,
+    });
+  }
   let fulfilledSamples = 0;
   let totalDamage = 0;
   const maximumFinalEnemyAir = enemies.map(() => 0);
   const finalEnemySlotsBySample = options.captureFinalEnemySlots ? [] : null;
-  const initialEnemySlotsBySample = Array.isArray(options.initialEnemySlotsBySample)
-    ? options.initialEnemySlotsBySample
-    : null;
 
   for (let sample = 0; sample < sampleCount; sample += 1) {
     const ownSlots = bases.map((base) => Float64Array.from(base.initialSlots));
@@ -494,6 +513,223 @@ function evaluateDetailedPlanScore(options = {}) {
     maximumFinalEnemyAir,
     ...(finalEnemySlotsBySample ? { finalEnemySlotsBySample } : {}),
   };
+}
+
+/** Reuses exact concentrated two-wave enemy transitions for equal initial air power. */
+function evaluateReusableConcentratedSegment({
+  base,
+  context,
+  baseIndexOffset,
+  initialEnemySlotsBySample,
+  captureFinalEnemySlots,
+}) {
+  const {
+    sampleCount,
+    seed,
+    fixedRandom,
+    enemies,
+    targetRanks,
+    concentratedPrefixTrajectoryCache,
+    concentratedContinuationTrajectoryCaches,
+  } = context;
+  const ownSlots = base.initialSlots;
+  const ownAir = numericBaseAirPower(base, ownSlots, false);
+  const hasPlane = baseHasPlane(base, ownSlots);
+  const airKey = `${baseIndexOffset}:${ownAir}:${hasPlane ? 1 : 0}`;
+  let trajectoryCache = concentratedPrefixTrajectoryCache;
+  if (initialEnemySlotsBySample) {
+    trajectoryCache = concentratedContinuationTrajectoryCaches.get(initialEnemySlotsBySample);
+    if (!trajectoryCache) {
+      trajectoryCache = createConcentratedSegmentCache();
+      concentratedContinuationTrajectoryCaches.set(initialEnemySlotsBySample, trajectoryCache);
+    }
+  }
+  let trajectory = trajectoryCache.byAir.get(airKey);
+  let enemyTrajectorySimulations = 0;
+  let enemyTransitionSimulations = 0;
+  let stateSignatureProbes = 0;
+
+  if (!trajectory) {
+    const enemy = enemies[0];
+    const firstWaveIndex = baseIndexOffset * 2;
+    const secondWaveIndex = firstWaveIndex + 1;
+    const firstWaveStateRanks = Array(sampleCount);
+    for (let sample = 0; sample < sampleCount; sample += 1) {
+      const enemySlots = Float64Array.from(
+        initialEnemySlotsBySample?.[sample]?.[0] || enemy.initialSlots,
+      );
+      firstWaveStateRanks[sample] = numericAirStateRank(
+        ownAir,
+        numericEnemyAirPower(enemy, enemySlots),
+        hasPlane,
+      );
+    }
+    stateSignatureProbes = 1;
+    const firstWaveSignature = `${baseIndexOffset}:${firstWaveStateRanks.join(',')}`;
+    let firstWaveSlotsBySample = trajectoryCache.afterFirstWave.get(firstWaveSignature);
+    if (!firstWaveSlotsBySample) {
+      firstWaveSlotsBySample = firstWaveStateRanks.map((stateRank, sample) => {
+        const enemySlots = Float64Array.from(
+          initialEnemySlotsBySample?.[sample]?.[0] || enemy.initialSlots,
+        );
+        applyNumericEnemyStageOne(
+          enemy,
+          enemySlots,
+          airStateKeyForRank(stateRank),
+          fixedRandom,
+          sample,
+          firstWaveIndex,
+        );
+        return Array.from(enemySlots);
+      });
+      trajectoryCache.afterFirstWave.set(firstWaveSignature, firstWaveSlotsBySample);
+      enemyTransitionSimulations += 1;
+    }
+
+    const secondWaveStateRanks = firstWaveSlotsBySample.map((slots) =>
+      numericAirStateRank(
+        ownAir,
+        numericEnemyAirPower(enemy, slots),
+        hasPlane,
+      ));
+    const stateSignature = `${firstWaveSignature};${secondWaveStateRanks.join(',')}`;
+    trajectory = trajectoryCache.byState.get(stateSignature);
+    if (!trajectory) {
+      const finalEnemySlotsBySample = [];
+      const secondWaveStateKeys = Array(sampleCount);
+      let fulfilledSamples = 0;
+      let maximumFinalEnemyAir = 0;
+      for (let sample = 0; sample < sampleCount; sample += 1) {
+        const enemySlots = Float64Array.from(firstWaveSlotsBySample[sample]);
+        const secondWaveStateKey = airStateKeyForRank(secondWaveStateRanks[sample]);
+        secondWaveStateKeys[sample] = secondWaveStateKey;
+        applyNumericEnemyStageOne(
+          enemy,
+          enemySlots,
+          secondWaveStateKey,
+          fixedRandom,
+          sample,
+          secondWaveIndex,
+        );
+        maximumFinalEnemyAir = Math.max(
+          maximumFinalEnemyAir,
+          numericEnemyAirPower(enemy, enemySlots),
+        );
+        finalEnemySlotsBySample.push([Array.from(enemySlots)]);
+        if (firstWaveStateRanks[sample] >= targetRanks[firstWaveIndex] &&
+            secondWaveStateRanks[sample] >= targetRanks[secondWaveIndex]) {
+          fulfilledSamples += 1;
+        }
+      }
+      trajectory = {
+        allWaveTargetFulfillmentProbability: fulfilledSamples / sampleCount,
+        finalEnemySlotsBySample,
+        maximumFinalEnemyAir: [maximumFinalEnemyAir],
+        secondWaveStateKeys,
+        damageContributionTotals: new Map(),
+      };
+      trajectoryCache.byState.set(stateSignature, trajectory);
+      enemyTrajectorySimulations = 1;
+      enemyTransitionSimulations += 1;
+    }
+    trajectoryCache.byAir.set(airKey, trajectory);
+  }
+
+  const firstWaveDamage = numericBaseDamage(base, ownSlots);
+  let totalDamage = firstWaveDamage * sampleCount;
+  let damageContributionSimulations = 0;
+  base.planes.forEach((plane, slotIndex) => {
+    if (!plane) return;
+    const currentSlot = ownSlots[slotIndex];
+    const contributionKey = JSON.stringify([
+      plane.scoreCacheKey,
+      currentSlot,
+      base.lossKeys[slotIndex],
+    ]);
+    let contributionTotal = trajectory.damageContributionTotals.get(contributionKey);
+    if (contributionTotal == null) {
+      contributionTotal = 0;
+      trajectory.secondWaveStateKeys.forEach((stateKey, sample) => {
+        const loss = stateKey === 'none' ? 0 : numericPlayerLoss(
+          stateKey,
+          currentSlot,
+          fixedRandom(
+            sample,
+            baseIndexOffset * 2 + 1,
+            'player',
+            base.lossKeys[slotIndex],
+            0,
+          ),
+          plane.lossModifier,
+        );
+        contributionTotal += plane.damageBySlot[currentSlot - loss] || 0;
+      });
+      trajectory.damageContributionTotals.set(contributionKey, contributionTotal);
+      damageContributionSimulations += 1;
+    }
+    totalDamage += contributionTotal;
+  });
+
+  return {
+    calculationMode: 'detailed',
+    mode: 'detailed',
+    seed,
+    sampleCount,
+    samplesEvaluated: sampleCount,
+    simulationWorkSamples:
+      (stateSignatureProbes + enemyTransitionSimulations +
+        damageContributionSimulations) * sampleCount,
+    enemyTrajectorySimulations,
+    stateSignatureProbes,
+    damageContributionSimulations,
+    allWaveTargetFulfillmentProbability: trajectory.allWaveTargetFulfillmentProbability,
+    expectedDamage: totalDamage / sampleCount,
+    totalDamageAcrossSamples: totalDamage,
+    maximumFinalEnemyAir: trajectory.maximumFinalEnemyAir,
+    ...(captureFinalEnemySlots
+      ? { finalEnemySlotsBySample: trajectory.finalEnemySlotsBySample }
+      : {}),
+  };
+}
+
+function createConcentratedSegmentCache() {
+  return {
+    byAir: new Map(),
+    byState: new Map(),
+    afterFirstWave: new Map(),
+  };
+}
+
+function applyNumericEnemyStageOne(enemy, slots, stateKey, fixedRandom, sample, waveIndex) {
+  if (stateKey === 'none') return;
+  enemy.sortieAntiAir.forEach((_antiAir, slotIndex) => {
+    const before = slots[slotIndex];
+    const constant = ENEMY_STAGE_ONE_CONSTANTS[stateKey];
+    const x = Math.floor(
+      fixedRandom(sample, waveIndex, 'enemy', enemy.instanceIds[slotIndex], 0) *
+      (constant + 1),
+    );
+    const y = Math.floor(
+      fixedRandom(sample, waveIndex, 'enemy', enemy.instanceIds[slotIndex], 1) *
+      (constant + 1),
+    );
+    const loss = Math.min(before, Math.floor(before * (0.65 * x + 0.35 * y) / 10));
+    slots[slotIndex] = Math.max(0, before - loss);
+  });
+}
+
+function canReuseConcentratedPrefixTrajectory(options) {
+  const isCapturedPrefix = options.baseIndexOffset === 0 &&
+    options.initialEnemySlotsBySample == null &&
+    options.captureFinalEnemySlots === true;
+  const isContinuation = options.baseIndexOffset > 0 &&
+    options.initialEnemySlotsBySample != null;
+  return options.dispatchMode === 'concentrated' &&
+    options.disableConcentratedSegmentReuse !== true &&
+    options.bases.length === 1 &&
+    options.bases[0].hasJet === false &&
+    (isCapturedPrefix || isContinuation) &&
+    options.incumbentScore == null;
 }
 
 /**
@@ -850,6 +1086,7 @@ function prepareNumericPlane(plane, damageCoefficient, combatContext, cache) {
   const maximumSlot = Math.max(0, Math.ceil(currentSlotForPlane(plane)));
   const prepared = {
     plane,
+    scoreCacheKey: cacheKey,
     isJet,
     isRecon: plane.isRecon === true || capabilities.isRecon === true,
     isEscortItem: plane.isEscortItem === true,

@@ -20,6 +20,11 @@ const {
 } = require('./src/simulator-state');
 const { calculateSimulatorSummary } = require('./src/simulator-calc');
 const { applyPlanToSimulator } = require('./src/import-plan');
+const {
+  defaultBlacklistedMasterIds,
+  filterOptimizationEquipment,
+  uniqueEquipmentMasters,
+} = require('./src/equipment-filter');
 const SimulatorPanel = require('./src/ui/SimulatorPanel');
 const OptimizerPanel = require('./src/ui/OptimizerPanel');
 
@@ -28,6 +33,7 @@ const PLUGIN_ID = 'lbas_bis';
 const CUSTOM_ENEMY_SHIP_ID = '__custom__';
 const STATE_OPTIONS = ['denial', 'parity', 'superiority', 'supremacy'];
 const INVALID_MULTIPLIER_FIELD = Symbol('invalid-multiplier-field');
+const EQUIPMENT_FILTER_STORAGE_KEY = 'poi-plugin-lbas-bis.equipment-filters.v1';
 
 const FALLBACK_ZH_CN = {
   title: '陆航优化',
@@ -160,11 +166,20 @@ const FALLBACK_ZH_CN = {
   difficulty_2: '丙',
   difficulty_3: '乙',
   difficulty_4: '甲',
+  excludeCarrierAircraft: '不使用舰载机',
+  equipmentBlacklist: '装备黑名单',
+  searchEquipment: '搜索装备名称或 Master ID',
+  restoreDefaults: '恢复默认',
+  clearBlacklist: '清空黑名单',
+  noMatchingEquipment: '没有匹配的装备',
+  close: '关闭',
 };
 
 class LbasOptimizerPanel extends React.Component {
   constructor(props) {
     super(props);
+    this.equipmentFilterStorage = props.settingsStorage || browserStorage();
+    const savedEquipmentFilters = loadEquipmentFilters(this.equipmentFilterStorage);
     this.state = {
       simulator: createEmptySimulatorState(1),
       equipmentCount: 0,
@@ -180,6 +195,12 @@ class LbasOptimizerPanel extends React.Component {
       enemyCatalog: null,
       noro6Master: null,
       mapDataError: null,
+      equipmentFilters: savedEquipmentFilters || {
+        excludeCarrierAircraft: false,
+        blacklistedMasterIds: null,
+      },
+      equipmentBlacklistOpen: false,
+      equipmentBlacklistQuery: '',
     };
     this.customEnemyDraft = cloneEnemy(this.state.simulator.enemy);
     this.searchRunner = props.searchRunner || null;
@@ -221,9 +242,20 @@ class LbasOptimizerPanel extends React.Component {
     const simulator = normalizeSimulatorState(this.state.simulator);
     const optimizerInput = simulatorToOptimizerInput(simulator);
     const ownedEquipment = extractOwnedPlanes(poiState);
-    const equipment = extractOptimizationPlanes(poiState, {
+    const unfilteredEquipment = extractOptimizationPlanes(poiState, {
       includeMissing: simulator.candidateMode === 'theoretical',
       missingCopiesPerMaster: 1,
+    });
+    const equipmentFilters = effectiveEquipmentFilters(
+      this.state.equipmentFilters,
+      extractOptimizationPlanes(poiState, {
+        includeMissing: true,
+        missingCopiesPerMaster: 1,
+      }),
+    );
+    const equipment = filterOptimizationEquipment(unfilteredEquipment, {
+      ...equipmentFilters,
+      lockedInstanceIds: lockedInstanceIds(simulator),
     });
     const searchOptions = {
       ...optimizerInput,
@@ -235,6 +267,7 @@ class LbasOptimizerPanel extends React.Component {
 
     this.setState({
       simulator,
+      equipmentFilters,
       equipmentCount: ownedEquipment.length,
       theoreticalCount: equipment.length,
       messages: [],
@@ -615,6 +648,49 @@ class LbasOptimizerPanel extends React.Component {
     }));
   };
 
+  updateEquipmentFilters = (updater) => {
+    const catalogEquipment = this.currentOptimizationEquipment(true);
+    const current = effectiveEquipmentFilters(this.state.equipmentFilters, catalogEquipment);
+    const equipmentFilters = normalizeEquipmentFilters(updater(current));
+    saveEquipmentFilters(this.equipmentFilterStorage, equipmentFilters);
+    this.searchGeneration += 1;
+    this.searchRunner?.cancel();
+    this.setState({
+      equipmentFilters,
+      messages: [],
+      results: [],
+      search: null,
+      isSearching: false,
+      searchPhase: null,
+      searchProgress: null,
+    });
+  };
+
+  updateExcludeCarrierAircraft = (excludeCarrierAircraft) => {
+    this.updateEquipmentFilters((filters) => ({
+      ...filters,
+      excludeCarrierAircraft: Boolean(excludeCarrierAircraft),
+    }));
+  };
+
+  toggleEquipmentBlacklist = (masterId, checked) => {
+    this.updateEquipmentFilters((filters) => {
+      const selected = new Set(filters.blacklistedMasterIds);
+      if (checked) selected.add(Number(masterId));
+      else selected.delete(Number(masterId));
+      return { ...filters, blacklistedMasterIds: [...selected] };
+    });
+  };
+
+  resetEquipmentBlacklist = () => {
+    const defaults = defaultBlacklistedMasterIds(this.currentOptimizationEquipment(true));
+    this.updateEquipmentFilters((filters) => ({ ...filters, blacklistedMasterIds: defaults }));
+  };
+
+  clearEquipmentBlacklist = () => {
+    this.updateEquipmentFilters((filters) => ({ ...filters, blacklistedMasterIds: [] }));
+  };
+
   updateSlotPlane = (baseIndex, slotIndex, instanceId) => {
     const plane = findSelectablePlane(this.currentOwnedEquipment(), this.state.simulator, instanceId);
     this.updateSimulator((simulator) => setBaseSlot(simulator, baseIndex, slotIndex, { plane }));
@@ -652,6 +728,14 @@ class LbasOptimizerPanel extends React.Component {
     return poiState ? extractOwnedPlanes(poiState) : [];
   }
 
+  currentOptimizationEquipment(includeMissing) {
+    const poiState = this.readPoiState();
+    return poiState ? extractOptimizationPlanes(poiState, {
+      includeMissing: includeMissing === true,
+      missingCopiesPerMaster: 1,
+    }) : [];
+  }
+
   currentEnemyCatalog() {
     return enemyCatalogFor(this.readPoiState(), this.state.noro6Master);
   }
@@ -668,6 +752,18 @@ class LbasOptimizerPanel extends React.Component {
     }
     const { simulator, summary } = this.simulatorRenderCache;
     const ownedEquipment = this.currentOwnedEquipment();
+    const catalogEquipment = this.currentOptimizationEquipment(true);
+    const previewEquipment = simulator.candidateMode === 'theoretical'
+      ? catalogEquipment
+      : ownedEquipment;
+    const equipmentFilters = effectiveEquipmentFilters(
+      this.state.equipmentFilters,
+      catalogEquipment,
+    );
+    const filteredPreviewEquipment = filterOptimizationEquipment(previewEquipment, {
+      ...equipmentFilters,
+      lockedInstanceIds: lockedInstanceIds(simulator),
+    });
     const enemyCatalog = this.state.enemyCatalog || this.currentEnemyCatalog();
 
     return h(
@@ -710,14 +806,28 @@ class LbasOptimizerPanel extends React.Component {
         candidateMode: simulator.candidateMode,
         combatContext: simulator.combatContext,
         equipmentCount: this.state.equipmentCount || ownedEquipment.length,
-        theoreticalCount: this.state.theoreticalCount || ownedEquipment.length,
+        theoreticalCount: this.state.isSearching
+          ? this.state.theoreticalCount
+          : filteredPreviewEquipment.length,
         messages: this.state.messages,
         results: this.state.results,
         search: this.state.search,
         isSearching: this.state.isSearching,
         searchPhase: this.state.searchPhase,
         searchProgress: this.state.searchProgress,
+        equipmentFilters,
+        equipmentCatalog: uniqueEquipmentMasters(catalogEquipment),
+        equipmentBlacklistOpen: this.state.equipmentBlacklistOpen,
+        equipmentBlacklistQuery: this.state.equipmentBlacklistQuery,
         onCandidateModeChange: this.updateCandidateMode,
+        onExcludeCarrierAircraftChange: this.updateExcludeCarrierAircraft,
+        onEquipmentBlacklistOpen: () => this.setState({ equipmentBlacklistOpen: true }),
+        onEquipmentBlacklistClose: () => this.setState({ equipmentBlacklistOpen: false }),
+        onEquipmentBlacklistQueryChange: (equipmentBlacklistQuery) =>
+          this.setState({ equipmentBlacklistQuery }),
+        onEquipmentBlacklistToggle: this.toggleEquipmentBlacklist,
+        onEquipmentBlacklistReset: this.resetEquipmentBlacklist,
+        onEquipmentBlacklistClear: this.clearEquipmentBlacklist,
         onOptimize: this.runOptimizer,
         onCancel: this.cancelSearch,
         onImportPlan: this.importPlan,
@@ -734,6 +844,61 @@ function readPoiState() {
   }
   const poiWindow = /** @type {Window & { getStore?: () => any }} */ (window);
   return typeof poiWindow.getStore === 'function' ? poiWindow.getStore() : null;
+}
+
+function effectiveEquipmentFilters(filters, equipment) {
+  if (Array.isArray(filters?.blacklistedMasterIds)) {
+    return normalizeEquipmentFilters(filters);
+  }
+  return {
+    excludeCarrierAircraft: filters?.excludeCarrierAircraft === true,
+    blacklistedMasterIds: defaultBlacklistedMasterIds(equipment),
+  };
+}
+
+function normalizeEquipmentFilters(filters = {}) {
+  return {
+    excludeCarrierAircraft: filters.excludeCarrierAircraft === true,
+    blacklistedMasterIds: [...new Set((filters.blacklistedMasterIds || [])
+      .map(Number)
+      .filter((value) => Number.isInteger(value) && value > 0))]
+      .sort((left, right) => left - right),
+  };
+}
+
+function lockedInstanceIds(simulator) {
+  return simulator.bases.flatMap((base) => base.slots
+    .filter((slot) => slot.locked && slot.plane)
+    .map((slot) => slot.plane.instanceId));
+}
+
+function browserStorage() {
+  try {
+    return typeof window !== 'undefined' ? window.localStorage : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function loadEquipmentFilters(storage) {
+  if (!storage) return null;
+  try {
+    const value = JSON.parse(storage.getItem(EQUIPMENT_FILTER_STORAGE_KEY));
+    return value && Array.isArray(value.blacklistedMasterIds)
+      ? normalizeEquipmentFilters(value)
+      : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function saveEquipmentFilters(storage, filters) {
+  if (!storage) return;
+  try {
+    storage.setItem(EQUIPMENT_FILTER_STORAGE_KEY, JSON.stringify(filters));
+  } catch (_error) {
+    // A read-only Poi profile should not prevent searches.
+  }
 }
 
 function findSelectablePlane(equipment, simulator, instanceId) {
@@ -1158,6 +1323,65 @@ const styles = {
     borderRadius: 3,
     background: 'transparent',
     cursor: 'pointer',
+  },
+  modalBackdrop: {
+    alignItems: 'center',
+    background: 'rgba(0, 0, 0, 0.46)',
+    bottom: 0,
+    display: 'flex',
+    justifyContent: 'center',
+    left: 0,
+    padding: 16,
+    position: 'fixed',
+    right: 0,
+    top: 0,
+    zIndex: 1000,
+  },
+  modalDialog: {
+    background: '#fff',
+    border: border,
+    boxSizing: 'border-box',
+    color: '#222',
+    display: 'grid',
+    gap: 10,
+    maxHeight: 'min(720px, calc(100vh - 32px))',
+    maxWidth: 680,
+    padding: 12,
+    width: 'min(680px, 100%)',
+  },
+  modalHeader: {
+    alignItems: 'center',
+    display: 'flex',
+    justifyContent: 'space-between',
+  },
+  blacklistToolbar: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  searchInput: {
+    boxSizing: 'border-box',
+    flex: '1 1 240px',
+    fontSize: 13,
+    height: 28,
+    minWidth: 0,
+    padding: '2px 6px',
+  },
+  blacklistList: {
+    border: border,
+    display: 'grid',
+    maxHeight: 'min(560px, calc(100vh - 150px))',
+    overflowY: 'auto',
+  },
+  blacklistItem: {
+    alignItems: 'center',
+    borderBottom: border,
+    display: 'grid',
+    fontSize: 13,
+    gap: 8,
+    gridTemplateColumns: 'auto minmax(0, 1fr) auto',
+    minHeight: 32,
+    padding: '3px 8px',
   },
   emptyLoadoutItem: {
     opacity: 0.58,

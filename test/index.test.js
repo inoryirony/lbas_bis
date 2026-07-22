@@ -37,7 +37,59 @@ describe('plugin entry', () => {
     expect(renderedText).toContain('详细逐波模拟');
     expect(renderedText).toContain('统一最低可见熟练度');
     expect(renderedText).toContain('波次状态');
+    expect(renderedText).toContain('不使用舰载机');
+    expect(renderedText).toContain('装备黑名单');
     expect(renderedText).not.toContain('Target radius');
+  });
+
+  test('filters carrier aircraft before starting the worker search', () => {
+    const start = vi.fn();
+    const poiState = equipmentPoiState();
+    const panel = new plugin.reactClass({
+      searchRunner: { start, cancel: vi.fn(() => true) },
+      readPoiState: () => poiState,
+    });
+    panel.setState = (updater) => {
+      const patch = typeof updater === 'function' ? updater(panel.state) : updater;
+      Object.assign(panel.state, patch);
+    };
+    panel.state.equipmentFilters = {
+      excludeCarrierAircraft: true,
+      blacklistedMasterIds: [],
+    };
+
+    panel.runOptimizer();
+
+    expect(start).toHaveBeenCalledOnce();
+    expect(start.mock.calls[0][0].equipment.map((plane) => plane.instanceId)).toEqual(['land-1']);
+  });
+
+  test('opens the equipment blacklist dialog and persists edited filters', () => {
+    const storage = {
+      getItem: vi.fn(() => null),
+      setItem: vi.fn(),
+    };
+    const panel = new plugin.reactClass({
+      readPoiState: () => equipmentPoiState(),
+      settingsStorage: storage,
+    });
+    panel.setState = (updater) => {
+      const patch = typeof updater === 'function' ? updater(panel.state) : updater;
+      Object.assign(panel.state, patch);
+    };
+    panel.state.equipmentBlacklistOpen = true;
+
+    const renderedText = collectText(panel.render());
+    expect(renderedText).toContain('恢复默认');
+    expect(renderedText).toContain('清空黑名单');
+    expect(renderedText).toContain('测试舰战');
+
+    panel.toggleEquipmentBlacklist(2, true);
+    expect(panel.state.equipmentFilters.blacklistedMasterIds).toEqual([2]);
+    expect(storage.setItem).toHaveBeenCalledWith(
+      'poi-plugin-lbas-bis.equipment-filters.v1',
+      JSON.stringify({ excludeCarrierAircraft: false, blacklistedMasterIds: [2] }),
+    );
   });
 
   test('renders honest search metadata, empty slots, and missing equipment', () => {
@@ -682,6 +734,46 @@ function createSynchronousPanel() {
     Object.assign(panel.state, patch);
   };
   return panel;
+}
+
+function equipmentPoiState() {
+  return {
+    info: {
+      equips: {
+        carrier: {
+          api_id: 'carrier-1',
+          api_slotitem_id: 1,
+          api_level: 0,
+          api_alv: 7,
+        },
+        land: {
+          api_id: 'land-1',
+          api_slotitem_id: 2,
+          api_level: 0,
+          api_alv: 7,
+        },
+      },
+    },
+    const: {
+      $equips: {
+        1: {
+          api_id: 1,
+          api_name: '测试舰战',
+          api_type: [3, 0, 6, 6],
+          api_distance: 7,
+          api_tyku: 10,
+        },
+        2: {
+          api_id: 2,
+          api_name: '测试陆攻',
+          api_type: [17, 0, 47, 37],
+          api_distance: 7,
+          api_tyku: 4,
+          api_raig: 12,
+        },
+      },
+    },
+  };
 }
 
 /** Creates a minimal automatic map formation for source-switching tests. */

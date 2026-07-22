@@ -1377,6 +1377,12 @@ describe('LBAS optimizer MVP', () => {
     expect(progress.filter((snapshot) => snapshot.phase === 'evaluating_suffix_trajectories')
       .every((snapshot) =>
         snapshot.totalWork === result.search.solverStats.suffixCandidatesTotal)).toBe(true);
+    expect(result.search.solverStats.prefixTrajectorySimulations)
+      .toBeLessThan(result.search.solverStats.prefixCandidatesEvaluated);
+    expect(result.search.solverStats.prefixTrajectorySimulations)
+      .toBeLessThan(result.search.solverStats.prefixStateSignatureProbes);
+    expect(result.search.solverStats.suffixTrajectorySimulations)
+      .toBeLessThan(result.search.solverStats.suffixCandidatesEvaluated);
   });
 
   test('does not prune a second-wave target made feasible by first-wave enemy losses', () => {

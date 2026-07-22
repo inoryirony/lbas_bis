@@ -130,5 +130,12 @@
   "difficulty_1": "Casual",
   "difficulty_2": "Easy",
   "difficulty_3": "Medium",
-  "difficulty_4": "Hard"
+  "difficulty_4": "Hard",
+  "excludeCarrierAircraft": "Exclude carrier aircraft",
+  "equipmentBlacklist": "Equipment blacklist",
+  "searchEquipment": "Search equipment name or Master ID",
+  "restoreDefaults": "Restore defaults",
+  "clearBlacklist": "Clear blacklist",
+  "noMatchingEquipment": "No matching equipment",
+  "close": "Close"
 }

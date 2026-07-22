@@ -130,5 +130,12 @@
   "difficulty_1": "丁",
   "difficulty_2": "丙",
   "difficulty_3": "乙",
-  "difficulty_4": "甲"
+  "difficulty_4": "甲",
+  "excludeCarrierAircraft": "不使用艦載機",
+  "equipmentBlacklist": "裝備黑名單",
+  "searchEquipment": "搜尋裝備名稱或 Master ID",
+  "restoreDefaults": "恢復預設",
+  "clearBlacklist": "清空黑名單",
+  "noMatchingEquipment": "沒有符合的裝備",
+  "close": "關閉"
 }

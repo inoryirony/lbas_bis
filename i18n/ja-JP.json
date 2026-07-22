@@ -130,5 +130,12 @@
   "difficulty_1": "丁",
   "difficulty_2": "丙",
   "difficulty_3": "乙",
-  "difficulty_4": "甲"
+  "difficulty_4": "甲",
+  "excludeCarrierAircraft": "艦載機を使用しない",
+  "equipmentBlacklist": "装備ブラックリスト",
+  "searchEquipment": "装備名または Master ID を検索",
+  "restoreDefaults": "初期設定に戻す",
+  "clearBlacklist": "ブラックリストをクリア",
+  "noMatchingEquipment": "一致する装備がありません",
+  "close": "閉じる"
 }

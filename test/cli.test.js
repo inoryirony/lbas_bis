@@ -65,6 +65,43 @@ describe('headless LBAS CLI', () => {
 });
 
 describe('CLI map scenario hydration', () => {
+  test('applies candidate filters to equipment embedded in an offline scenario', async () => {
+    const hydrated = await hydrateScenario({
+      equipment: [
+        { instanceId: 'offline-carrier', masterId: 1, equipType: 6 },
+        { instanceId: 'offline-land', masterId: 2, equipType: 47 },
+      ],
+      excludeCarrierAircraft: true,
+    }, null);
+
+    expect(hydrated.equipment.map((plane) => plane.instanceId)).toEqual(['offline-land']);
+  });
+
+  test('applies explicit candidate filters to Poi equipment before optimization', async () => {
+    const hydrated = await hydrateScenario({
+      baseCount: 1,
+      excludeCarrierAircraft: true,
+      blacklistedMasterIds: [3],
+      lockedBases: [{ slots: [{
+        locked: true,
+        plane: { instanceId: 'locked-carrier' },
+      }] }],
+    }, 'http://poi.test', {
+      createPoiClient: () => ({ loadState: async () => ({}) }),
+      extractOptimizationPlanes: () => [
+        { instanceId: 'locked-carrier', masterId: 1, equipType: 6 },
+        { instanceId: 'other-carrier', masterId: 2, equipType: 6 },
+        { instanceId: 'blacklisted-land', masterId: 3, equipType: 47 },
+        { instanceId: 'ordinary-land', masterId: 4, equipType: 47 },
+      ],
+    });
+
+    expect(hydrated.equipment.map((plane) => plane.instanceId)).toEqual([
+      'locked-carrier',
+      'ordinary-land',
+    ]);
+  });
+
   test('hydrates detailed enemy slots, air power, and radius from a map selection', async () => {
     const hydrated = await hydrateScenario({
       equipment: [],

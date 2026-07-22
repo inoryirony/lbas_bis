@@ -2,6 +2,7 @@
 
 const React = require('react');
 const { equipmentDamageMultiplier } = require('../combat-context');
+const EquipmentBlacklistDialog = require('./EquipmentBlacklistDialog');
 
 const h = React.createElement;
 
@@ -17,7 +18,18 @@ function OptimizerPanel(props) {
     isSearching,
     searchPhase,
     searchProgress,
+    equipmentFilters,
+    equipmentCatalog,
+    equipmentBlacklistOpen,
+    equipmentBlacklistQuery,
     onCandidateModeChange,
+    onExcludeCarrierAircraftChange,
+    onEquipmentBlacklistOpen,
+    onEquipmentBlacklistClose,
+    onEquipmentBlacklistQueryChange,
+    onEquipmentBlacklistToggle,
+    onEquipmentBlacklistReset,
+    onEquipmentBlacklistClear,
     onOptimize,
     onCancel,
     onImportPlan,
@@ -65,8 +77,36 @@ function OptimizerPanel(props) {
         },
         t(isSearching ? 'cancel' : 'optimize'),
       ),
+      h(
+        'label',
+        { style: styles.radioLabel },
+        h('input', {
+          type: 'checkbox',
+          checked: equipmentFilters.excludeCarrierAircraft === true,
+          onChange: (event) => onExcludeCarrierAircraftChange(event.target.checked),
+        }),
+        t('excludeCarrierAircraft'),
+      ),
+      h(
+        'button',
+        { type: 'button', onClick: onEquipmentBlacklistOpen, style: styles.button },
+        `${t('equipmentBlacklist')} (${equipmentFilters.blacklistedMasterIds.length})`,
+      ),
       h('span', { style: styles.meta }, `${t('availablePlanes')}: ${equipmentCount} / ${t('candidatePlanes')}: ${theoreticalCount}`),
     ),
+    h(EquipmentBlacklistDialog, {
+      open: equipmentBlacklistOpen,
+      equipment: equipmentCatalog,
+      selectedMasterIds: equipmentFilters.blacklistedMasterIds,
+      query: equipmentBlacklistQuery,
+      onQueryChange: onEquipmentBlacklistQueryChange,
+      onToggle: onEquipmentBlacklistToggle,
+      onResetDefaults: onEquipmentBlacklistReset,
+      onClear: onEquipmentBlacklistClear,
+      onClose: onEquipmentBlacklistClose,
+      t,
+      styles,
+    }),
     isSearching
       ? renderLiveSearch(searchPhase, searchProgress, results, t, styles)
       : renderSearch(search, t, styles),

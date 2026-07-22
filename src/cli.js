@@ -6,6 +6,7 @@ const { loadMapData } = require('./map-cache');
 const { buildMapCatalog } = require('./map-catalog');
 const { prepareSearch } = require('./optimizer');
 const { extractOptimizationPlanes } = require('./poi-data');
+const { filterOptimizationEquipment } = require('./equipment-filter');
 const { createPoiClient } = require('./poi-client');
 const { runSearchSession } = require('./search-session');
 
@@ -75,15 +76,30 @@ async function hydrateScenario(scenario, poiUrl, dependencies = {}) {
     scenario,
     dependencies.loadMapData || loadMapData,
   );
-  if (!poiUrl) return hydrated;
+  if (!poiUrl) return applyEquipmentFilters(hydrated);
   const clientFactory = dependencies.createPoiClient || createPoiClient;
   const extractPlanes = dependencies.extractOptimizationPlanes || extractOptimizationPlanes;
   const state = await clientFactory(poiUrl).loadState();
-  return {
+  const equipment = extractPlanes(state, {
+    includeMissing: hydrated.candidateMode === 'theoretical' || hydrated.includeMissing === true,
+    missingCopiesPerMaster: hydrated.missingCopiesPerMaster ?? 1,
+  });
+  return applyEquipmentFilters({
     ...hydrated,
-    equipment: extractPlanes(state, {
-      includeMissing: hydrated.candidateMode === 'theoretical' || hydrated.includeMissing === true,
-      missingCopiesPerMaster: hydrated.missingCopiesPerMaster ?? 1,
+    equipment,
+  });
+}
+
+function applyEquipmentFilters(scenario) {
+  if (!Array.isArray(scenario.equipment)) return scenario;
+  return {
+    ...scenario,
+    equipment: filterOptimizationEquipment(scenario.equipment, {
+      excludeCarrierAircraft: scenario.excludeCarrierAircraft === true,
+      blacklistedMasterIds: scenario.blacklistedMasterIds,
+      lockedInstanceIds: (scenario.lockedBases || []).flatMap((base) =>
+        (base?.slots || []).filter((slot) => slot?.locked && slot.plane)
+          .map((slot) => slot.plane.instanceId)),
     }),
   };
 }

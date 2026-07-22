@@ -7,6 +7,7 @@ import aircraftModule from '../src/aircraft.js';
 const {
   enemyStageOneLoss,
   createDetailedDamageBoundContext,
+  createDetailedScoreContext,
   evaluateDetailedPlanScore,
   maximumDetailedExpectedDamage,
   monteCarloWaveSequence,
@@ -586,6 +587,89 @@ describe('wave simulator', () => {
     expect(suffix.allWaveTargetFulfillmentProbability).toBe(1);
     expect(prefix.totalDamageAcrossSamples + suffix.totalDamageAcrossSamples)
       .toBe(full.totalDamageAcrossSamples);
+  });
+
+  test('matches uncached scoring after concentrated trajectory and contribution cache hits', () => {
+    const common = {
+      enemy: enemyFleet('cache-enemy', 24),
+      targetStates: ['denial', 'denial'],
+      sampleCount: 32,
+      seed: 'cache-equivalence',
+    };
+    const loadout = [fighter('cache-plane', {
+      antiAir: 8,
+      equipType: 47,
+      isFighter: false,
+      isAttacker: true,
+      isLandAttacker: true,
+      torpedo: 14,
+    })];
+    const scoreContext = createDetailedScoreContext({ ...common, baseCount: 1 });
+    evaluateDetailedPlanScore({
+      ...common,
+      bases: [loadout],
+      captureFinalEnemySlots: true,
+      scoreContext,
+    });
+    const cached = evaluateDetailedPlanScore({
+      ...common,
+      bases: [loadout.map((plane) => ({ ...plane, instanceId: 'cache-copy' }))],
+      captureFinalEnemySlots: true,
+      scoreContext,
+    });
+    const uncached = evaluateDetailedPlanScore({
+      ...common,
+      bases: [loadout],
+      captureFinalEnemySlots: true,
+      disableConcentratedSegmentReuse: true,
+    });
+
+    expect(cached).toMatchObject({
+      enemyTrajectorySimulations: 0,
+      damageContributionSimulations: 0,
+      allWaveTargetFulfillmentProbability: uncached.allWaveTargetFulfillmentProbability,
+      totalDamageAcrossSamples: uncached.totalDamageAcrossSamples,
+      finalEnemySlotsBySample: uncached.finalEnemySlotsBySample,
+    });
+  });
+
+  test('does not reuse continuation trajectories across base offsets', () => {
+    const sampleCount = 24;
+    const initialEnemySlotsBySample = Array.from({ length: sampleCount }, () => [[18]]);
+    const common = {
+      enemy: enemyFleet('offset-enemy', 18),
+      targetStates: Array(6).fill('denial'),
+      sampleCount,
+      seed: 'offset-cache',
+    };
+    const loadout = [fighter('offset-plane', { antiAir: 7 })];
+    const scoreContext = createDetailedScoreContext({ ...common, baseCount: 3 });
+    evaluateDetailedPlanScore({
+      ...common,
+      bases: [loadout],
+      baseIndexOffset: 1,
+      initialEnemySlotsBySample,
+      scoreContext,
+    });
+    const offsetTwo = evaluateDetailedPlanScore({
+      ...common,
+      bases: [loadout],
+      baseIndexOffset: 2,
+      initialEnemySlotsBySample,
+      scoreContext,
+    });
+    const uncachedOffsetTwo = evaluateDetailedPlanScore({
+      ...common,
+      bases: [loadout],
+      baseIndexOffset: 2,
+      initialEnemySlotsBySample,
+      disableConcentratedSegmentReuse: true,
+    });
+
+    expect(offsetTwo.enemyTrajectorySimulations).toBe(1);
+    expect(offsetTwo.totalDamageAcrossSamples).toBe(uncachedOffsetTwo.totalDamageAcrossSamples);
+    expect(offsetTwo.allWaveTargetFulfillmentProbability)
+      .toBe(uncachedOffsetTwo.allWaveTargetFulfillmentProbability);
   });
 });
 

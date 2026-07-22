@@ -42,8 +42,14 @@ function solveDetailedExact(prepared, solverOptions = {}) {
     dynamicAirBoundEvaluations: 0,
     prefixDamageBoundEvaluations: 0,
     prefixCandidatesEvaluated: 0,
+    prefixTrajectorySimulations: 0,
+    prefixStateSignatureProbes: 0,
+    prefixDamageContributionSimulations: 0,
     trajectoryCount: 0,
     suffixCandidatesEvaluated: 0,
+    suffixTrajectorySimulations: 0,
+    suffixStateSignatureProbes: 0,
+    suffixDamageContributionSimulations: 0,
     elapsedMs: 0,
   };
   const work = createWorkController(prepared, solverOptions, stats, startedAt);
@@ -291,7 +297,12 @@ function combineTwoBaseTrajectories(
     stats.dynamicAirBoundEvaluations += 1;
     stats.prefixDamageBoundEvaluations += 1;
     stats.numericScoreEvaluations += 1;
-    stats.simulationSamplesEvaluated += evaluation.samplesEvaluated || sampleCount;
+    stats.simulationSamplesEvaluated +=
+      evaluation.simulationWorkSamples ?? evaluation.samplesEvaluated ?? sampleCount;
+    stats.prefixTrajectorySimulations += evaluation.enemyTrajectorySimulations ?? 1;
+    stats.prefixStateSignatureProbes += evaluation.stateSignatureProbes ?? 1;
+    stats.prefixDamageContributionSimulations +=
+      evaluation.damageContributionSimulations ?? 0;
     if (evaluation.allWaveTargetFulfillmentProbability !== 1) continue;
     const trajectoryKey = enemyTrajectoryKey(evaluation.finalEnemySlotsBySample);
     const group = trajectoryGroups.get(trajectoryKey) || {
@@ -310,7 +321,10 @@ function combineTwoBaseTrajectories(
   stats.trajectoryCount = trajectoryGroups.size;
   const initialIncumbentDamageTotal = Math.round(scorePlan(incumbent).damage * sampleCount);
   stats.suffixCandidatesTotal = [...trajectoryGroups.values()].reduce((total, group) => {
-    const bestPrefixDamage = Math.max(...group.prefixes.map((prefix) => prefix.damageTotal));
+    const bestPrefixDamage = group.prefixes.reduce(
+      (maximum, prefix) => Math.max(maximum, prefix.damageTotal),
+      Number.NEGATIVE_INFINITY,
+    );
     const firstExcluded = candidateSets[1].findIndex((candidate) =>
       bestPrefixDamage + Math.round(candidate.maximumDamage * sampleCount) <
         initialIncumbentDamageTotal);
@@ -347,7 +361,12 @@ function combineTwoBaseTrajectories(
       });
       stats.suffixCandidatesEvaluated += 1;
       stats.numericScoreEvaluations += 1;
-      stats.simulationSamplesEvaluated += evaluation.samplesEvaluated || sampleCount;
+      stats.simulationSamplesEvaluated +=
+        evaluation.simulationWorkSamples ?? evaluation.samplesEvaluated ?? sampleCount;
+      stats.suffixTrajectorySimulations += evaluation.enemyTrajectorySimulations ?? 1;
+      stats.suffixStateSignatureProbes += evaluation.stateSignatureProbes ?? 1;
+      stats.suffixDamageContributionSimulations +=
+        evaluation.damageContributionSimulations ?? 0;
       if (evaluation.allWaveTargetFulfillmentProbability === 1) {
         suffixes.push({
           candidate,
