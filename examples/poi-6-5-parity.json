@@ -1,0 +1,9 @@
+{
+  "baseCount": 2,
+  "targetRadius": 5,
+  "enemyAir": 318,
+  "targetStates": ["parity", "parity", "parity", "parity"],
+  "candidateMode": "owned",
+  "nodeBudget": null,
+  "maxResults": 1
+}

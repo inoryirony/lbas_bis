@@ -4,13 +4,13 @@ const React = require('react');
 
 const h = React.createElement;
 
-function MapPresetPicker({ catalog, selection, onSelectionChange, onApply, t, styles }) {
-  if (!catalog) return h('div', { style: styles.meta }, t('mapDataLoading'));
-  const nodes = selection.area ? catalog.nodes(selection.area) : [];
-  const difficulties = selection.area && selection.node
+/** Renders automatic map presets alongside an always-available custom fallback. */
+function MapPresetPicker({ catalog, selection, onSelectionChange, onApply, onUseCustom, isCustom, t, styles }) {
+  const nodes = catalog && selection.area ? catalog.nodes(selection.area) : [];
+  const difficulties = catalog && selection.area && selection.node
     ? catalog.difficulties(selection.area, selection.node)
     : [];
-  const formations = selection.area && selection.node && selection.difficulty != null
+  const formations = catalog && selection.area && selection.node && selection.difficulty != null
     ? catalog.formations(selection.area, selection.node, selection.difficulty)
     : [];
   const formation = formations.find((item) => item.id === selection.formationId) || null;
@@ -18,10 +18,11 @@ function MapPresetPicker({ catalog, selection, onSelectionChange, onApply, t, st
     'section',
     { style: styles.mapPreset },
     h('strong', null, t('mapPreset')),
+    !catalog ? h('div', { style: styles.meta }, t('mapDataLoading')) : null,
     h(
       'div',
       { style: styles.mapPresetGrid },
-      selectField('mapArea', selection.area ?? '', catalog.areas.map((area) => ({
+      selectField('mapArea', selection.area ?? '', (catalog?.areas || []).map((area) => ({
         value: area.area,
         label: `${Math.floor(area.area / 10)}-${area.area % 10} ${area.name}`,
       })), (value) => onSelectionChange('area', value), t, styles),
@@ -45,15 +46,26 @@ function MapPresetPicker({ catalog, selection, onSelectionChange, onApply, t, st
         `${t('enemyAir')} ${formation.enemyAir} / ${t('radius')} ${formation.radius.join(' → ')} / ${t('supremacy')} ${formation.thresholds.supremacy} / ${t('superiority')} ${formation.thresholds.superiority} / ${t('parity')} ${formation.thresholds.parity} / ${t('denial')} ${formation.thresholds.denial}`,
       )
       : null,
-    h('button', {
-      type: 'button',
-      disabled: !formation,
-      onClick: () => onApply(formation),
-      style: styles.button,
-    }, t('applyMapPreset')),
+    h(
+      'div',
+      { style: styles.enemyControls },
+      h('button', {
+        type: 'button',
+        disabled: !formation,
+        onClick: () => onApply(formation),
+        style: styles.button,
+      }, t('applyMapPreset')),
+      h('button', {
+        type: 'button',
+        'aria-pressed': isCustom,
+        onClick: onUseCustom,
+        style: styles.button,
+      }, t('useCustomComposition')),
+    ),
   );
 }
 
+/** Creates one cascading map selector. */
 function selectField(labelKey, value, options, onChange, t, styles) {
   return h(
     'label',

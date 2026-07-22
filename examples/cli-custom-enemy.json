@@ -1,0 +1,73 @@
+{
+  "equipment": [
+    {
+      "instanceId": "cli-custom-fighter",
+      "masterId": 1,
+      "name": "CLI custom fighter",
+      "equipType": 48,
+      "antiAir": 12,
+      "radius": 7,
+      "improvement": 0,
+      "proficiency": 0,
+      "isPlane": true,
+      "isFighter": true,
+      "isLandBased": true,
+      "role": "fighter"
+    }
+  ],
+  "baseCount": 1,
+  "targetRadius": 7,
+  "enemyAir": 10,
+  "enemy": {
+    "mode": "detailed",
+    "dataSource": "custom",
+    "ships": [
+      {
+        "id": null,
+        "custom": true,
+        "name": "CLI custom carrier",
+        "airPower": 10
+      }
+    ],
+    "slots": [
+      {
+        "instanceId": "cli-custom-enemy-slot",
+        "name": "CLI custom enemy fighter",
+        "sortieAntiAir": 2,
+        "currentSlot": 4,
+        "maxSlot": 4,
+        "sourceShipIndex": 0,
+        "overridden": true
+      }
+    ]
+  },
+  "enemySlots": [
+    {
+      "instanceId": "cli-custom-enemy-slot",
+      "name": "CLI custom enemy fighter",
+      "sortieAntiAir": 2,
+      "currentSlot": 4,
+      "maxSlot": 4,
+      "sourceShipIndex": 0,
+      "overridden": true
+    }
+  ],
+  "simulationOptions": {
+    "sampleCount": 16,
+    "seed": 7
+  },
+  "targetStates": ["parity", "parity"],
+  "lockedBases": [
+    {
+      "slots": [
+        { "instanceId": "cli-custom-fighter", "kind": "LOCKED_ITEM" },
+        { "kind": "LOCKED_EMPTY" },
+        { "kind": "LOCKED_EMPTY" },
+        { "kind": "LOCKED_EMPTY" }
+      ]
+    }
+  ],
+  "nodeBudget": null,
+  "simulationWorkBudget": null,
+  "maxResults": 1
+}

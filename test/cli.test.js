@@ -5,6 +5,7 @@ import { describe, expect, test } from 'vitest';
 const root = process.cwd();
 const cliPath = path.join(root, 'bin', 'lbas-bis.js');
 const scenarioPath = path.join(root, 'examples', 'cli-static.json');
+const customScenarioPath = path.join(root, 'examples', 'cli-custom-enemy.json');
 
 describe('headless LBAS CLI', () => {
   test('validates a scenario and streams optimize events as JSON Lines', async () => {
@@ -19,6 +20,23 @@ describe('headless LBAS CLI', () => {
     expect(events.at(-1)).toMatchObject({
       type: 'completed',
       result: { search: { status: 'optimal', provenOptimal: true } },
+    });
+  });
+
+  test('accepts a completely custom enemy ship and aircraft slot scenario', async () => {
+    const validation = await runCli(['validate', '--scenario', customScenarioPath]);
+    const optimization = await runCli(['optimize', '--scenario', customScenarioPath, '--jsonl']);
+    const events = optimization.stdout.trim().split(/\r?\n/).map(JSON.parse);
+
+    expect(validation.code).toBe(0);
+    expect(JSON.parse(validation.stdout)).toMatchObject({ valid: true });
+    expect(optimization.code).toBe(0);
+    expect(events.at(-1)).toMatchObject({
+      type: 'completed',
+      result: {
+        results: [expect.objectContaining({ calculationMode: 'detailed' })],
+        search: { provenOptimal: true },
+      },
     });
   });
 });

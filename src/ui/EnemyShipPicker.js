@@ -3,8 +3,10 @@
 const React = require('react');
 
 const h = React.createElement;
+const CUSTOM_ENEMY_SHIP_ID = '__custom__';
 
-function EnemyShipPicker({ catalog, ships, onChange, t, styles }) {
+/** Renders known-enemy selectors and editable custom enemy ship rows. */
+function EnemyShipPicker({ catalog, ships, onChange, onNameChange, onSlotAdd, t, styles }) {
   const options = catalog?.ships || [];
   return h(
     'div',
@@ -16,17 +18,45 @@ function EnemyShipPicker({ catalog, ships, onChange, t, styles }) {
       h(
         'select',
         {
-          value: selected.id ?? '',
+          value: selected.custom ? CUSTOM_ENEMY_SHIP_ID : selected.id ?? '',
           onChange: (event) => onChange(index, event.target.value || null),
           style: styles.select,
         },
         h('option', { value: '' }, t('none')),
+        h('option', { value: CUSTOM_ENEMY_SHIP_ID }, t('customEnemyShip')),
         options.map((ship) => h(
           'option',
           { key: ship.id, value: ship.id },
           `${ship.name} · ${ship.typeName || t('unknownEnemyType')} · #${ship.id} · ${t('enemyAir')} ${ship.airPower}`,
         )),
       ),
+      selected.custom
+        ? h(
+          React.Fragment,
+          null,
+          h('input', {
+            type: 'text',
+            value: selected.name || '',
+            onChange: (event) => onNameChange(index, event.target.value),
+            placeholder: t('customEnemyShipName'),
+            'aria-label': t('customEnemyShipName'),
+            style: styles.input,
+          }),
+          h('button', {
+            type: 'button',
+            onClick: () => onSlotAdd(index),
+            style: styles.button,
+          }, t('addSlotForShip')),
+        )
+        : null,
+      selected.id
+        ? h('button', {
+          type: 'button',
+          onClick: () => onChange(index, selected.id),
+          title: t('refreshEnemyShip'),
+          style: styles.button,
+        }, t('refreshEnemyShip'))
+        : null,
       selected.id && selected.dataStatus !== 'complete'
         ? h(
           'span',

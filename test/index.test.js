@@ -3,7 +3,7 @@ import plugin from '../index.js';
 import simulatorState from '../src/simulator-state.js';
 
 const { normalizeTargetStates, parseTargetStates } = plugin;
-const { normalizeSimulatorState } = simulatorState;
+const { normalizeSimulatorState, simulatorToOptimizerInput } = simulatorState;
 
 describe('plugin entry', () => {
   test('exports an embedded Poi plugin panel instead of a new window mode', () => {
@@ -119,7 +119,149 @@ describe('plugin entry', () => {
     expect(renderedText).toContain('采样数');
     expect(renderedText).toContain('空袭格');
     expect(renderedText).toContain('选择敌舰');
+    expect(renderedText).toContain('完全自定义敌舰');
     expect(renderedText).toContain('自定义敌机槽位');
+  });
+
+  test('switches any selected map node to a clearly marked custom composition', () => {
+    const panel = createSynchronousPanel();
+    panel.state.mapSelection = { area: 99, node: 'Z', difficulty: null, formationId: '' };
+
+    panel.useCustomEnemyComposition();
+
+    expect(panel.state.simulator.enemy).toMatchObject({
+      dataSource: 'custom',
+      areaId: 99,
+      nodeId: 'Z',
+    });
+    expect(collectText(panel.render())).toContain('自定义编成');
+  });
+
+  test('restores a custom enemy draft after applying and switching automatic presets', () => {
+    const panel = createSynchronousPanel();
+    panel.useCustomEnemyComposition();
+    panel.updateEnemyShip(0, '__custom__');
+    panel.updateEnemyShipName(0, '未来深海舰');
+    panel.addEnemySlot(0);
+    panel.updateEnemySlot(0, {
+      name: '未来舰战',
+      sortieAntiAir: 13,
+      currentSlot: 27,
+      maxSlot: 27,
+    });
+
+    panel.applyMapPreset(mapFormation('A', 1501));
+    panel.applyMapPreset(mapFormation('B', 1502));
+    expect(panel.state.simulator.enemy.dataSource).toBe('automatic');
+
+    panel.useCustomEnemyComposition();
+
+    expect(panel.state.simulator.enemy.ships[0]).toMatchObject({
+      custom: true,
+      name: '未来深海舰',
+    });
+    expect(panel.state.simulator.enemy.slots).toEqual([
+      expect.objectContaining({
+        name: '未来舰战',
+        sortieAntiAir: 13,
+        currentSlot: 27,
+        sourceShipIndex: 0,
+      }),
+    ]);
+  });
+
+  test('restores a static custom air-power draft after applying an automatic preset', () => {
+    const panel = createSynchronousPanel();
+    panel.updateEnemyAir(137);
+
+    panel.applyMapPreset(mapFormation('A', 1501));
+    panel.useCustomEnemyComposition();
+
+    expect(panel.state.simulator.enemy).toMatchObject({
+      dataSource: 'custom',
+      mode: 'manual',
+      enemyAir: 137,
+    });
+  });
+
+  test('preserves custom detailed slots across static and detailed mode changes', () => {
+    const panel = createSynchronousPanel();
+    panel.updateEnemyMode('detailed');
+    panel.updateEnemySlot(0, {
+      name: '往返保留舰战',
+      sortieAntiAir: 12,
+      currentSlot: 24,
+      maxSlot: 24,
+    });
+
+    panel.updateEnemyMode('manual');
+    expect(panel.state.simulator.enemy.mode).toBe('manual');
+    panel.updateEnemyMode('detailed');
+
+    expect(panel.state.simulator.enemy.slots).toEqual([
+      expect.objectContaining({
+        name: '往返保留舰战',
+        sortieAntiAir: 12,
+        currentSlot: 24,
+        maxSlot: 24,
+      }),
+    ]);
+  });
+
+  test('preserves custom static air across detailed and static mode changes', () => {
+    const panel = createSynchronousPanel();
+    panel.updateEnemyAir(137);
+
+    panel.updateEnemyMode('detailed');
+    panel.updateEnemyMode('manual');
+
+    expect(panel.state.simulator.enemy).toMatchObject({
+      mode: 'manual',
+      enemyAir: 137,
+    });
+  });
+
+  test('does not replace the saved custom draft when switching an automatic preset mode', () => {
+    const panel = createSynchronousPanel();
+    panel.updateEnemyShip(0, '__custom__');
+    panel.updateEnemyShipName(0, '保留的自定义敌舰');
+    panel.applyMapPreset(mapFormation('A', 1501));
+
+    panel.updateEnemyMode('manual');
+    panel.useCustomEnemyComposition();
+
+    expect(panel.state.simulator.enemy.ships[0]).toMatchObject({
+      custom: true,
+      name: '保留的自定义敌舰',
+    });
+  });
+
+  test('exports a completely custom enemy ship and aircraft slot in the shared scenario payload', () => {
+    const panel = createSynchronousPanel();
+    panel.useCustomEnemyComposition();
+    panel.updateEnemyShip(0, '__custom__');
+    panel.updateEnemyShipName(0, '自定义空母');
+    panel.addEnemySlot(0);
+    panel.updateEnemySlot(0, {
+      name: '自定义舰战',
+      sortieAntiAir: 14,
+      currentSlot: 36,
+      maxSlot: 36,
+    });
+
+    const payload = simulatorToOptimizerInput(panel.state.simulator);
+
+    expect(payload.enemy.dataSource).toBe('custom');
+    expect(payload.enemy.ships[0]).toMatchObject({ custom: true, name: '自定义空母' });
+    expect(payload.enemySlots).toEqual([
+      expect.objectContaining({
+        name: '自定义舰战',
+        sortieAntiAir: 14,
+        currentSlot: 36,
+        maxSlot: 36,
+        sourceShipIndex: 0,
+      }),
+    ]);
   });
 
   test('keeps every enemy ship selector for combined-fleet map presets', () => {
@@ -195,6 +337,92 @@ describe('plugin entry', () => {
     ]);
   });
 
+  test('keeps overridden slot values when refreshing the same known enemy ship', () => {
+    const panel = createSynchronousPanel();
+    const selected = {
+      id: 2000,
+      name: 'Known enemy',
+      typeName: 'Carrier',
+      airPower: 41,
+      dataStatus: 'complete',
+    };
+    panel.state.enemyCatalog = {
+      ships: [selected],
+      byId: new Map([[selected.id, selected]]),
+      slotsForShip: (_shipId, sourceShipIndex) => [{
+        instanceId: 'refreshed-slot',
+        name: 'Master fighter',
+        sortieAntiAir: 10,
+        currentSlot: 18,
+        maxSlot: 18,
+        sourceShipIndex,
+        sourceSlotIndex: 0,
+      }],
+    };
+    panel.state.simulator = normalizeSimulatorState({
+      ...panel.state.simulator,
+      enemy: {
+        dataSource: 'custom',
+        mode: 'detailed',
+        ships: [selected],
+        slots: [{
+          instanceId: 'old-slot',
+          name: '玩家修正舰战',
+          sortieAntiAir: 15,
+          currentSlot: 24,
+          maxSlot: 24,
+          sourceShipIndex: 0,
+          sourceSlotIndex: 0,
+          overridden: true,
+        }],
+      },
+    });
+
+    panel.updateEnemyShip(0, selected.id);
+
+    expect(panel.state.simulator.enemy.slots).toEqual([
+      expect.objectContaining({
+        name: '玩家修正舰战',
+        sortieAntiAir: 15,
+        currentSlot: 24,
+        overridden: true,
+      }),
+    ]);
+  });
+
+  test('exposes a refresh action for the currently selected known enemy ship', () => {
+    const panel = createSynchronousPanel();
+    const selected = {
+      id: 2000,
+      name: 'Known enemy',
+      typeName: 'Carrier',
+      airPower: 41,
+      dataStatus: 'complete',
+    };
+    panel.state.enemyCatalog = {
+      ships: [selected],
+      byId: new Map([[selected.id, selected]]),
+      slotsForShip: () => [],
+    };
+    panel.state.simulator = normalizeSimulatorState({
+      ...panel.state.simulator,
+      enemy: {
+        dataSource: 'custom',
+        mode: 'detailed',
+        ships: [selected],
+        slots: [],
+      },
+    });
+    panel.updateEnemyShip = vi.fn();
+
+    const refresh = findNodes(panel.render(), (node) =>
+      node.type === 'button' && collectText(node) === '刷新敌舰数据')[0];
+
+    expect(refresh).toBeTruthy();
+    refresh.props.onClick();
+    expect(panel.updateEnemyShip).toHaveBeenCalledWith(0, 2000);
+  });
+
   test('does not reuse a custom enemy slot ID after deleting and adding a slot', () => {
     const panel = new plugin.reactClass({});
     panel.state.simulator = normalizeSimulatorState({
@@ -218,6 +446,24 @@ describe('plugin entry', () => {
     const ids = panel.state.simulator.enemy.slots.map((slot) => slot.instanceId);
     expect(ids).toHaveLength(2);
     expect(new Set(ids).size).toBe(2);
+  });
+
+  test('does not store a React click event as an enemy slot ship index', () => {
+    const panel = createSynchronousPanel();
+    panel.updateEnemyMode('detailed');
+    const addButton = findNodes(panel.render(), (node) =>
+      node.type === 'button' && node.props.title === '增加敌机槽')[0];
+    const clickEvent = { type: 'click', target: { tagName: 'BUTTON' } };
+
+    addButton.props.onClick(clickEvent);
+    panel.addEnemySlot(clickEvent);
+
+    expect(panel.state.simulator.enemy.slots).toHaveLength(3);
+    expect(panel.state.simulator.enemy.slots.slice(1)).toEqual([
+      expect.not.objectContaining({ sourceShipIndex: expect.anything() }),
+      expect.not.objectContaining({ sourceShipIndex: expect.anything() }),
+    ]);
+    expect(() => structuredClone(panel.state.simulator)).not.toThrow();
   });
 
   test('uses cached noro6 master data when Poi state becomes available later', () => {
@@ -268,4 +514,35 @@ function collectText(node) {
     return collectText(node.type(node.props || {}));
   }
   return collectText(node.props?.children);
+}
+
+function findNodes(node, predicate) {
+  if (node == null || typeof node === 'boolean') return [];
+  if (Array.isArray(node)) return node.flatMap((child) => findNodes(child, predicate));
+  if (typeof node !== 'object') return [];
+  if (typeof node.type === 'function') return findNodes(node.type(node.props || {}), predicate);
+  const matches = predicate(node) ? [node] : [];
+  return [...matches, ...findNodes(node.props?.children, predicate)];
+}
+
+/** Creates an unmounted panel whose React state updates run synchronously in unit tests. */
+function createSynchronousPanel() {
+  const panel = new plugin.reactClass({});
+  panel.setState = (updater) => {
+    const patch = typeof updater === 'function' ? updater(panel.state) : updater;
+    Object.assign(panel.state, patch);
+  };
+  return panel;
+}
+
+/** Creates a minimal automatic map formation for source-switching tests. */
+function mapFormation(node, shipId) {
+  return {
+    area: 65,
+    node,
+    source: 'test',
+    radius: [5],
+    ships: [{ id: shipId, name: `Enemy ${shipId}`, airPower: 0 }],
+    enemySlots: [],
+  };
 }

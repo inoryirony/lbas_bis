@@ -130,7 +130,9 @@ function simulatorToOptimizerInput(state) {
 function createDefaultEnemy() {
   return {
     mode: 'manual',
+    dataSource: 'custom',
     enemyAir: DEFAULT_ENEMY_AIR,
+    manualEnemyAir: DEFAULT_ENEMY_AIR,
     areaId: null,
     nodeId: null,
     isAirRaidCell: false,
@@ -146,9 +148,11 @@ function createDefaultEnemy() {
 /** Normalizes manual total air or detailed aircraft slots without mutating input. */
 function normalizeEnemy(enemy = {}) {
   const defaults = createDefaultEnemy();
-  const detailed = enemy.mode === 'detailed' ||
+  const hasExplicitMode = enemy.mode === 'manual' || enemy.mode === 'detailed';
+  const detailed = enemy.mode === 'detailed' || (!hasExplicitMode && (
     Array.isArray(enemy.enemySlots) ||
-    (Array.isArray(enemy.slots) && enemy.slots.length > 0);
+    (Array.isArray(enemy.slots) && enemy.slots.length > 0)
+  ));
   const slotValidation = validateAndNormalizeDetailedEnemySlots(
     enemy.slots || enemy.enemySlots,
   );
@@ -170,6 +174,9 @@ function normalizeEnemy(enemy = {}) {
   const enemyAir = enemy.enemyAir == null
     ? summedAir
     : nonNegativeNumber(enemy.enemyAir, DEFAULT_ENEMY_AIR);
+  const manualEnemyAir = detailed
+    ? nonNegativeNumber(enemy.manualEnemyAir, enemyAir)
+    : enemyAir;
 
   const detailedAir = slotValidation.valid
     ? slots.reduce(
@@ -179,9 +186,12 @@ function normalizeEnemy(enemy = {}) {
     : 0;
   return {
     mode: detailed ? 'detailed' : enemy.mode || 'manual',
-    enemyAir: detailed ? detailedAir : enemyAir,
+    dataSource: enemy.dataSource === 'automatic' ? 'automatic' : 'custom',
+    enemyAir: detailed ? detailedAir : manualEnemyAir,
+    manualEnemyAir,
     areaId: enemy.areaId ?? null,
     nodeId: enemy.nodeId ?? null,
+    source: enemy.source ?? null,
     isAirRaidCell: enemy.isAirRaidCell === true,
     ships,
     slots,

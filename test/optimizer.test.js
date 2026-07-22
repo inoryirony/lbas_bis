@@ -1022,6 +1022,115 @@ describe('LBAS optimizer MVP', () => {
     expect(result.results[0].bases[0].loadout.filter(Boolean).map((item) => item.instanceId))
       .toContain('only-fighter');
   }, 20000);
+
+  test('proves an obvious one-base damage optimum without enumerating every distraction', () => {
+    const best = [20, 19, 18, 17].map((torpedo, index) => plane(`best-${index}`, {
+      masterId: 2000 + index,
+      antiAir: 8,
+      radius: 7,
+      role: 'attacker',
+      torpedo,
+      isLandBased: true,
+    }));
+    const distractions = Array.from({ length: 80 }, (_, index) => plane(`weak-${index}`, {
+      masterId: 3000 + index,
+      antiAir: 8,
+      radius: 7,
+      role: 'attacker',
+      torpedo: 1 + (index % 5),
+      isLandBased: true,
+    }));
+
+    const result = optimizeLoadouts({
+      equipment: [...distractions, ...best],
+      baseCount: 1,
+      targetRadius: 7,
+      enemyAir: 10,
+      targetStates: ['parity', 'parity'],
+      maxResults: 1,
+      nodeBudget: 2000,
+    });
+
+    expect(result.search).toEqual(expect.objectContaining({
+      status: 'optimal',
+      provenOptimal: true,
+    }));
+    expect(result.results[0].bases[0].loadout.filter(Boolean).map((item) => item.instanceId))
+      .toEqual(expect.arrayContaining(best.map((item) => item.instanceId)));
+  });
+
+  test('proves a two-base scarce-air allocation without walking every zero group', () => {
+    const fighters = Array.from({ length: 24 }, (_, index) => plane(`allocation-fighter-${index}`, {
+      masterId: 4000 + index,
+      antiAir: 10 + (index % 3),
+      radius: 7,
+      role: 'fighter',
+      isLandBased: true,
+    }));
+    const attackers = Array.from({ length: 24 }, (_, index) => plane(`allocation-attacker-${index}`, {
+      masterId: 5000 + index,
+      antiAir: 4,
+      radius: 7,
+      role: 'attacker',
+      torpedo: 30 - index,
+      isLandBased: true,
+    }));
+
+    const result = optimizeLoadouts({
+      equipment: [...attackers, ...fighters],
+      baseCount: 2,
+      targetRadius: 7,
+      enemyAir: 180,
+      targetStates: ['parity', 'parity', 'parity', 'parity'],
+      maxResults: 1,
+      nodeBudget: Infinity,
+    });
+
+    expect(result.search).toEqual(expect.objectContaining({
+      status: 'optimal',
+      provenOptimal: true,
+      backend: 'frontier-dp',
+    }));
+    expect(result.search.solverStats.groupsRemoved).toBeGreaterThan(0);
+    expect(result.results[0].bases).toHaveLength(2);
+    expect(result.results[0].bases.every((base) => base.fulfilled)).toBe(true);
+  });
+
+  test('finds a multi-base seed without spending exact proof nodes', () => {
+    const equipment = [
+      plane('seed-fighter-1', { antiAir: 14, radius: 7, role: 'fighter' }),
+      plane('seed-fighter-2', { antiAir: 13, radius: 7, role: 'fighter' }),
+      ...Array.from({ length: 6 }, (_, index) => plane(`seed-attacker-${index}`, {
+        antiAir: 4,
+        radius: 7,
+        role: 'attacker',
+        torpedo: 20 - index,
+        isLandBased: true,
+      })),
+    ];
+    let cancel = false;
+
+    const result = optimizeLoadouts({
+      equipment,
+      baseCount: 2,
+      targetRadius: 7,
+      enemyAir: 120,
+      targetStates: ['parity', 'parity', 'parity', 'parity'],
+      maxResults: 1,
+      nodeBudget: Infinity,
+      isCancelled: () => cancel,
+      onIncumbent: () => {
+        cancel = true;
+      },
+    });
+
+    expect(result.results[0].fulfilled).toBe(true);
+    expect(result.search).toEqual(expect.objectContaining({
+      status: 'cancelled',
+      provenOptimal: false,
+    }));
+    expect(result.search.nodesExplored).toBeGreaterThan(0);
+  });
 });
 
 /** Creates a legacy optimizer fixture with explicit aircraft capabilities. */

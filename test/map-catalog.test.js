@@ -11,7 +11,11 @@ describe('noro6-compatible map catalog', () => {
     const eventA1 = catalog.formations(623, 'A1', 4)[0];
 
     expect(case64).toMatchObject({ enemyAir: 112, radius: [5] });
-    expect(case65).toMatchObject({ enemyAir: 342, radius: [5] });
+    expect(case65).toMatchObject({
+      enemyAir: 318,
+      radius: [5],
+      thresholds: { supremacy: 954, superiority: 477, parity: 213, denial: 107 },
+    });
     expect(eventA1).toMatchObject({
       enemyAir: 219,
       radius: [4, 7],
@@ -108,10 +112,17 @@ function itemMasters() {
     1547: 10, 1548: 0, 1549: 4, 1550: 9, 1553: 15, 1556: 12, 1557: 0,
     1558: 5, 1561: 3, 1565: 0, 1566: 7, 1567: 4, 1574: 8,
   };
+  const types = {
+    1502: 1, 1504: 2, 1505: 2, 1506: 2, 1513: 5, 1514: 5, 1515: 5,
+    1525: 10, 1532: 13, 1539: 21, 1540: 21, 1542: 15, 1543: 14, 1545: 14,
+    1547: 6, 1548: 7, 1549: 8, 1550: 1, 1553: 1, 1556: 6, 1557: 7,
+    1558: 8, 1561: 7, 1565: 1, 1566: 7, 1567: 13, 1574: 8,
+  };
   return Object.entries(values).map(([id, antiAir]) => ({
     id: Number(id),
     name: `Enemy item ${id}`,
     antiAir,
+    type: types[id],
   }));
 }
 

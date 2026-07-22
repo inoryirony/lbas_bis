@@ -83,6 +83,35 @@ describe('simulator state', () => {
       locked: true,
     });
   });
+
+  test('preserves custom enemy source metadata in optimizer and CLI scenario input', () => {
+    const state = stateModule.normalizeSimulatorState({
+      ...createEmptySimulatorState(),
+      enemy: {
+        dataSource: 'custom',
+        mode: 'detailed',
+        ships: [{ id: null, custom: true, name: '自定义空母', airPower: 0 }],
+        slots: [{
+          instanceId: 'custom-slot-0',
+          name: '自定义舰战',
+          sortieAntiAir: 12,
+          currentSlot: 24,
+          maxSlot: 24,
+          sourceShipIndex: 0,
+          overridden: true,
+        }],
+      },
+    });
+
+    const enemy = simulatorToOptimizerInput(state).enemy;
+    expect(enemy.dataSource).toBe('custom');
+    expect(enemy.ships[0]).toMatchObject({ custom: true, name: '自定义空母' });
+    expect(enemy.slots).toEqual([expect.objectContaining({
+        name: '自定义舰战',
+        currentSlot: 24,
+        overridden: true,
+      })]);
+  });
 });
 
 function plane(instanceId, overrides = {}) {

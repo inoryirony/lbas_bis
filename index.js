@@ -25,6 +25,7 @@ const OptimizerPanel = require('./src/ui/OptimizerPanel');
 
 const h = React.createElement;
 const PLUGIN_ID = 'lbas_bis';
+const CUSTOM_ENEMY_SHIP_ID = '__custom__';
 const STATE_OPTIONS = ['denial', 'parity', 'superiority', 'supremacy'];
 
 const FALLBACK_ZH_CN = {
@@ -132,6 +133,14 @@ const FALLBACK_ZH_CN = {
   mapDifficulty: '难度',
   enemyFormation: '敌编成',
   applyMapPreset: '应用预设',
+  useCustomComposition: '使用自定义编成',
+  customComposition: '自定义编成',
+  automaticComposition: '自动编成',
+  customDraftSaved: '自定义草稿已保留',
+  customEnemyShip: '完全自定义敌舰',
+  customEnemyShipName: '自定义敌舰名',
+  addSlotForShip: '为该舰增加敌机槽',
+  refreshEnemyShip: '刷新敌舰数据',
   bossNode: 'Boss',
   difficulty_0: '通常',
   difficulty_1: '丁',
@@ -159,6 +168,7 @@ class LbasOptimizerPanel extends React.Component {
       noro6Master: null,
       mapDataError: null,
     };
+    this.customEnemyDraft = cloneEnemy(this.state.simulator.enemy);
     this.searchRunner = props.searchRunner || null;
     this.readPoiState = props.readPoiState || readPoiState;
     this.calculateSimulatorSummary = props.calculateSimulatorSummary || calculateSimulatorSummary;
@@ -286,6 +296,19 @@ class LbasOptimizerPanel extends React.Component {
     }));
   };
 
+  /** Applies an enemy edit and records the normalized custom composition draft. */
+  updateCustomEnemy = (updater) => {
+    this.updateSimulator((simulator) => {
+      const updated = normalizeSimulatorState(updater(simulator));
+      const custom = normalizeSimulatorState({
+        ...updated,
+        enemy: { ...updated.enemy, dataSource: 'custom' },
+      });
+      this.customEnemyDraft = cloneEnemy(custom.enemy);
+      return custom;
+    });
+  };
+
   updateBaseCount = (baseCount) => {
     this.updateSimulator((simulator) => setBaseCount(simulator, baseCount));
   };
@@ -298,11 +321,12 @@ class LbasOptimizerPanel extends React.Component {
   };
 
   updateEnemyAir = (enemyAir) => {
-    this.updateSimulator((simulator) => ({
+    this.updateCustomEnemy((simulator) => ({
       ...simulator,
       enemy: {
         ...simulator.enemy,
         enemyAir,
+        manualEnemyAir: enemyAir,
         ships: simulator.enemy.ships.map((ship, index) =>
           index === 0 ? { ...ship, airPower: enemyAir } : ship,
         ),
@@ -312,7 +336,7 @@ class LbasOptimizerPanel extends React.Component {
 
   /** Switches between static total air and detailed enemy-slot simulation. */
   updateEnemyMode = (mode) => {
-    this.updateSimulator((simulator) => ({
+    const update = (simulator) => ({
       ...simulator,
       enemy: mode === 'detailed'
         ? {
@@ -325,23 +349,33 @@ class LbasOptimizerPanel extends React.Component {
         : {
           ...simulator.enemy,
           mode: 'manual',
-          slots: [],
+          enemyAir: simulator.enemy.manualEnemyAir ?? simulator.enemy.enemyAir,
         },
-    }));
+    });
+    if (this.state.simulator.enemy.dataSource === 'automatic') {
+      this.updateSimulator(update);
+    } else {
+      this.updateCustomEnemy(update);
+    }
   };
 
   /** Updates one detailed enemy aircraft slot. */
   updateEnemySlot = (slotIndex, slotPatch) => {
-    this.updateSimulator((simulator) =>
+    this.updateCustomEnemy((simulator) =>
       setDetailedEnemySlot(simulator, slotIndex, { ...slotPatch, overridden: true }));
   };
 
+  /** Replaces one fleet position with a catalog enemy or a custom enemy ship. */
   updateEnemyShip = (shipIndex, shipId) => {
     const catalog = this.state.enemyCatalog || this.currentEnemyCatalog();
-    const selected = shipId == null ? null : catalog.byId.get(Number(shipId));
-    this.updateSimulator((simulator) => {
+    const custom = shipId === CUSTOM_ENEMY_SHIP_ID;
+    const selected = shipId == null || custom ? null : catalog.byId.get(Number(shipId));
+    this.updateCustomEnemy((simulator) => {
+      const previous = simulator.enemy.ships[shipIndex];
       const ships = simulator.enemy.ships.map((ship, index) => index === shipIndex
-        ? selected
+        ? custom
+          ? { id: null, name: '', airPower: 0, dataStatus: 'custom', custom: true }
+          : selected
           ? {
             id: selected.id,
             name: selected.name,
@@ -351,19 +385,37 @@ class LbasOptimizerPanel extends React.Component {
           }
           : { id: null, name: '', airPower: 0, dataStatus: null }
         : ship);
-      const retainedSlots = simulator.enemy.slots.filter((slot) =>
-        slot.sourceShipIndex !== shipIndex && !isBlankGeneratedSlot(slot));
       const generatedSlots = selected ? catalog.slotsForShip(selected.id, shipIndex) : [];
+      const slots = mergeEnemyShipSlots(
+        simulator.enemy.slots,
+        generatedSlots,
+        shipIndex,
+        custom || (selected && Number(previous?.id) === selected.id),
+      );
       return {
         ...simulator,
         enemy: {
           ...simulator.enemy,
           mode: 'detailed',
           ships,
-          slots: [...retainedSlots, ...generatedSlots],
+          slots,
         },
       };
     });
+  };
+
+  /** Updates the display name of one completely custom enemy ship. */
+  updateEnemyShipName = (shipIndex, name) => {
+    this.updateCustomEnemy((simulator) => ({
+      ...simulator,
+      enemy: {
+        ...simulator.enemy,
+        mode: 'detailed',
+        ships: simulator.enemy.ships.map((ship, index) => index === shipIndex
+          ? { ...ship, id: null, custom: true, dataStatus: 'custom', name }
+          : ship),
+      },
+    }));
   };
 
   updateMapSelection = (field, rawValue) => {
@@ -383,39 +435,69 @@ class LbasOptimizerPanel extends React.Component {
   };
 
   applyMapPreset = (formation) => {
-    this.updateSimulator((simulator) => ({
-      ...simulator,
-      targetRadius: formation.radius.length
-        ? Math.max(...formation.radius)
-        : simulator.targetRadius,
-      enemy: {
-        ...simulator.enemy,
-        mode: 'detailed',
-        areaId: formation.area,
-        nodeId: formation.node,
-        source: formation.source,
-        ships: Array.from({ length: Math.max(6, formation.ships.length) }, (_, index) => formation.ships[index]
-          ? { ...formation.ships[index] }
-          : { id: null, name: '', airPower: 0 }),
-        slots: formation.enemySlots.map((slot) => ({ ...slot, overridden: false })),
-      },
-    }));
+    this.updateSimulator((simulator) => {
+      if (simulator.enemy.dataSource === 'custom') {
+        this.customEnemyDraft = cloneEnemy(simulator.enemy);
+      }
+      return {
+        ...simulator,
+        targetRadius: formation.radius.length
+          ? Math.max(...formation.radius)
+          : simulator.targetRadius,
+        enemy: {
+          ...simulator.enemy,
+          mode: 'detailed',
+          dataSource: 'automatic',
+          areaId: formation.area,
+          nodeId: formation.node,
+          source: formation.source,
+          manualEnemyAir: Number.isFinite(Number(formation.enemyAir))
+            ? Math.max(0, Number(formation.enemyAir))
+            : formation.ships.reduce((total, ship) => total + (Number(ship.airPower) || 0), 0),
+          ships: Array.from({ length: Math.max(6, formation.ships.length) }, (_, index) => formation.ships[index]
+            ? { ...formation.ships[index] }
+            : { id: null, name: '', airPower: 0 }),
+          slots: formation.enemySlots.map((slot) => ({ ...slot, overridden: false })),
+        },
+      };
+    });
+  };
+
+  /** Restores the custom draft for the currently selected map node. */
+  useCustomEnemyComposition = () => {
+    this.updateSimulator((simulator) => {
+      const draft = cloneEnemy(this.customEnemyDraft || simulator.enemy);
+      const enemy = {
+        ...draft,
+        dataSource: 'custom',
+        areaId: this.state.mapSelection.area ?? draft.areaId,
+        nodeId: this.state.mapSelection.node || draft.nodeId,
+      };
+      this.customEnemyDraft = cloneEnemy(enemy);
+      return { ...simulator, enemy };
+    });
   };
 
   /** Appends one editable detailed enemy aircraft slot. */
-  addEnemySlot = () => {
-    this.updateSimulator((simulator) =>
-      addDetailedEnemySlot(simulator, createEnemySlot(nextEnemySlotIndex(simulator.enemy.slots))));
+  addEnemySlot = (sourceShipIndex = null) => {
+    const normalizedSourceShipIndex = Number.isInteger(sourceShipIndex) && sourceShipIndex >= 0
+      ? sourceShipIndex
+      : null;
+    this.updateCustomEnemy((simulator) =>
+      addDetailedEnemySlot(simulator, {
+        ...createEnemySlot(nextEnemySlotIndex(simulator.enemy.slots)),
+        ...(normalizedSourceShipIndex == null ? {} : { sourceShipIndex: normalizedSourceShipIndex }),
+      }));
   };
 
   /** Removes one detailed enemy aircraft slot. */
   removeEnemySlot = (slotIndex) => {
-    this.updateSimulator((simulator) => removeDetailedEnemySlot(simulator, slotIndex));
+    this.updateCustomEnemy((simulator) => removeDetailedEnemySlot(simulator, slotIndex));
   };
 
   /** Toggles air-raid-cell rules for jet assault. */
   updateAirRaidCell = (isAirRaidCell) => {
-    this.updateSimulator((simulator) => ({
+    this.updateCustomEnemy((simulator) => ({
       ...simulator,
       enemy: { ...simulator.enemy, isAirRaidCell: Boolean(isAirRaidCell) },
     }));
@@ -512,8 +594,10 @@ class LbasOptimizerPanel extends React.Component {
         onEnemySlotAdd: this.addEnemySlot,
         onEnemySlotRemove: this.removeEnemySlot,
         onEnemyShipChange: this.updateEnemyShip,
+        onEnemyShipNameChange: this.updateEnemyShipName,
         onMapSelectionChange: this.updateMapSelection,
         onMapPresetApply: this.applyMapPreset,
+        onUseCustomEnemy: this.useCustomEnemyComposition,
         onAirRaidCellChange: this.updateAirRaidCell,
         onSimulationOptionChange: this.updateSimulationOption,
         onSlotPlaneChange: this.updateSlotPlane,
@@ -579,6 +663,15 @@ function nextEnemySlotIndex(slots) {
   return index;
 }
 
+/** Creates a detached enemy draft whose ship and slot arrays can be replaced safely. */
+function cloneEnemy(enemy) {
+  return {
+    ...enemy,
+    ships: (enemy.ships || []).map((ship) => ({ ...ship })),
+    slots: (enemy.slots || []).map((slot) => ({ ...slot })),
+  };
+}
+
 let cachedCatalogState = null;
 let cachedCatalogMaster = null;
 let cachedEnemyCatalog = null;
@@ -597,6 +690,28 @@ function isBlankGeneratedSlot(slot) {
   return slot.sourceShipIndex == null &&
     !slot.name &&
     Number(slot.sortieAntiAir) === 0;
+}
+
+/** Merges refreshed catalog slots while retaining explicit overrides for the same ship. */
+function mergeEnemyShipSlots(existingSlots, generatedSlots, shipIndex, preserveOverrides) {
+  const unrelated = existingSlots.filter((slot) =>
+    slot.sourceShipIndex !== shipIndex && !isBlankGeneratedSlot(slot));
+  if (!preserveOverrides) return [...unrelated, ...generatedSlots];
+
+  const overrides = existingSlots.filter((slot) =>
+    slot.sourceShipIndex === shipIndex && slot.overridden === true);
+  const matched = new Set();
+  const refreshed = generatedSlots.map((slot) => {
+    const overrideIndex = overrides.findIndex((candidate, index) =>
+      !matched.has(index) &&
+      candidate.sourceSlotIndex != null &&
+      candidate.sourceSlotIndex === slot.sourceSlotIndex);
+    if (overrideIndex < 0) return slot;
+    matched.add(overrideIndex);
+    return { ...slot, ...overrides[overrideIndex] };
+  });
+  const customExtras = overrides.filter((_slot, index) => !matched.has(index));
+  return [...unrelated, ...refreshed, ...customExtras];
 }
 
 function parseTargetStates(value) {
@@ -752,6 +867,14 @@ const styles = {
   meta: {
     color: '#777',
     fontSize: 12,
+  },
+  customBadge: {
+    borderLeft: '3px solid #2f7d4a',
+    color: '#245c38',
+    fontSize: 12,
+    fontWeight: 600,
+    marginBottom: 8,
+    padding: '3px 6px',
   },
   tableWrap: {
     overflowX: 'auto',

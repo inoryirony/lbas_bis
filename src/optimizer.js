@@ -5,10 +5,15 @@ const {
   calculateEffectiveRadius,
   calculateSlotAirPower,
   defaultSlotSizeForPlane,
+  landReconCoefficient,
   requiredAirForState,
 } = require('./air-power');
 const { aircraftEquivalenceKey, capabilitiesFor } = require('./aircraft');
-const { calculateBaseDamagePower } = require('./damage');
+const {
+  calculateBaseDamagePower,
+  calculatePlaneSurfaceTargetPowerProxy,
+  landBasedReconDamageModifier,
+} = require('./damage');
 const { validateAndNormalizeDetailedEnemySlots } = require('./enemy-slots');
 const { validateSampleCount } = require('./simulation-options');
 const {
@@ -28,6 +33,8 @@ const WAVES_PER_BASE = 2;
 const DEFAULT_MAX_RESULTS = 10;
 const DEFAULT_NODE_BUDGET = 100000;
 const DEFAULT_SIMULATION_WORK_BUDGET = Number.POSITIVE_INFINITY;
+const STATIC_AIR_BOUND_WEIGHTS = Object.freeze([0, 0.125, 0.25, 0.5, 1, 2, 4, 8, 16, 32]);
+const STATIC_RECON_DAMAGE_MODIFIERS = Object.freeze([1, 1.125, 1.15]);
 const SLOT_KINDS = Object.freeze({
   LOCKED_ITEM: 'LOCKED_ITEM',
   LOCKED_EMPTY: 'LOCKED_EMPTY',
@@ -51,6 +58,10 @@ function optimizeLoadouts(options = {}) {
     );
   }
 
+  if (!prepared.detailed && prepared.maxResults === 1 && !Number.isFinite(prepared.budget)) {
+    return optimizeStaticRankOne(prepared, options);
+  }
+
   const {
     baseCount,
     baseLocks,
@@ -64,6 +75,20 @@ function optimizeLoadouts(options = {}) {
     waveTargets,
   } = prepared;
   const remainingCounts = groups.map((group) => group.instances.length);
+  const relaxedBaseDamageUpperBounds = baseLocks.map((baseLock, baseIndex) => {
+    const searchOrder = orderedGroupIndices(prepared, baseIndex, 0);
+    const counts = groups.map(() => 0);
+    return maximumStaticBaseDamage(
+      baseLock,
+      counts,
+      remainingCounts,
+      groups,
+      searchOrder,
+      0,
+      baseLock.slots.filter((slot) => slot.kind === SLOT_KINDS.OPEN).length,
+      requiredAirForState(enemyAir, targetStateForBase(waveTargets, baseIndex)),
+    );
+  });
   const selected = [];
   const retained = [];
   const retainedByKey = new Map();
@@ -92,6 +117,41 @@ function optimizeLoadouts(options = {}) {
     return cancelled;
   };
 
+  function considerCompletePlan() {
+    if (detailed && !reserveSimulationSamples(
+      simulationBudgetState,
+      prepared.simulationOptions.sampleCount,
+    )) return false;
+    return considerPlan(materializePlan(selected, prepared));
+  }
+
+  function considerPlan(plan) {
+    candidatesEvaluated += 1;
+    const targetFeasible = isTargetFeasibleIncumbent(plan, detailed);
+    if (targetFeasible && !hasFeasibleIncumbent) {
+      hasFeasibleIncumbent = true;
+      removeZeroFulfillmentPlans(retained, retainedByKey);
+      currentPhase = 'improving';
+      options.onPhaseChange?.(currentPhase);
+    }
+    const changedRankOne = detailed && hasFeasibleIncumbent && !targetFeasible
+      ? false
+      : retainPlan(plan, retained, retainedByKey, maxResults);
+    if (changedRankOne && targetFeasible) {
+      options.onIncumbent?.(plan, {
+        phase: currentPhase,
+        nodesExplored: budgetState.nodesExplored,
+        candidatesEvaluated,
+        simulationSamplesEvaluated: simulationBudgetState.samplesEvaluated,
+      });
+    }
+    if (hasFeasibleIncumbent && currentPhase === 'improving') {
+      currentPhase = 'proving_optimal';
+      options.onPhaseChange?.(currentPhase);
+    }
+    return targetFeasible;
+  }
+
   /** Visits one partial allocation and proves or bounds all descendants. */
   function visit(baseIndex) {
     if (prepared.isCancelled()) return;
@@ -99,59 +159,8 @@ function optimizeLoadouts(options = {}) {
     if (!consumeBudget(budgetState)) return;
 
     if (baseIndex === baseCount) {
-      if (detailed && !reserveSimulationSamples(
-        simulationBudgetState,
-        prepared.simulationOptions.sampleCount,
-      )) return;
-      const plan = materializePlan(selected, prepared);
-      candidatesEvaluated += 1;
-      const targetFeasible = isTargetFeasibleIncumbent(plan, detailed);
-      if (targetFeasible && !hasFeasibleIncumbent) {
-        hasFeasibleIncumbent = true;
-        removeZeroFulfillmentPlans(retained, retainedByKey);
-        currentPhase = 'improving';
-        options.onPhaseChange?.(currentPhase);
-      }
-      const changedRankOne = detailed && hasFeasibleIncumbent && !targetFeasible
-        ? false
-        : retainPlan(plan, retained, retainedByKey, maxResults);
-      if (changedRankOne && targetFeasible) {
-        options.onIncumbent?.(plan, {
-          phase: currentPhase,
-          nodesExplored: budgetState.nodesExplored,
-          candidatesEvaluated,
-          simulationSamplesEvaluated: simulationBudgetState.samplesEvaluated,
-        });
-      }
-      if (hasFeasibleIncumbent && currentPhase === 'improving') {
-        currentPhase = 'proving_optimal';
-        options.onPhaseChange?.(currentPhase);
-      }
+      considerCompletePlan();
       return;
-    }
-
-    if (!detailed && retained.length >= maxResults) {
-      const envelopes = [];
-      for (let index = baseIndex; index < baseCount; index += 1) {
-        const envelope = calculateBaseEnvelope(
-          baseLocks[index],
-          remainingCounts,
-          prepared,
-          index,
-          budgetState,
-        );
-        if (budgetState.exhausted || !envelope.feasible) return;
-        envelopes.push(envelope);
-      }
-      const upperBound = optimisticPlanScore(
-        summarizePartial(selected),
-        groups,
-        { envelopes },
-      );
-      const kthScore = scorePlan(retained[retained.length - 1]);
-      if (upperBound && comparePlanScores(upperBound, kthScore) < 0) {
-        return;
-      }
     }
 
     walkBaseAssignments(
@@ -169,9 +178,108 @@ function optimizeLoadouts(options = {}) {
         addCounts(remainingCounts, candidate.counts);
         return !budgetState.exhausted && !simulationBudgetState.exhausted;
       },
+      detailed
+        ? null
+        : ({
+          counts,
+          searchOrder,
+          orderIndex,
+          slotsLeft,
+          staticBoundContext,
+          selectedGroupIndices,
+        }) => {
+          if (retained.length < maxResults) return false;
+          const selectedDamage = selected.reduce(
+            (total, candidate) => total + candidate.summary.damagePower,
+            0,
+          );
+          const currentBaseUpper = maximumStaticBaseDamage(
+            baseLocks[baseIndex],
+            counts,
+            remainingCounts,
+            groups,
+            searchOrder,
+            orderIndex,
+            slotsLeft,
+            requiredAirForState(
+              enemyAir,
+              targetStateForBase(waveTargets, baseIndex),
+            ),
+            staticBoundContext(),
+            selectedGroupIndices,
+          );
+          const futureUpper = relaxedBaseDamageUpperBounds
+            .slice(baseIndex + 1)
+            .reduce((total, damage) => total + damage, 0);
+          const kthDamage = scorePlan(retained[retained.length - 1]).damage;
+          return selectedDamage + currentBaseUpper + futureUpper < kthDamage;
+        },
     );
   }
 
+  function seedStaticIncumbent() {
+    const candidatesByBase = baseLocks.map((baseLock, baseIndex) =>
+      buildStaticSeedCandidates(baseLock, prepared, baseIndex, options));
+    if (candidatesByBase.some((candidates) => candidates.length === 0)) return;
+    const seedPlans = [];
+    const seedPlansByKey = new Map();
+    const seedLoadouts = [];
+    const usedIds = new Set();
+    const maximumCombinations = Math.max(
+      1,
+      Number(options.seedCombinationBudget) || 100000,
+    );
+    const suffixDamage = Array(baseCount + 1).fill(0);
+    for (let baseIndex = baseCount - 1; baseIndex >= 0; baseIndex -= 1) {
+      suffixDamage[baseIndex] = suffixDamage[baseIndex + 1] +
+        candidatesByBase[baseIndex][0].summary.damagePower;
+    }
+    let combinationsVisited = 0;
+
+    function combine(baseIndex, selectedDamage) {
+      if (prepared.isCancelled() || combinationsVisited >= maximumCombinations) return;
+      if (seedPlans.length >= maxResults &&
+          selectedDamage + suffixDamage[baseIndex] < seedPlans.at(-1).totalDamagePower) {
+        return;
+      }
+      if (baseIndex === baseCount) {
+        retainPlan(
+          summarizePlan(seedLoadouts, prepared),
+          seedPlans,
+          seedPlansByKey,
+          maxResults,
+        );
+        return;
+      }
+      for (const candidate of candidatesByBase[baseIndex]) {
+        combinationsVisited += 1;
+        if (candidate.instanceIds.some((instanceId) => usedIds.has(instanceId))) continue;
+        if (seedPlans.length >= maxResults && selectedDamage +
+            candidate.summary.damagePower + suffixDamage[baseIndex + 1] <
+            seedPlans.at(-1).totalDamagePower) {
+          break;
+        }
+        candidate.instanceIds.forEach((instanceId) => usedIds.add(instanceId));
+        seedLoadouts.push(candidate.loadout);
+        combine(baseIndex + 1, selectedDamage + candidate.summary.damagePower);
+        seedLoadouts.pop();
+        candidate.instanceIds.forEach((instanceId) => usedIds.delete(instanceId));
+        if (prepared.isCancelled() || combinationsVisited >= maximumCombinations) break;
+      }
+    }
+
+    combine(0, 0);
+    seedPlans.sort(comparePlansForSort);
+    for (let index = seedPlans.length - 1; index >= 0; index -= 1) {
+      considerPlan(seedPlans[index]);
+      if (prepared.isCancelled()) break;
+    }
+    options.onProgress?.(progressSnapshot());
+  }
+
+  if (!detailed && baseCount > 1 && maxResults === 1 && !Number.isFinite(budget)) {
+    seedStaticIncumbent();
+  }
   visit(0);
   if (detailed && !hasFeasibleIncumbent) {
     removeZeroFulfillmentPlans(retained, retainedByKey);
@@ -522,6 +630,219 @@ function groupEquipment(equipment) {
     .sort((left, right) => left.key.localeCompare(right.key));
 }
 
+/** Routes static rank-1 searches through the exact capacity-frontier solver. */
+function optimizeStaticRankOne(prepared, options) {
+  const { solveStaticExact } = require('./static-exact-solver');
+  const exact = solveStaticExact(prepared, {
+    nodeBudget: prepared.budget,
+    isCancelled: options.isCancelled,
+    onIncumbent: options.onIncumbent,
+    onPhaseChange: options.onPhaseChange,
+    onProgress: options.onProgress,
+  });
+  const stopped = !exact.provenOptimal;
+  const cancelled = exact.solverStats.status === 'cancelled';
+  const status = exact.provenOptimal
+    ? exact.plan ? 'optimal' : 'infeasible'
+    : cancelled ? 'cancelled' : 'budget_exhausted';
+  const messages = [];
+  if (status === 'infeasible') messages.push(infeasibleMessage(prepared, []));
+  if (status === 'budget_exhausted') {
+    messages.push('Search or simulation work budget exhausted before optimality was proven.');
+  }
+  if (status === 'cancelled') {
+    messages.push('Search cancelled; the current best plan is preserved but is not proven optimal.');
+  }
+  return {
+    messages,
+    results: exact.plan ? [exact.plan] : [],
+    search: {
+      mode: 'branch-and-bound',
+      backend: exact.solverStats.backend,
+      status,
+      nodesExplored: exact.solverStats.nodesExplored,
+      budget: prepared.budget,
+      simulationSamplesEvaluated: 0,
+      candidatesEvaluated: exact.solverStats.combinationsEvaluated,
+      simulationBudget: 0,
+      provenOptimal: !stopped,
+      solverStats: exact.solverStats,
+    },
+  };
+}
+
+/** Builds a small, diverse physical-aircraft pool for fast incumbent construction. */
+function buildStaticSeedPool(prepared, options) {
+  const maximumPoolSize = Math.max(8, Number(options.seedPoolLimit) || 64);
+  const maximumCopies = prepared.baseCount * SLOTS_PER_BASE;
+  const bySignature = new Map();
+  for (const plane of prepared.groups.flatMap((group) => group.instances)) {
+    const features = staticSeedFeatures(plane);
+    const signature = Object.values(features).join(':');
+    const copies = bySignature.get(signature) || [];
+    if (copies.length < maximumCopies) copies.push({ plane, features });
+    bySignature.set(signature, copies);
+  }
+  let remaining = [...bySignature.values()].flat();
+  const pool = [];
+  const layerCount = Math.max(1, Number(options.seedParetoLayers) || 2);
+  for (let layer = 0;
+    (layer < layerCount || pool.length < maximumCopies) && remaining.length;
+    layer += 1) {
+    const frontier = remaining.filter((candidate, candidateIndex) =>
+      !remaining.some((other, otherIndex) => otherIndex !== candidateIndex &&
+        dominatesStaticSeedFeatures(other.features, candidate.features)));
+    pool.push(...frontier);
+    const frontierIds = new Set(frontier.map(({ plane }) => plane.instanceId));
+    remaining = remaining.filter(({ plane }) => !frontierIds.has(plane.instanceId));
+  }
+  if (pool.length <= maximumPoolSize) return pool.map(({ plane }) => plane);
+
+  const selected = new Map();
+  const weights = [0, 0.125, 0.25, 0.5, 1, 2, 4, 8];
+  for (const airWeight of weights) {
+    const ranked = [...pool].sort((left, right) =>
+      (right.features.damage + airWeight * right.features.air) -
+      (left.features.damage + airWeight * left.features.air));
+    for (const candidate of ranked.slice(0, Math.ceil(maximumPoolSize / weights.length))) {
+      selected.set(candidate.plane.instanceId, candidate.plane);
+    }
+  }
+  for (const candidate of pool) {
+    if (selected.size >= maximumPoolSize) break;
+    selected.set(candidate.plane.instanceId, candidate.plane);
+  }
+  return [...selected.values()].slice(0, maximumPoolSize);
+}
+
+function staticSeedFeatures(plane) {
+  return {
+    air: calculateSlotAirPower(plane),
+    damage: calculatePlaneSurfaceTargetPowerProxy(plane),
+    radius: Math.max(0, Number(plane.radius) || 0),
+    reconAir: landReconCoefficient([plane]),
+    reconDamage: landBasedReconDamageModifier([plane]),
+  };
+}
+
+function dominatesStaticSeedFeatures(left, right) {
+  const keys = ['air', 'damage', 'radius', 'reconAir', 'reconDamage'];
+  return keys.every((key) => left[key] >= right[key]) &&
+    keys.some((key) => left[key] > right[key]);
+}
+
+/** Enumerates feasible per-base seeds from the bounded Pareto pool. */
+function buildStaticSeedCandidates(baseLock, prepared, baseIndex, options) {
+  const pool = buildStaticSeedPool(prepared, options);
+  const openIndices = baseLock.slots
+    .map((slot, slotIndex) => slot.kind === SLOT_KINDS.OPEN ? slotIndex : -1)
+    .filter((slotIndex) => slotIndex >= 0);
+  if (pool.length < openIndices.length) return [];
+  const loadout = baseLock.slots.map((slot) =>
+    slot.kind === SLOT_KINDS.LOCKED_ITEM ? slot.plane : null);
+  const candidates = [];
+  const maximumCandidates = Math.max(1, Number(options.seedCandidateLimit) || 4096);
+
+  function enumerate(startIndex, openIndex) {
+    if (openIndex === openIndices.length) {
+      const summary = summarizeBase(
+        loadout,
+        prepared.enemyAir,
+        targetStateForBase(prepared.waveTargets, baseIndex),
+        prepared.inventoryCounts,
+        { details: false },
+      );
+      if (!isBaseFeasible(summary, prepared.targetRadius)) return;
+      const concrete = [...loadout];
+      const instanceIds = concrete.filter(Boolean).map((plane) => plane.instanceId);
+      candidates.push({
+        loadout: concrete,
+        instanceIds,
+        summary,
+        score: scorePlan({
+          totalDamagePower: summary.damagePower,
+          totalResourceCost: summary.resourceCost,
+          worstMargin: summary.marginToTarget,
+          scarcityCost: summary.scarcityCost,
+          canonicalKey: instanceIds.slice().sort().join('|'),
+        }),
+      });
+      return;
+    }
+    const needed = openIndices.length - openIndex;
+    for (let poolIndex = startIndex; poolIndex <= pool.length - needed; poolIndex += 1) {
+      loadout[openIndices[openIndex]] = pool[poolIndex];
+      enumerate(poolIndex + 1, openIndex + 1);
+    }
+    loadout[openIndices[openIndex]] = null;
+  }
+
+  enumerate(0, 0);
+  candidates.sort((left, right) => -comparePlanScores(left.score, right.score));
+  return candidates.slice(0, maximumCandidates);
+}
+
+/** Keeps every group that can appear in a nondominated final-base loadout. */
+function staticDominanceSearchOrder(searchOrder, remainingCounts, prepared, slotCapacity) {
+  if (slotCapacity <= 0) return [];
+  const layerLimit = slotCapacity + prepared.maxResults - 1;
+  const features = prepared.groups.map((group) => {
+    const plane = group.representative;
+    const capabilities = capabilitiesFor(plane);
+    const summary = summarizeBase(
+      [plane],
+      prepared.enemyAir,
+      'none',
+      prepared.inventoryCounts,
+      { details: false },
+    );
+    return {
+      feasibility: [
+        calculateSlotAirPower(plane),
+        Math.max(0, Number(plane.radius) || 0),
+        landReconCoefficient([plane]),
+        landBasedReconDamageModifier([plane]),
+        capabilities.isRecon || plane.isRecon ? 1 : 0,
+        capabilities.blocksRangeExtension || plane.blocksRangeExtension ? 0 : 1,
+      ],
+      damage: STATIC_RECON_DAMAGE_MODIFIERS.map((modifier) =>
+        calculatePlaneSurfaceTargetPowerProxy(plane, { reconModifier: modifier })),
+      resource: summary.resourceCost,
+      scarcity: summary.scarcityCost,
+    };
+  });
+  let remaining = searchOrder.flatMap((groupIndex) =>
+    Array.from(
+      { length: Math.min(slotCapacity, remainingCounts[groupIndex]) },
+      (_unused, copyIndex) => ({ groupIndex, copyIndex }),
+    ));
+  const retainedGroups = new Set();
+  for (let layer = 0; layer < layerLimit && remaining.length; layer += 1) {
+    const frontier = remaining.filter((candidate, candidateIndex) =>
+      !remaining.some((other, otherIndex) => otherIndex !== candidateIndex &&
+        dominatesStaticVector(features[other.groupIndex], features[candidate.groupIndex])));
+    frontier.forEach(({ groupIndex }) => retainedGroups.add(groupIndex));
+    const frontierTokens = new Set(frontier.map(({ groupIndex, copyIndex }) =>
+      `${groupIndex}:${copyIndex}`));
+    remaining = remaining.filter(({ groupIndex, copyIndex }) =>
+      !frontierTokens.has(`${groupIndex}:${copyIndex}`));
+  }
+  return searchOrder.filter((groupIndex) => retainedGroups.has(groupIndex));
+}
+
+function dominatesStaticVector(left, right) {
+  if (!left.feasibility.every((value, index) => value >= right.feasibility[index])) {
+    return false;
+  }
+  if (left.damage.every((value, index) => value > right.damage[index])) return true;
+  if (!left.damage.every((value, index) => value >= right.damage[index])) return false;
+  if (left.resource < right.resource) return true;
+  if (left.resource > right.resource || left.scarcity > right.scarcity) return false;
+  return left.damage.some((value, index) => value > right.damage[index]) ||
+    left.feasibility.some((value, index) => value > right.feasibility[index]) ||
+    left.scarcity < right.scarcity;
+}
+
 /** Streams grouped count assignments without retaining the candidate set. */
 function walkBaseAssignments(
   baseLock,
@@ -531,7 +852,19 @@ function walkBaseAssignments(
   budgetState,
   mode,
   onCandidate,
+  prunePartial = null,
 ) {
+  if (!prepared.detailed && mode === 'branch') {
+    return walkStaticBaseAssignmentsBySlots(
+      baseLock,
+      remainingCounts,
+      prepared,
+      baseIndex,
+      budgetState,
+      onCandidate,
+      prunePartial,
+    );
+  }
   const counts = prepared.groups.map(() => 0);
   const openSlots = baseLock.slots.filter((slot) => slot.kind === SLOT_KINDS.OPEN).length;
   const lockedAirPower = baseLock.slots
@@ -552,6 +885,17 @@ function walkBaseAssignments(
     if (budgetState.exhausted) return false;
     if (prepared.detailed && orderIndex < searchOrder.length &&
         !consumeBudget(budgetState)) return false;
+    if (!prepared.detailed && prunePartial?.({
+      counts,
+      searchOrder,
+      orderIndex,
+      slotsLeft,
+      selectedAirPower,
+      lockedAirPower,
+    })) {
+      budgetState.nodesPruned += 1;
+      return consumeBudget(budgetState);
+    }
     if (!canReachRequiredAir(
       searchOrder,
       orderIndex,
@@ -621,6 +965,350 @@ function walkBaseAssignments(
   }
 
   return enumerate(0, openSlots, 0);
+}
+
+/** Enumerates only selected static slots instead of recursing through hundreds of zero-count groups. */
+function walkStaticBaseAssignmentsBySlots(
+  baseLock,
+  remainingCounts,
+  prepared,
+  baseIndex,
+  budgetState,
+  onCandidate,
+  prunePartial,
+) {
+  const counts = prepared.groups.map(() => 0);
+  const openSlots = baseLock.slots.filter((slot) => slot.kind === SLOT_KINDS.OPEN).length;
+  const lockedAirPower = baseLock.slots
+    .filter((slot) => slot.kind === SLOT_KINDS.LOCKED_ITEM)
+    .reduce((total, slot) => total + calculateSlotAirPower(slot.plane), 0);
+  const targetState = targetStateForBase(prepared.waveTargets, baseIndex);
+  const requiredAir = requiredAirForState(prepared.enemyAir, targetState);
+  let searchOrder = orderedGroupIndices(prepared, baseIndex, requiredAir);
+  if (prepared.maxResults === 1) {
+    const remainingSlotCapacity = prepared.baseLocks
+      .slice(baseIndex)
+      .reduce((total, lock) => total +
+        lock.slots.filter((slot) => slot.kind === SLOT_KINDS.OPEN).length, 0);
+    searchOrder = staticDominanceSearchOrder(
+      searchOrder,
+      remainingCounts,
+      prepared,
+      remainingSlotCapacity,
+    );
+  }
+  let boundContext = null;
+  const staticBoundContext = () => {
+    if (!boundContext) {
+      boundContext = buildStaticSuffixDamageBounds(
+        remainingCounts,
+        prepared.groups,
+        searchOrder,
+      );
+    }
+    return boundContext;
+  };
+  const selectedGroupIndices = [];
+
+  function enumerate(startPosition, slotsLeft, selectedAirPower) {
+    if (prepared.isCancelled?.()) return false;
+    if (budgetState.exhausted) return false;
+    if (prunePartial?.({
+      counts,
+      searchOrder,
+      orderIndex: startPosition,
+      slotsLeft,
+      selectedAirPower,
+      lockedAirPower,
+      staticBoundContext,
+      selectedGroupIndices,
+    })) {
+      budgetState.nodesPruned += 1;
+      return consumeBudget(budgetState);
+    }
+    const optimisticRawAir = selectedAirPower + lockedAirPower +
+      staticBoundContext().maximumRawAir(startPosition, slotsLeft);
+    if (Math.floor(optimisticRawAir * 1.18) < requiredAir) {
+      budgetState.nodesPruned += 1;
+      return consumeBudget(budgetState);
+    }
+
+    if (slotsLeft > 0) {
+      for (let position = startPosition; position < searchOrder.length; position += 1) {
+        const groupIndex = searchOrder[position];
+        if (counts[groupIndex] >= remainingCounts[groupIndex]) continue;
+        counts[groupIndex] += 1;
+        selectedGroupIndices.push(groupIndex);
+        const completed = enumerate(
+          position,
+          slotsLeft - 1,
+          selectedAirPower + prepared.groups[groupIndex].slotAirPower,
+        );
+        selectedGroupIndices.pop();
+        counts[groupIndex] -= 1;
+        if (!completed) return false;
+      }
+    }
+
+    const loadout = materializeRepresentativeLoadout(baseLock, counts, prepared.groups);
+    const summary = summarizeBase(
+      loadout,
+      prepared.enemyAir,
+      targetState,
+      prepared.inventoryCounts,
+      { details: false },
+    );
+    if (!isBaseFeasible(summary, prepared.targetRadius)) {
+      return consumeBudget(budgetState);
+    }
+    return onCandidate({
+      counts: [...counts],
+      summary,
+      score: scorePlan({
+        totalDamagePower: summary.damagePower,
+        totalResourceCost: summary.resourceCost,
+        worstMargin: summary.marginToTarget,
+        scarcityCost: summary.scarcityCost,
+        canonicalKey: canonicalBaseCountKey(baseLock, counts, prepared.groups, openSlots),
+      }),
+    }) !== false;
+  }
+
+  return enumerate(0, openSlots, 0);
+}
+
+/**
+ * Returns an exact damage-only upper bound for one partially enumerated static base.
+ * Range and air constraints are intentionally relaxed, while land-recon modifiers
+ * still consume a real slot so the bound remains useful without becoming heuristic.
+ */
+function maximumStaticBaseDamage(
+  baseLock,
+  counts,
+  remainingCounts,
+  groups,
+  searchOrder,
+  orderIndex,
+  slotsLeft,
+  requiredAir,
+  boundContext = null,
+  selectedGroupIndices = null,
+) {
+  const fixedPlanes = baseLock.slots
+    .filter((slot) => slot.kind === SLOT_KINDS.LOCKED_ITEM)
+    .map((slot) => slot.plane);
+  if (selectedGroupIndices) {
+    for (const groupIndex of selectedGroupIndices) {
+      fixedPlanes.push(groups[groupIndex].representative);
+    }
+  } else {
+    for (let groupIndex = 0; groupIndex < counts.length; groupIndex += 1) {
+      for (let count = 0; count < counts[groupIndex]; count += 1) {
+        fixedPlanes.push(groups[groupIndex].representative);
+      }
+    }
+  }
+
+  const allowed = searchOrder.slice(orderIndex);
+  const maximumModifier = STATIC_RECON_DAMAGE_MODIFIERS.at(-1);
+  const requiredRawAir = Math.ceil(requiredAir / 1.18);
+  const fixedRawAir = fixedPlanes.reduce(
+    (total, plane) => total + calculateSlotAirPower(plane),
+    0,
+  );
+  const rawAirDeficit = Math.max(0, requiredRawAir - fixedRawAir);
+  const fixedDamage = fixedPlanes.reduce(
+    (total, plane) => total + calculatePlaneSurfaceTargetPowerProxy(
+      plane,
+      { reconModifier: maximumModifier },
+    ),
+    0,
+  );
+  let maximum = Number.POSITIVE_INFINITY;
+  for (const airWeight of STATIC_AIR_BOUND_WEIGHTS) {
+    const remainingUpper = boundContext
+      ? boundContext.maximum(
+        orderIndex,
+        slotsLeft,
+        maximumModifier,
+        null,
+        airWeight,
+      )
+      : maximumRemainingPlaneDamage(
+        allowed,
+        slotsLeft,
+        maximumModifier,
+        counts,
+        remainingCounts,
+        groups,
+        null,
+        airWeight,
+      );
+    if (!Number.isFinite(remainingUpper)) continue;
+    maximum = Math.min(
+      maximum,
+      fixedDamage + remainingUpper - airWeight * rawAirDeficit,
+    );
+  }
+  return Number.isFinite(maximum) ? maximum : 0;
+}
+
+/** Precomputes relaxed suffix contribution tables shared by every static slot prefix. */
+function buildStaticSuffixDamageBounds(remainingCounts, groups, searchOrder) {
+  const tableByKey = new Map();
+  const maximumAirCoefficients = Array(searchOrder.length + 1).fill(1);
+  const maximumRawAir = Array.from(
+    { length: searchOrder.length + 1 },
+    () => Array(SLOTS_PER_BASE + 1).fill(0),
+  );
+  for (let position = searchOrder.length - 1; position >= 0; position -= 1) {
+    const groupIndex = searchOrder[position];
+    maximumAirCoefficients[position] = Math.max(
+      maximumAirCoefficients[position + 1],
+      remainingCounts[groupIndex] > 0
+        ? landReconCoefficient([groups[groupIndex].representative])
+        : 1,
+    );
+    for (let slots = 0; slots <= SLOTS_PER_BASE; slots += 1) {
+      maximumRawAir[position][slots] = maximumRawAir[position + 1][slots];
+      const copies = Math.min(slots, remainingCounts[groupIndex]);
+      for (let count = 1; count <= copies; count += 1) {
+        maximumRawAir[position][slots] = Math.max(
+          maximumRawAir[position][slots],
+          maximumRawAir[position + 1][slots - count] +
+            count * groups[groupIndex].slotAirPower,
+        );
+      }
+    }
+  }
+
+  for (const modifier of STATIC_RECON_DAMAGE_MODIFIERS) {
+    for (const airWeight of STATIC_AIR_BOUND_WEIGHTS) {
+      const rows = Array(searchOrder.length + 1);
+      rows[searchOrder.length] = emptyStaticSuffixRow();
+      for (let position = searchOrder.length - 1; position >= 0; position -= 1) {
+        const groupIndex = searchOrder[position];
+        const representative = groups[groupIndex].representative;
+        const groupModifier = landBasedReconDamageModifier([representative]);
+        const next = rows[position + 1];
+        const current = next.map((values) => [...values]);
+        if (groupModifier <= modifier) {
+          const copies = Math.min(SLOTS_PER_BASE, remainingCounts[groupIndex]);
+          const contribution = calculatePlaneSurfaceTargetPowerProxy(
+            representative,
+            { reconModifier: modifier },
+          ) + airWeight * groups[groupIndex].slotAirPower;
+          for (let selectedCount = 1; selectedCount <= copies; selectedCount += 1) {
+            const providesModifier = groupModifier === modifier ? 1 : 0;
+            for (let slots = 0; slots + selectedCount <= SLOTS_PER_BASE; slots += 1) {
+              for (let hasProvider = 0; hasProvider <= 1; hasProvider += 1) {
+                const previous = next[slots][hasProvider];
+                if (!Number.isFinite(previous)) continue;
+                const nextProvider = hasProvider || providesModifier ? 1 : 0;
+                current[slots + selectedCount][nextProvider] = Math.max(
+                  current[slots + selectedCount][nextProvider],
+                  previous + selectedCount * contribution,
+                );
+              }
+            }
+          }
+        }
+        rows[position] = current;
+      }
+      tableByKey.set(staticSuffixKey(modifier, airWeight), rows);
+    }
+  }
+
+  return {
+    maximumAirCoefficient(position) {
+      return maximumAirCoefficients[position] || 1;
+    },
+    maximumRawAir(position, slotsLeft) {
+      return maximumRawAir[position]?.[slotsLeft] || 0;
+    },
+    maximum(position, slotsLeft, modifier, requiredProvider, airWeight) {
+      const row = tableByKey.get(staticSuffixKey(modifier, airWeight))?.[position];
+      if (!row) return Number.NEGATIVE_INFINITY;
+      const providerIndex = requiredProvider == null ? null : 1;
+      let maximum = Number.NEGATIVE_INFINITY;
+      for (let slots = 0; slots <= slotsLeft; slots += 1) {
+        maximum = providerIndex == null
+          ? Math.max(maximum, row[slots][0], row[slots][1])
+          : Math.max(maximum, row[slots][providerIndex]);
+      }
+      return maximum;
+    },
+  };
+}
+
+function emptyStaticSuffixRow() {
+  const row = Array.from(
+    { length: SLOTS_PER_BASE + 1 },
+    () => [Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY],
+  );
+  row[0][0] = 0;
+  return row;
+}
+
+function staticSuffixKey(modifier, airWeight) {
+  return `${modifier}:${airWeight}`;
+}
+
+/** Selects the strongest remaining per-plane damage contributions for one modifier case. */
+function maximumRemainingPlaneDamage(
+  allowed,
+  slotsLeft,
+  modifier,
+  counts,
+  remainingCounts,
+  groups,
+  requiredProviderModifier = null,
+  airWeight = 0,
+) {
+  if (slotsLeft <= 0) {
+    return requiredProviderModifier == null ? 0 : Number.NEGATIVE_INFINITY;
+  }
+  const impossible = Number.NEGATIVE_INFINITY;
+  const best = Array.from(
+    { length: slotsLeft + 1 },
+    () => [impossible, impossible],
+  );
+  best[0][0] = 0;
+  for (const groupIndex of allowed) {
+    const representative = groups[groupIndex].representative;
+    const groupModifier = landBasedReconDamageModifier([representative]);
+    if (groupModifier > modifier) continue;
+    const available = remainingCounts[groupIndex] - counts[groupIndex];
+    const copies = Math.min(Math.max(0, available), slotsLeft);
+    const damage = calculatePlaneSurfaceTargetPowerProxy(
+      representative,
+      { reconModifier: modifier },
+    );
+    const weightedContribution = damage + airWeight * groups[groupIndex].slotAirPower;
+    const providesModifier = requiredProviderModifier != null &&
+      groupModifier === requiredProviderModifier;
+    for (let copy = 0; copy < copies; copy += 1) {
+      for (let slots = slotsLeft - 1; slots >= 0; slots -= 1) {
+        for (let hasProvider = 0; hasProvider <= 1; hasProvider += 1) {
+          const current = best[slots][hasProvider];
+          if (!Number.isFinite(current)) continue;
+          const nextProvider = hasProvider || providesModifier ? 1 : 0;
+          best[slots + 1][nextProvider] = Math.max(
+            best[slots + 1][nextProvider],
+            current + weightedContribution,
+          );
+        }
+      }
+    }
+  }
+  const providerIndex = requiredProviderModifier == null ? null : 1;
+  let maximum = impossible;
+  for (let slots = 0; slots <= slotsLeft; slots += 1) {
+    maximum = providerIndex == null
+      ? Math.max(maximum, best[slots][0], best[slots][1])
+      : Math.max(maximum, best[slots][providerIndex]);
+  }
+  return Number.isFinite(maximum) ? maximum : impossible;
 }
 
 /** Computes a relaxed base envelope with scalar streaming aggregates. */
@@ -785,13 +1473,17 @@ function canReachRequiredAir(
   remainingCounts,
   groups,
   requiredAir,
+  usedCounts = null,
 ) {
   if (requiredAir <= 0) return true;
   let optimisticRawAir = selectedAirPower;
   const bestRemaining = [];
   for (let index = orderIndex; index < searchOrder.length; index += 1) {
     const groupIndex = searchOrder[index];
-    const count = Math.min(slotsLeft, remainingCounts[groupIndex]);
+    const count = Math.min(
+      slotsLeft,
+      Math.max(0, remainingCounts[groupIndex] - (usedCounts?.[groupIndex] || 0)),
+    );
     for (let itemIndex = 0; itemIndex < count; itemIndex += 1) {
       bestRemaining.push(groups[groupIndex].slotAirPower);
     }
