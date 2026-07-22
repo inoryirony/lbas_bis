@@ -3,6 +3,7 @@
 const React = require('react');
 const EnemyShipPicker = require('./EnemyShipPicker');
 const MapPresetPicker = require('./MapPresetPicker');
+const MultiplierRuleEditor = require('./MultiplierRuleEditor');
 
 const h = React.createElement;
 
@@ -12,6 +13,7 @@ function EnemyPanel(props) {
     enemy,
     lines,
     simulationOptions,
+    combatContext,
     enemyCatalog,
     mapCatalog,
     mapSelection,
@@ -27,6 +29,10 @@ function EnemyPanel(props) {
     onUseCustomEnemy,
     onAirRaidCellChange,
     onSimulationOptionChange,
+    onCombatTargetTagsChange,
+    onMultiplierRuleAdd,
+    onMultiplierRuleChange,
+    onMultiplierRuleRemove,
     t,
     styles,
   } = props;
@@ -86,6 +92,15 @@ function EnemyPanel(props) {
         styles,
       })
       : renderStaticEnemy({ enemy, lines, onEnemyAirChange, t, styles }),
+    h(MultiplierRuleEditor, {
+      combatContext,
+      onTargetTagsChange: onCombatTargetTagsChange,
+      onRuleAdd: onMultiplierRuleAdd,
+      onRuleChange: onMultiplierRuleChange,
+      onRuleRemove: onMultiplierRuleRemove,
+      t,
+      styles,
+    }),
   );
 }
 

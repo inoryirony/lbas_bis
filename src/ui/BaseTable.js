@@ -1,12 +1,22 @@
 'use strict';
 
 const React = require('react');
+const { equipmentDamageMultiplier } = require('../combat-context');
 
 const h = React.createElement;
 const PROFICIENCY_LABELS = ['-', '|', '||', '|||', '/', '//', '///', '>>'];
 
 function BaseTable(props) {
-  const { bases, equipment, summaries, onSlotPlaneChange, onSlotLockChange, t, styles } = props;
+  const {
+    bases,
+    equipment,
+    summaries,
+    combatContext,
+    onSlotPlaneChange,
+    onSlotLockChange,
+    t,
+    styles,
+  } = props;
   return h(
     'div',
     { style: styles.tableWrap },
@@ -46,6 +56,7 @@ function BaseTable(props) {
                   baseIndex,
                   slotIndex,
                   onSlotPlaneChange,
+                  combatContext,
                   t,
                   styles,
                 }),
@@ -88,7 +99,16 @@ function BaseTable(props) {
 }
 
 function renderEquipmentSelect(props) {
-  const { equipment, slot, baseIndex, slotIndex, onSlotPlaneChange, t, styles } = props;
+  const {
+    equipment,
+    slot,
+    baseIndex,
+    slotIndex,
+    onSlotPlaneChange,
+    combatContext,
+    t,
+    styles,
+  } = props;
   const options = optionPlanes(equipment, slot.plane);
   return h(
     'select',
@@ -106,10 +126,16 @@ function renderEquipmentSelect(props) {
       h(
         'option',
         { key: String(plane.instanceId), value: String(plane.instanceId) },
-        `${plane.name} #${plane.instanceId}${plane.missing ? ` (${t('missing')})` : ''}`,
+        `${plane.name} #${plane.instanceId}${formatMultiplier(plane, combatContext)}${plane.missing ? ` (${t('missing')})` : ''}`,
       ),
     ),
   );
+}
+
+function formatMultiplier(plane, combatContext) {
+  const multiplier = equipmentDamageMultiplier(plane, combatContext);
+  if (Math.abs(multiplier - 1) < 1e-12) return '';
+  return ` ×${Number(multiplier.toFixed(4))}`;
 }
 
 function optionPlanes(equipment, currentPlane) {

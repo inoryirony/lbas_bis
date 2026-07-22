@@ -141,6 +141,17 @@ const FALLBACK_ZH_CN = {
   customEnemyShipName: '自定义敌舰名',
   addSlotForShip: '为该舰增加敌机槽',
   refreshEnemyShip: '刷新敌舰数据',
+  multiplierEditor: '装备伤害倍率',
+  targetTags: '目标标签',
+  ruleLabel: '规则名称',
+  ruleTargetTags: '规则目标标签',
+  equipmentMasterIds: '装备 Master ID',
+  equipmentTypes: '装备类型',
+  stackingGroup: '叠加组',
+  multiplier: '倍率',
+  enabled: '启用',
+  addMultiplierRule: '增加倍率规则',
+  removeMultiplierRule: '删除倍率规则',
   bossNode: 'Boss',
   difficulty_0: '通常',
   difficulty_1: '丁',
@@ -511,6 +522,71 @@ class LbasOptimizerPanel extends React.Component {
     }));
   };
 
+  updateCombatTargetTags = (value) => {
+    this.updateSimulator((simulator) => ({
+      ...simulator,
+      combatContext: {
+        ...simulator.combatContext,
+        targetTags: parseCommaSeparatedStrings(value),
+      },
+    }));
+  };
+
+  addMultiplierRule = () => {
+    this.updateSimulator((simulator) => {
+      const rules = simulator.combatContext.multiplierRules;
+      const id = nextMultiplierRuleId(rules);
+      return {
+        ...simulator,
+        combatContext: {
+          ...simulator.combatContext,
+          multiplierRules: [...rules, {
+            id,
+            label: '',
+            enabled: true,
+            targetTags: [],
+            equipmentMasterIds: [],
+            equipmentTypes: [],
+            group: id,
+            multiplier: 1,
+            source: 'custom',
+            overridden: true,
+          }],
+        },
+      };
+    });
+  };
+
+  updateMultiplierRule = (ruleIndex, field, value) => {
+    this.updateSimulator((simulator) => ({
+      ...simulator,
+      combatContext: {
+        ...simulator.combatContext,
+        multiplierRules: simulator.combatContext.multiplierRules.map((rule, index) =>
+          index === ruleIndex
+            ? {
+              ...rule,
+              [field]: normalizeMultiplierRuleField(field, value),
+              source: 'custom',
+              overridden: true,
+            }
+            : rule),
+      },
+    }));
+  };
+
+  removeMultiplierRule = (ruleIndex) => {
+    this.updateSimulator((simulator) => ({
+      ...simulator,
+      combatContext: {
+        ...simulator.combatContext,
+        multiplierRules: simulator.combatContext.multiplierRules.filter(
+          (_rule, index) => index !== ruleIndex,
+        ),
+      },
+    }));
+  };
+
   updateCandidateMode = (candidateMode) => {
     this.updateSimulator((simulator) => ({
       ...simulator,
@@ -600,6 +676,10 @@ class LbasOptimizerPanel extends React.Component {
         onUseCustomEnemy: this.useCustomEnemyComposition,
         onAirRaidCellChange: this.updateAirRaidCell,
         onSimulationOptionChange: this.updateSimulationOption,
+        onCombatTargetTagsChange: this.updateCombatTargetTags,
+        onMultiplierRuleAdd: this.addMultiplierRule,
+        onMultiplierRuleChange: this.updateMultiplierRule,
+        onMultiplierRuleRemove: this.removeMultiplierRule,
         onSlotPlaneChange: this.updateSlotPlane,
         onSlotLockChange: this.updateSlotLock,
         onWaveTargetChange: this.updateWaveTarget,
@@ -609,6 +689,7 @@ class LbasOptimizerPanel extends React.Component {
       }),
       h(OptimizerPanel, {
         candidateMode: simulator.candidateMode,
+        combatContext: simulator.combatContext,
         equipmentCount: this.state.equipmentCount || ownedEquipment.length,
         theoreticalCount: this.state.theoreticalCount || ownedEquipment.length,
         messages: this.state.messages,
@@ -661,6 +742,37 @@ function nextEnemySlotIndex(slots) {
   let index = (slots || []).length;
   while (ids.has(`enemy-slot-${index}`)) index += 1;
   return index;
+}
+
+function nextMultiplierRuleId(rules) {
+  const ids = new Set((rules || []).map((rule) => rule.id));
+  let index = (rules || []).length + 1;
+  while (ids.has(`custom-rule-${index}`)) index += 1;
+  return `custom-rule-${index}`;
+}
+
+function normalizeMultiplierRuleField(field, value) {
+  if (field === 'targetTags') return parseCommaSeparatedStrings(value);
+  if (field === 'equipmentMasterIds' || field === 'equipmentTypes') {
+    return parseCommaSeparatedPositiveIntegers(value);
+  }
+  if (field === 'multiplier') return Number(value);
+  if (field === 'enabled') return Boolean(value);
+  return value;
+}
+
+function parseCommaSeparatedStrings(value) {
+  return [...new Set(String(value || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean))];
+}
+
+function parseCommaSeparatedPositiveIntegers(value) {
+  return [...new Set(String(value || '')
+    .split(',')
+    .map(Number)
+    .filter((item) => Number.isInteger(item) && item > 0))];
 }
 
 /** Creates a detached enemy draft whose ship and slot arrays can be replaced safely. */

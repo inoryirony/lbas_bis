@@ -1,6 +1,7 @@
 'use strict';
 
 const React = require('react');
+const { equipmentDamageMultiplier } = require('../combat-context');
 
 const h = React.createElement;
 
@@ -11,6 +12,7 @@ function OptimizerPanel(props) {
     theoreticalCount,
     messages,
     results,
+    combatContext,
     search,
     isSearching,
     searchPhase,
@@ -69,7 +71,7 @@ function OptimizerPanel(props) {
       ? renderLiveSearch(searchPhase, searchProgress, results, t, styles)
       : renderSearch(search, t, styles),
     renderMessages(messages, styles),
-    renderResults({ results, onImportPlan, t, styles }),
+    renderResults({ results, combatContext, onImportPlan, t, styles }),
   );
 }
 
@@ -115,7 +117,7 @@ function renderMessages(messages, styles) {
   );
 }
 
-function renderResults({ results, onImportPlan, t, styles }) {
+function renderResults({ results, combatContext, onImportPlan, t, styles }) {
   if (!results.length) {
     return h(
       'table',
@@ -182,7 +184,7 @@ function renderResults({ results, onImportPlan, t, styles }) {
                   key: item.instanceId ?? `slot-${slotIndex}`,
                   style: item.available === false ? styles.missingItem : null,
                 },
-                `${item.name} #${item.instanceId} · ${t('airPower')} ${item.antiAir} · ${t('radius')} ${item.radius}${item.missing || item.available === false ? ` · ${t('missing')}` : ''}`,
+                `${item.name} #${item.instanceId}${formatMultiplier(item, combatContext)} · ${t('airPower')} ${item.antiAir} · ${t('radius')} ${item.radius}${item.missing || item.available === false ? ` · ${t('missing')}` : ''}`,
               )
               : h(
                 'li',
@@ -195,6 +197,12 @@ function renderResults({ results, onImportPlan, t, styles }) {
       ),
     ),
   );
+}
+
+function formatMultiplier(plane, combatContext) {
+  const multiplier = equipmentDamageMultiplier(plane, combatContext);
+  if (Math.abs(multiplier - 1) < 1e-12) return '';
+  return ` ×${Number(multiplier.toFixed(4))}`;
 }
 
 /** Formats static or Monte Carlo wave summaries without assuming one shape. */

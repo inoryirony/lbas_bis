@@ -123,6 +123,71 @@ describe('plugin entry', () => {
     expect(renderedText).toContain('自定义敌机槽位');
   });
 
+  test('edits custom equipment multiplier rules and shows the effective plane bonus', () => {
+    const panel = createSynchronousPanel();
+    panel.addMultiplierRule();
+    panel.updateCombatTargetTags('event-e3, boss');
+    panel.updateMultiplierRule(0, 'label', 'E-3 Group A');
+    panel.updateMultiplierRule(0, 'targetTags', 'event-e3');
+    panel.updateMultiplierRule(0, 'equipmentMasterIds', '301, 302');
+    panel.updateMultiplierRule(0, 'equipmentTypes', '47');
+    panel.updateMultiplierRule(0, 'group', 'event-e3-a');
+    panel.updateMultiplierRule(0, 'multiplier', '1.18');
+    panel.state.simulator = simulatorState.setBaseSlot(
+      panel.state.simulator,
+      0,
+      0,
+      { plane: {
+        instanceId: 'bonus-plane',
+        masterId: 301,
+        name: '倍卡陆攻',
+        equipType: 47,
+        isPlane: true,
+        isAttacker: true,
+        isLandAttacker: true,
+        radius: 7,
+        torpedo: 14,
+      } },
+    );
+
+    const payload = simulatorToOptimizerInput(panel.state.simulator);
+    panel.state.results = [{
+      totalDamagePower: 175,
+      worstMargin: 0,
+      missingEquipment: [],
+      waves: [],
+      calculationMode: 'static',
+      bases: [{
+        minimumProficiency: null,
+        loadout: [panel.state.simulator.bases[0].slots[0].plane, null, null, null],
+      }],
+    }];
+    const renderedText = collectText(panel.render());
+
+    expect(payload.combatContext).toEqual({
+      targetTags: ['event-e3', 'boss'],
+      multiplierRules: [expect.objectContaining({
+        label: 'E-3 Group A',
+        targetTags: ['event-e3'],
+        equipmentMasterIds: [301, 302],
+        equipmentTypes: [47],
+        group: 'event-e3-a',
+        multiplier: 1.18,
+        source: 'custom',
+        overridden: true,
+      })],
+    });
+    expect(renderedText).toContain('装备伤害倍率');
+    expect(renderedText).toContain('E-3 Group A');
+    expect(renderedText).toContain('×1.18');
+    expect(renderedText.match(/×1\.18/g)).toHaveLength(2);
+
+    panel.updateMultiplierRule(0, 'enabled', false);
+    expect(panel.state.simulator.combatContext.multiplierRules[0].enabled).toBe(false);
+    panel.removeMultiplierRule(0);
+    expect(panel.state.simulator.combatContext.multiplierRules).toEqual([]);
+  });
+
   test('switches any selected map node to a clearly marked custom composition', () => {
     const panel = createSynchronousPanel();
     panel.state.mapSelection = { area: 99, node: 'Z', difficulty: null, formationId: '' };

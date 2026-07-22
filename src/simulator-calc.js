@@ -59,7 +59,9 @@ function calculateSimulatorSummary(state) {
     const loadout = base.slots.map((slot) => slot.plane).filter(Boolean);
     const airPower = calculateBaseAirPower(loadout);
     const radius = calculateEffectiveRadius(loadout);
-    const damagePower = calculateBaseDamagePower(loadout);
+    const damagePower = calculateBaseDamagePower(loadout, {
+      combatContext: state.combatContext,
+    });
     const stateForBase = airStateFor(airPower, enemyAir, loadout.length > 0);
 
     return {
