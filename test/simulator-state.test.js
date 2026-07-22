@@ -112,6 +112,44 @@ describe('simulator state', () => {
         overridden: true,
       })]);
   });
+
+  test('normalizes and exports custom target and equipment multiplier rules', () => {
+    const state = stateModule.normalizeSimulatorState({
+      ...createEmptySimulatorState(),
+      combatContext: {
+        targetTags: [' event-e3 ', 'boss', 'event-e3'],
+        multiplierRules: [{
+          id: ' event-e3-a ',
+          label: 'Group A',
+          enabled: true,
+          targetTags: ['event-e3'],
+          equipmentMasterIds: ['301', 301],
+          equipmentTypes: [],
+          group: ' group-a ',
+          multiplier: '1.18',
+          source: 'custom',
+          overridden: true,
+        }],
+      },
+    });
+
+    expect(state.combatContext).toEqual({
+      targetTags: ['event-e3', 'boss'],
+      multiplierRules: [{
+        id: 'event-e3-a',
+        label: 'Group A',
+        enabled: true,
+        targetTags: ['event-e3'],
+        equipmentMasterIds: [301],
+        equipmentTypes: [],
+        group: 'group-a',
+        multiplier: 1.18,
+        source: 'custom',
+        overridden: true,
+      }],
+    });
+    expect(simulatorToOptimizerInput(state).combatContext).toEqual(state.combatContext);
+  });
 });
 
 function plane(instanceId, overrides = {}) {

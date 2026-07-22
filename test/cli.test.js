@@ -6,6 +6,7 @@ const root = process.cwd();
 const cliPath = path.join(root, 'bin', 'lbas-bis.js');
 const scenarioPath = path.join(root, 'examples', 'cli-static.json');
 const customScenarioPath = path.join(root, 'examples', 'cli-custom-enemy.json');
+const multiplierScenarioPath = path.join(root, 'examples', 'cli-custom-multipliers.json');
 
 describe('headless LBAS CLI', () => {
   test('validates a scenario and streams optimize events as JSON Lines', async () => {
@@ -38,6 +39,23 @@ describe('headless LBAS CLI', () => {
         search: { provenOptimal: true },
       },
     });
+  });
+
+  test('proves a custom multiplier-aware optimum from the shared scenario JSON', async () => {
+    const validation = await runCli(['validate', '--scenario', multiplierScenarioPath]);
+    const optimization = await runCli(['optimize', '--scenario', multiplierScenarioPath, '--jsonl']);
+    const events = optimization.stdout.trim().split(/\r?\n/).map(JSON.parse);
+    const completed = events.at(-1);
+
+    expect(validation.code).toBe(0);
+    expect(JSON.parse(validation.stdout)).toMatchObject({ valid: true });
+    expect(optimization.code).toBe(0);
+    expect(completed).toMatchObject({
+      type: 'completed',
+      result: { search: { status: 'optimal', provenOptimal: true } },
+    });
+    expect(completed.result.results[0].bases[0].loadout[0].instanceId)
+      .toBe('cli-bonused-attacker');
   });
 });
 

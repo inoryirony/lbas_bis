@@ -1,5 +1,6 @@
 'use strict';
 
+const { normalizeCombatContext } = require('./combat-context');
 const {
   detailedEnemyValidationError,
   validateAndNormalizeDetailedEnemySlots,
@@ -39,6 +40,7 @@ function normalizeSimulatorState(state = {}) {
     targetRadius: positiveNumber(state.targetRadius, DEFAULT_TARGET_RADIUS),
     baseCount,
     candidateMode: state.candidateMode === 'theoretical' ? 'theoretical' : 'owned',
+    combatContext: normalizeCombatContext(state.combatContext),
     enemy: normalizeEnemy(state.enemy),
     simulationOptions: normalizeSimulationOptions(state.simulationOptions || state.simulation),
     bases: normalizeBases(state.bases, baseCount),
@@ -117,6 +119,10 @@ function simulatorToOptimizerInput(state) {
       })),
     })),
   };
+  if (normalized.combatContext.targetTags.length ||
+      normalized.combatContext.multiplierRules.length) {
+    input.combatContext = normalized.combatContext;
+  }
   if (normalized.enemy.mode !== 'detailed') return input;
   return {
     ...input,

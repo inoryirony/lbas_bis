@@ -1,0 +1,72 @@
+{
+  "equipment": [
+    {
+      "instanceId": "cli-unbonused-attacker",
+      "masterId": 300,
+      "name": "CLI strong unbonused attacker",
+      "equipType": 47,
+      "antiAir": 0,
+      "radius": 7,
+      "torpedo": 18,
+      "bombing": 18,
+      "improvement": 0,
+      "proficiency": 0,
+      "isPlane": true,
+      "isAttacker": true,
+      "isLandAttacker": true,
+      "isLandBased": true,
+      "role": "attacker"
+    },
+    {
+      "instanceId": "cli-bonused-attacker",
+      "masterId": 301,
+      "name": "CLI weak bonused attacker",
+      "equipType": 47,
+      "antiAir": 0,
+      "radius": 7,
+      "torpedo": 10,
+      "bombing": 10,
+      "improvement": 0,
+      "proficiency": 0,
+      "isPlane": true,
+      "isAttacker": true,
+      "isLandAttacker": true,
+      "isLandBased": true,
+      "role": "attacker"
+    }
+  ],
+  "baseCount": 1,
+  "targetRadius": 7,
+  "enemyAir": 0,
+  "targetStates": ["denial", "denial"],
+  "lockedBases": [
+    {
+      "slots": [
+        { "kind": "OPEN" },
+        { "kind": "LOCKED_EMPTY" },
+        { "kind": "LOCKED_EMPTY" },
+        { "kind": "LOCKED_EMPTY" }
+      ]
+    }
+  ],
+  "combatContext": {
+    "targetTags": ["event-test", "boss"],
+    "multiplierRules": [
+      {
+        "id": "event-test-bonus",
+        "label": "Custom event bonus",
+        "enabled": true,
+        "targetTags": ["event-test"],
+        "equipmentMasterIds": [301],
+        "equipmentTypes": [],
+        "group": "event-test-bonus",
+        "multiplier": 3,
+        "source": "custom",
+        "overridden": true
+      }
+    ]
+  },
+  "nodeBudget": null,
+  "simulationWorkBudget": null,
+  "maxResults": 1
+}
