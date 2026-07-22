@@ -251,6 +251,15 @@ describe('wave simulator', () => {
     expect(result).toEqual(monteCarloWaveSequence(options));
     expect(result.expectedFinalOwnAir).toHaveLength(1);
     expect(result.expectedFinalEnemyAir).toHaveLength(1);
+    expect(result.allWaveTargetFulfillmentConfidence95).toEqual(expect.objectContaining({
+      confidenceLevel: 0.95,
+      trials: 32,
+    }));
+    expect(result.waves.every((wave) =>
+      wave.targetFulfillmentConfidence95.trials === 32 &&
+      wave.targetFulfillmentConfidence95.lower <= wave.targetFulfillmentProbability &&
+      wave.targetFulfillmentConfidence95.upper >= wave.targetFulfillmentProbability))
+      .toBe(true);
     expect(monteCarloWaveSequence({ ...options, seed: 'different' }))
       .not.toEqual(result);
   });

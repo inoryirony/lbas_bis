@@ -165,10 +165,16 @@ function renderLiveSearch(phase, progress = {}, results, t, styles) {
 /** Renders exact-search completion and budget metadata. */
 function renderSearch(search, t, styles) {
   if (!search) return null;
+  const proofKey = search.optimalityScope === 'fixed_sample'
+    ? search.provenOptimal ? 'fixedSampleOptimal' : 'fixedSampleNotProven'
+    : search.provenOptimal ? 'provenOptimal' : 'notProvenOptimal';
+  const proofText = format(t(proofKey), {
+    count: search.evaluationSampleCount ?? '?',
+  });
   return h(
     'div',
     { style: styles.searchMeta || styles.meta },
-    h('strong', null, search.provenOptimal ? t('provenOptimal') : t('notProvenOptimal')),
+    h('strong', null, proofText),
     ` / ${t(`searchStatus_${search.status}`)} / ${t('searchNodes')} ${search.totalNodesExplored ?? search.nodesExplored ?? 0}`,
   );
 }
@@ -284,7 +290,15 @@ function formatWave(wave, t) {
     return `${prefix}: ${t(wave.state.key)} / ${t('targetState')} ${t(wave.targetState)} / ${t('airPower')} ${wave.airPower}`;
   }
   const probability = Math.round((wave.targetFulfillmentProbability || 0) * 1000) / 10;
-  return `${prefix}: ${t('targetFulfillment')} ${probability}% / ${t('expectedAir')} ${Math.round(wave.expectedOwnAirBefore || 0)}`;
+  const interval = wave.targetFulfillmentConfidence95;
+  const confidence = interval
+    ? ` / ${t('confidence95')} ${formatProbability(interval.lower)}%-${formatProbability(interval.upper)}%`
+    : '';
+  return `${prefix}: ${t('targetFulfillment')} ${probability}%${confidence} / ${t('expectedAir')} ${Math.round(wave.expectedOwnAirBefore || 0)}`;
+}
+
+function formatProbability(value) {
+  return Math.round((Number(value) || 0) * 1000) / 10;
 }
 
 /** Formats one uniform visible-proficiency level. */

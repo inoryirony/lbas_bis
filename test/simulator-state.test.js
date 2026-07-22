@@ -19,6 +19,7 @@ describe('simulator state', () => {
     expect(state.bases[0].slots).toHaveLength(4);
     expect(state.waves.map((wave) => [wave.baseIndex, wave.waveInBase])).toEqual([[0, 0], [0, 1]]);
     expect(state.enemy.enemyAir).toBe(72);
+    expect(state.simulationOptions.sampleCount).toBe(4096);
   });
 
   test('expands to three bases and six waves without losing first-base slots', () => {

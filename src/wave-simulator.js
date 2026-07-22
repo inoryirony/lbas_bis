@@ -21,6 +21,8 @@ const {
 const { createFixedSampleRandom } = require('./random');
 const { requireSampleCount } = require('./simulation-options');
 const { stageTwoShootdownStatus } = require('./enemy-stage2');
+const { enemyStageOneLossForDraws } = require('./stage-one-distribution');
+const { wilsonScoreInterval } = require('./statistics');
 
 const PLAYER_STAGE_ONE_CONSTANTS = Object.freeze({
   supremacy: 1,
@@ -74,7 +76,7 @@ function enemyStageOneLoss(stateKey, currentSlot, random = Math.random) {
   const slot = nonNegativeFinite(currentSlot, 0);
   const x = Math.floor(unitRandom(random()) * (constant + 1));
   const y = Math.floor(unitRandom(random()) * (constant + 1));
-  return Math.min(slot, Math.floor(slot * (0.65 * x + 0.35 * y) / 10));
+  return enemyStageOneLossForDraws(stateKey, slot, x, y);
 }
 
 /** Recalculates detailed enemy air power from each surviving aircraft slot. */
@@ -269,6 +271,10 @@ function monteCarloWaveSequence(options = {}) {
     samplesEvaluated: sampleCount,
     waves: accumulator.waves.map((wave) => finalizeWaveAccumulator(wave, sampleCount)),
     allWaveTargetFulfillmentProbability: accumulator.allWaveTargetsFulfilled / sampleCount,
+    allWaveTargetFulfillmentConfidence95: wilsonScoreInterval(
+      accumulator.allWaveTargetsFulfilled,
+      sampleCount,
+    ),
     expectedDamage: accumulator.totalDamage / sampleCount,
     expectedOwnSlotLoss: accumulator.totalOwnSlotLoss / sampleCount,
     expectedEnemySlotLoss: accumulator.totalEnemySlotLoss / sampleCount,
@@ -1106,6 +1112,7 @@ function finalizeWaveAccumulator(accumulator, sampleCount) {
         .map(([key, count]) => [key, count / sampleCount]),
     ),
     targetFulfillmentProbability: accumulator.fulfilled / sampleCount,
+    targetFulfillmentConfidence95: wilsonScoreInterval(accumulator.fulfilled, sampleCount),
     expectedEnemyAirBefore: accumulator.enemyAirBefore / sampleCount,
     expectedEnemyAirAfter: accumulator.enemyAirAfter / sampleCount,
     expectedOwnAirBefore: accumulator.ownAirBefore / sampleCount,

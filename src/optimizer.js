@@ -56,23 +56,24 @@ const SLOT_KINDS = Object.freeze({
  */
 function optimizeLoadouts(options = {}) {
   const prepared = prepareSearch(options);
+  const finalize = (result) => withOptimalityScope(result, prepared);
   if (!prepared.valid) {
-    return invalidResult(
+    return finalize(invalidResult(
       'branch-and-bound',
       prepared.budget,
       prepared.message,
       prepared.errors,
       prepared.simulationBudget,
-    );
+    ));
   }
 
   if (!prepared.detailed && prepared.maxResults === 1 && !Number.isFinite(prepared.budget)) {
-    return optimizeStaticRankOne(prepared, options);
+    return finalize(optimizeStaticRankOne(prepared, options));
   }
   if (prepared.detailed && prepared.maxResults === 1 &&
       !Number.isFinite(prepared.budget) && !Number.isFinite(prepared.simulationBudget)) {
     const exact = optimizeDetailedRankOne(prepared, options);
-    if (exact) return exact;
+    if (exact) return finalize(exact);
   }
 
   const {
@@ -479,7 +480,7 @@ function optimizeLoadouts(options = {}) {
     messages.push('Search cancelled; the current best plan is preserved but is not proven optimal.');
   }
 
-  return {
+  return finalize({
     messages,
     results: retained,
     search: {
@@ -494,6 +495,21 @@ function optimizeLoadouts(options = {}) {
       dynamicAirBoundEvaluations,
       simulationBudget: simulationBudgetState.budget,
       provenOptimal: status === 'optimal' || status === 'infeasible',
+    },
+  });
+}
+
+/** Records whether optimality is exact for the model or only for one fixed sample set. */
+function withOptimalityScope(result, prepared) {
+  const detailed = prepared?.detailed === true;
+  return {
+    ...result,
+    search: {
+      ...result.search,
+      optimalityScope: detailed ? 'fixed_sample' : 'model_exact',
+      ...(detailed && Number.isInteger(prepared?.simulationOptions?.sampleCount)
+        ? { evaluationSampleCount: prepared.simulationOptions.sampleCount }
+        : {}),
     },
   };
 }

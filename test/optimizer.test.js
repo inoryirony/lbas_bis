@@ -731,6 +731,7 @@ describe('LBAS optimizer MVP', () => {
       status: 'budget_exhausted',
       provenOptimal: false,
       budget: 1,
+      optimalityScope: 'model_exact',
     }));
   });
 
@@ -812,6 +813,8 @@ describe('LBAS optimizer MVP', () => {
       provenOptimal: true,
       simulationSamplesEvaluated: 4,
       simulationBudget: 4,
+      optimalityScope: 'fixed_sample',
+      evaluationSampleCount: 4,
     }));
   });
 

@@ -175,6 +175,44 @@ describe('plugin entry', () => {
     expect(renderedText).toContain('统一最低可见熟练度 >>');
   });
 
+  test('limits detailed optimality claims to the evaluated fixed sample set', () => {
+    const panel = new plugin.reactClass({});
+    panel.state.search = {
+      status: 'optimal',
+      provenOptimal: true,
+      nodesExplored: 42,
+      optimalityScope: 'fixed_sample',
+      evaluationSampleCount: 4096,
+    };
+
+    const renderedText = collectText(panel.render());
+
+    expect(renderedText).toContain('已证明当前 4096 个固定样本内最优');
+    expect(renderedText).not.toContain('已证明全局最优');
+  });
+
+  test('shows the finite-sample uncertainty beside detailed wave fulfillment', () => {
+    const panel = new plugin.reactClass({});
+    panel.state.results = [{
+      calculationMode: 'detailed',
+      totalDamagePower: 10,
+      worstMargin: 0,
+      missingEquipment: [],
+      bases: [],
+      waves: [{
+        waveIndex: 0,
+        targetFulfillmentProbability: 0.5,
+        targetFulfillmentConfidence95: { lower: 0.4, upper: 0.6 },
+        expectedOwnAirBefore: 123,
+      }],
+    }];
+
+    const renderedText = collectText(panel.render());
+
+    expect(renderedText).toContain('达标概率 50%');
+    expect(renderedText).toContain('95%区间 40%-60%');
+  });
+
   test('renders background-search phase, progress, and cancellation control', () => {
     const panel = new plugin.reactClass({});
     panel.state.isSearching = true;

@@ -10,7 +10,7 @@
   "excludeCarrierAircraft": true,
   "targetStates": ["parity", "parity", "parity", "parity"],
   "simulationOptions": {
-    "sampleCount": 256,
+    "sampleCount": 4096,
     "seed": "2026-e2p3-final-parity"
   },
   "maxResults": 1

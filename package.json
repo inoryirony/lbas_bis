@@ -1,6 +1,6 @@
 {
   "name": "poi-plugin-lbas-bis",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Poi 陆航配装优化插件。",
   "main": "index.js",
   "bin": {
