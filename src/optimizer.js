@@ -86,7 +86,9 @@ function optimizeLoadouts(options = {}) {
       searchOrder,
       0,
       baseLock.slots.filter((slot) => slot.kind === SLOT_KINDS.OPEN).length,
-      requiredAirForState(enemyAir, targetStateForBase(waveTargets, baseIndex)),
+      detailed
+        ? 0
+        : requiredAirForState(enemyAir, targetStateForBase(waveTargets, baseIndex)),
     );
   });
   const selected = [];
@@ -122,7 +124,21 @@ function optimizeLoadouts(options = {}) {
       simulationBudgetState,
       prepared.simulationOptions.sampleCount,
     )) return false;
-    return considerPlan(materializePlan(selected, prepared));
+    const incumbentScore = retained.length >= maxResults
+      ? scorePlan(retained[retained.length - 1])
+      : null;
+    const plan = materializePlan(selected, prepared, incumbentScore);
+    if (detailed) {
+      recordSimulationSamples(
+        simulationBudgetState,
+        plan.simulation?.samplesEvaluated ?? prepared.simulationOptions.sampleCount,
+      );
+    }
+    if (plan.prunedBySimulationBound) {
+      candidatesEvaluated += 1;
+      return false;
+    }
+    return considerPlan(plan);
   }
 
   function considerPlan(plan) {
@@ -178,9 +194,7 @@ function optimizeLoadouts(options = {}) {
         addCounts(remainingCounts, candidate.counts);
         return !budgetState.exhausted && !simulationBudgetState.exhausted;
       },
-      detailed
-        ? null
-        : ({
+      ({
           counts,
           searchOrder,
           orderIndex,
@@ -201,17 +215,31 @@ function optimizeLoadouts(options = {}) {
             searchOrder,
             orderIndex,
             slotsLeft,
-            requiredAirForState(
-              enemyAir,
-              targetStateForBase(waveTargets, baseIndex),
-            ),
+            detailed
+              ? 0
+              : requiredAirForState(
+                enemyAir,
+                targetStateForBase(waveTargets, baseIndex),
+              ),
             staticBoundContext(),
             selectedGroupIndices,
           );
           const futureUpper = relaxedBaseDamageUpperBounds
             .slice(baseIndex + 1)
             .reduce((total, damage) => total + damage, 0);
-          const kthDamage = scorePlan(retained[retained.length - 1]).damage;
+          const kthScore = scorePlan(retained[retained.length - 1]);
+          if (detailed) {
+            return comparePlanScores({
+              fulfillment: 1,
+              damage: 2 * (selectedDamage + currentBaseUpper + futureUpper),
+              loss: 0,
+              resource: 0,
+              margin: Number.MAX_VALUE,
+              scarcity: 0,
+              canonicalKey: '',
+            }, kthScore) < 0;
+          }
+          const kthDamage = kthScore.damage;
           return selectedDamage + currentBaseUpper + futureUpper < kthDamage;
         },
     );
@@ -878,6 +906,17 @@ function walkBaseAssignments(
     ? requiredAirForState(prepared.enemyAir, prepared.waveTargets[0] || 'parity')
     : 0;
   const searchOrder = orderedGroupIndices(prepared, baseIndex, requiredAir);
+  let boundContext = null;
+  const staticBoundContext = () => {
+    if (!boundContext) {
+      boundContext = buildStaticSuffixDamageBounds(
+        remainingCounts,
+        prepared.groups,
+        searchOrder,
+      );
+    }
+    return boundContext;
+  };
 
   /** Recurses in shared-score order while leaving unused open slots empty. */
   function enumerate(orderIndex, slotsLeft, selectedAirPower) {
@@ -885,16 +924,17 @@ function walkBaseAssignments(
     if (budgetState.exhausted) return false;
     if (prepared.detailed && orderIndex < searchOrder.length &&
         !consumeBudget(budgetState)) return false;
-    if (!prepared.detailed && prunePartial?.({
+    if (prunePartial?.({
       counts,
       searchOrder,
       orderIndex,
       slotsLeft,
       selectedAirPower,
       lockedAirPower,
+      staticBoundContext,
     })) {
       budgetState.nodesPruned += 1;
-      return consumeBudget(budgetState);
+      return prepared.detailed ? true : consumeBudget(budgetState);
     }
     if (!canReachRequiredAir(
       searchOrder,
@@ -910,7 +950,7 @@ function walkBaseAssignments(
       budgetState.nodesPruned += 1;
       return consumeBudget(budgetState);
     }
-    if (orderIndex === searchOrder.length) {
+    if (orderIndex === searchOrder.length || slotsLeft === 0) {
       const loadout = materializeRepresentativeLoadout(baseLock, counts, prepared.groups);
       const targetState = targetStateForBase(prepared.waveTargets, baseIndex);
       const summary = summarizeBase(
@@ -1110,45 +1150,53 @@ function maximumStaticBaseDamage(
   }
 
   const allowed = searchOrder.slice(orderIndex);
-  const maximumModifier = STATIC_RECON_DAMAGE_MODIFIERS.at(-1);
   const requiredRawAir = Math.ceil(requiredAir / 1.18);
   const fixedRawAir = fixedPlanes.reduce(
     (total, plane) => total + calculateSlotAirPower(plane),
     0,
   );
   const rawAirDeficit = Math.max(0, requiredRawAir - fixedRawAir);
-  const fixedDamage = fixedPlanes.reduce(
-    (total, plane) => total + calculatePlaneSurfaceTargetPowerProxy(
-      plane,
-      { reconModifier: maximumModifier },
-    ),
-    0,
-  );
-  let maximum = Number.POSITIVE_INFINITY;
-  for (const airWeight of STATIC_AIR_BOUND_WEIGHTS) {
-    const remainingUpper = boundContext
-      ? boundContext.maximum(
-        orderIndex,
-        slotsLeft,
-        maximumModifier,
-        null,
-        airWeight,
-      )
-      : maximumRemainingPlaneDamage(
-        allowed,
-        slotsLeft,
-        maximumModifier,
-        counts,
-        remainingCounts,
-        groups,
-        null,
-        airWeight,
-      );
-    if (!Number.isFinite(remainingUpper)) continue;
-    maximum = Math.min(
-      maximum,
-      fixedDamage + remainingUpper - airWeight * rawAirDeficit,
+  const fixedModifier = landBasedReconDamageModifier(fixedPlanes);
+  let maximum = Number.NEGATIVE_INFINITY;
+  for (const modifier of STATIC_RECON_DAMAGE_MODIFIERS) {
+    if (modifier < fixedModifier) continue;
+    const requiredProvider = modifier > fixedModifier ? modifier : null;
+    const fixedDamage = fixedPlanes.reduce(
+      (total, plane) => total + calculatePlaneSurfaceTargetPowerProxy(
+        plane,
+        { reconModifier: modifier },
+      ),
+      0,
     );
+    let modifierMaximum = Number.POSITIVE_INFINITY;
+    for (const airWeight of STATIC_AIR_BOUND_WEIGHTS) {
+      const remainingUpper = boundContext
+        ? boundContext.maximum(
+          orderIndex,
+          slotsLeft,
+          modifier,
+          requiredProvider,
+          airWeight,
+        )
+        : maximumRemainingPlaneDamage(
+          allowed,
+          slotsLeft,
+          modifier,
+          counts,
+          remainingCounts,
+          groups,
+          requiredProvider,
+          airWeight,
+        );
+      if (!Number.isFinite(remainingUpper)) continue;
+      modifierMaximum = Math.min(
+        modifierMaximum,
+        fixedDamage + remainingUpper - airWeight * rawAirDeficit,
+      );
+    }
+    if (Number.isFinite(modifierMaximum)) {
+      maximum = Math.max(maximum, modifierMaximum);
+    }
   }
   return Number.isFinite(maximum) ? maximum : 0;
 }
@@ -1454,14 +1502,18 @@ function createSimulationBudgetState(budget) {
   return { budget, samplesEvaluated: 0, exhausted: false };
 }
 
-/** Atomically reserves all samples required by one complete detailed plan. */
+/** Checks that a complete detailed plan could consume its full selected sample set. */
 function reserveSimulationSamples(state, sampleCount) {
   if (state.samplesEvaluated + sampleCount > state.budget) {
     state.exhausted = true;
     return false;
   }
-  state.samplesEvaluated += sampleCount;
   return true;
+}
+
+/** Records only samples actually evaluated before a full result or exact bound. */
+function recordSimulationSamples(state, sampleCount) {
+  state.samplesEvaluated += Math.max(0, Number(sampleCount) || 0);
 }
 
 /** Proves an air target impossible using a recon-relaxed slot-air upper bound. */
@@ -1594,7 +1646,7 @@ function materializeConcreteCandidateLoadout(baseLock, counts, groups) {
 }
 
 /** Materializes stable instance IDs only after a complete count plan is found. */
-function materializePlan(selected, prepared) {
+function materializePlan(selected, prepared, incumbentScore = null) {
   const cursors = prepared.groups.map(() => 0);
   const loadouts = selected.map((candidate, baseIndex) => {
     const loadout = prepared.baseLocks[baseIndex].slots.map((slot) =>
@@ -1615,7 +1667,15 @@ function materializePlan(selected, prepared) {
     });
     return loadout;
   });
-  return summarizePlan(loadouts, prepared);
+  return summarizePlan(loadouts, incumbentScore
+    ? {
+      ...prepared,
+      simulationOptions: {
+        ...prepared.simulationOptions,
+        incumbentScore,
+      },
+    }
+    : prepared);
 }
 
 /** Retains a deduplicated Top K without limiting the search itself. */

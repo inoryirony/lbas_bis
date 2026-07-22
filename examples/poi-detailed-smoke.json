@@ -1,0 +1,18 @@
+{
+  "baseCount": 1,
+  "targetRadius": 0,
+  "enemy": {
+    "mode": "detailed",
+    "dataSource": "custom",
+    "slots": []
+  },
+  "simulationOptions": {
+    "sampleCount": 1000,
+    "seed": 0
+  },
+  "targetStates": ["loss", "loss"],
+  "candidateMode": "owned",
+  "nodeBudget": null,
+  "simulationWorkBudget": null,
+  "maxResults": 1
+}

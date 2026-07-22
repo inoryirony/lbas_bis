@@ -203,6 +203,25 @@ describe('wave simulator', () => {
       .not.toEqual(result);
   });
 
+  test('stops a fixed-sample candidate once its optimistic score cannot beat the incumbent', () => {
+    const result = monteCarloWaveSequence({
+      bases: [[fighter('zero-damage')]],
+      enemy: { mode: 'detailed', slots: [] },
+      targetStates: ['loss', 'loss'],
+      seed: 'simulation-bound',
+      sampleCount: 32,
+      incumbentScore: {
+        fulfillment: 1,
+        damage: 1,
+      },
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      prunedBySimulationBound: true,
+      samplesEvaluated: 1,
+    }));
+  });
+
   test.each([0, 0.5, -1, Number.NaN, Number.POSITIVE_INFINITY, 10001])(
     'rejects invalid direct Monte Carlo sampleCount %s',
     (sampleCount) => {

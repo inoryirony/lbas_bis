@@ -201,6 +201,9 @@ function monteCarloWaveSequence(options = {}) {
     options.sampleCount ?? options.simulationOptions?.sampleCount,
   );
   const seed = options.seed ?? options.simulationOptions?.seed ?? 0;
+  const incumbentScore = options.incumbentScore;
+  const maximumDamagePerSample = normalizeBases(options.bases || options.loadouts || [])
+    .reduce((total, base) => total + 2 * calculateBaseDamagePower(base.filter(Boolean)), 0);
   let accumulator = null;
   for (let sample = 0; sample < sampleCount; sample += 1) {
     const result = simulateWaveSequence({
@@ -210,6 +213,24 @@ function monteCarloWaveSequence(options = {}) {
     });
     accumulator = accumulator || createSimulationAccumulator(result);
     addSimulationSample(accumulator, result);
+    const samplesEvaluated = sample + 1;
+    const optimisticScore = optimisticFixedSampleScore(
+      accumulator,
+      samplesEvaluated,
+      sampleCount,
+      maximumDamagePerSample,
+    );
+    if (cannotBeatDetailedIncumbent(optimisticScore, incumbentScore)) {
+      return {
+        calculationMode: 'detailed',
+        mode: 'detailed',
+        seed,
+        sampleCount,
+        samplesEvaluated,
+        prunedBySimulationBound: true,
+        optimisticScore,
+      };
+    }
   }
 
   const first = accumulator.template;
@@ -219,6 +240,7 @@ function monteCarloWaveSequence(options = {}) {
     dispatchMode: first.dispatchMode,
     seed,
     sampleCount,
+    samplesEvaluated: sampleCount,
     waves: accumulator.waves.map((wave) => finalizeWaveAccumulator(wave, sampleCount)),
     allWaveTargetFulfillmentProbability: accumulator.allWaveTargetsFulfilled / sampleCount,
     expectedDamage: accumulator.totalDamage / sampleCount,
@@ -235,6 +257,36 @@ function monteCarloWaveSequence(options = {}) {
     limitations: [...DETAILED_LIMITATIONS],
     limitationNotes: first.limitationNotes,
   };
+}
+
+/** Returns the best fulfillment and damage averages still reachable by this sample prefix. */
+function optimisticFixedSampleScore(
+  accumulator,
+  samplesEvaluated,
+  sampleCount,
+  maximumDamagePerSample,
+) {
+  const remainingSamples = sampleCount - samplesEvaluated;
+  return {
+    fulfillment: (
+      accumulator.allWaveTargetsFulfilled + remainingSamples
+    ) / sampleCount,
+    damage: (
+      accumulator.totalDamage + remainingSamples * maximumDamagePerSample
+    ) / sampleCount,
+  };
+}
+
+/** Prunes only on strict fixed-sample lexicographic bounds, never statistical confidence. */
+function cannotBeatDetailedIncumbent(optimisticScore, incumbentScore) {
+  if (!incumbentScore) return false;
+  const incumbentFulfillment = Number(incumbentScore.fulfillment);
+  const incumbentDamage = Number(incumbentScore.damage);
+  if (!Number.isFinite(incumbentFulfillment) || !Number.isFinite(incumbentDamage)) return false;
+  if (optimisticScore.fulfillment !== incumbentFulfillment) {
+    return optimisticScore.fulfillment < incumbentFulfillment;
+  }
+  return optimisticScore.damage < incumbentDamage;
 }
 
 /** Applies one ordinary player Stage 1 draw to each current base slot. */

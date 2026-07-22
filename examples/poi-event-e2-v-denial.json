@@ -1,0 +1,9 @@
+{
+  "baseCount": 3,
+  "targetRadius": 5,
+  "enemyAir": 720,
+  "targetStates": ["denial", "denial", "denial", "denial", "denial", "denial"],
+  "candidateMode": "owned",
+  "nodeBudget": null,
+  "maxResults": 1
+}

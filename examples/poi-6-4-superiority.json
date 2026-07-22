@@ -1,0 +1,9 @@
+{
+  "baseCount": 2,
+  "targetRadius": 5,
+  "enemyAir": 112,
+  "targetStates": ["superiority", "superiority", "superiority", "superiority"],
+  "candidateMode": "owned",
+  "nodeBudget": null,
+  "maxResults": 1
+}

@@ -189,6 +189,12 @@ function summarizePlan(loadouts, context) {
       targetStates: waveTargets,
       ...context.simulationOptions,
     });
+    if (simulation.prunedBySimulationBound) {
+      return {
+        prunedBySimulationBound: true,
+        simulation,
+      };
+    }
     plan.fulfilled = simulation.allWaveTargetFulfillmentProbability === 1;
     plan.waves = simulation.waves;
     plan.totalDamagePower = simulation.expectedDamage;

@@ -622,6 +622,106 @@ describe('LBAS optimizer MVP', () => {
     expect(result.search.provenOptimal).toBe(true);
   });
 
+  test('prunes detailed branches whose maximum damage cannot beat a perfect incumbent', () => {
+    const equipment = [30, 20, 10, 5].map((torpedo, index) => plane(`damage-${index}`, {
+      masterId: 2000 + index,
+      torpedo,
+      radius: 7,
+      role: 'attacker',
+      isLandBased: true,
+    }));
+    const sampleCount = 8;
+    const result = optimizeLoadouts({
+      equipment,
+      baseCount: 1,
+      targetRadius: 7,
+      enemy: { mode: 'detailed', slots: [] },
+      targetStates: ['loss', 'loss'],
+      lockedBases: [{ slots: [
+        { locked: false },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+      ] }],
+      simulationOptions: { seed: 'detailed-damage-bound', sampleCount },
+      nodeBudget: Infinity,
+      simulationWorkBudget: Infinity,
+      maxResults: 1,
+    });
+
+    expect(result.search).toEqual(expect.objectContaining({
+      status: 'optimal',
+      provenOptimal: true,
+      simulationSamplesEvaluated: sampleCount,
+      candidatesEvaluated: 1,
+    }));
+    expect(result.results[0].bases[0].loadout[0].instanceId).toBe('damage-0');
+  });
+
+  test('passes the incumbent into detailed simulation for fixed-sample pruning', () => {
+    const equipment = [30, 29].map((torpedo, index) => plane(`close-damage-${index}`, {
+      masterId: 2100 + index,
+      torpedo,
+      radius: 7,
+      role: 'attacker',
+      isLandBased: true,
+    }));
+    const sampleCount = 32;
+    const result = optimizeLoadouts({
+      equipment,
+      baseCount: 1,
+      targetRadius: 7,
+      enemy: { mode: 'detailed', slots: [] },
+      targetStates: ['loss', 'loss'],
+      lockedBases: [{ slots: [
+        { locked: false },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+        { plane: null, locked: true },
+      ] }],
+      simulationOptions: { seed: 'detailed-simulation-bound', sampleCount },
+      nodeBudget: Infinity,
+      simulationWorkBudget: Infinity,
+      maxResults: 1,
+    });
+
+    expect(result.search.status).toBe('optimal');
+    expect(result.search.provenOptimal).toBe(true);
+    expect(result.search.simulationSamplesEvaluated).toBeGreaterThanOrEqual(sampleCount);
+    expect(result.search.simulationSamplesEvaluated).toBeLessThan(2 * sampleCount);
+    expect(result.results[0].bases[0].loadout[0].instanceId).toBe('close-damage-0');
+  });
+
+  test('does not grant a free land-recon modifier to detailed damage bounds', () => {
+    const equipment = Array.from({ length: 16 }, (_unused, index) => plane(`plain-${index}`, {
+      masterId: 2200 + index,
+      torpedo: 30 - index / 10,
+      radius: 7,
+      role: 'attacker',
+      isLandBased: true,
+    }));
+    const result = optimizeLoadouts({
+      equipment,
+      baseCount: 1,
+      targetRadius: 7,
+      enemy: { mode: 'detailed', slots: [] },
+      targetStates: ['loss', 'loss'],
+      simulationOptions: { seed: 0, sampleCount: 1 },
+      nodeBudget: Infinity,
+      simulationWorkBudget: Infinity,
+      maxResults: 1,
+    });
+
+    expect(result.search).toEqual(expect.objectContaining({
+      status: 'optimal',
+      provenOptimal: true,
+      candidatesEvaluated: 1,
+      simulationSamplesEvaluated: 1,
+    }));
+    expect(result.results[0].bases[0].loadout.filter(Boolean).map((item) => item.instanceId))
+      .toEqual(['plain-0', 'plain-1', 'plain-2', 'plain-3']);
+  });
+
   test('returns invalid_input for invalid detailed enemy slots', () => {
     const result = optimizeLoadouts({
       equipment: [plane('fighter', { antiAir: 12, radius: 7, role: 'fighter' })],
