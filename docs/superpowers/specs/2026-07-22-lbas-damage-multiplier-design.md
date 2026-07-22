@@ -96,4 +96,3 @@ proof argument.
 - Scenario normalization, worker transport, CLI JSON, and UI edits preserve the
   same `combatContext`.
 - Existing no-bonus fixtures remain byte-for-byte score compatible.
-

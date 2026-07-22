@@ -171,4 +171,3 @@ Commit only multiplier-related changes and push `main` to `origin`.
 Publish the current version only when npm authentication permits, verify the
 registry tarball/version, reinstall from the registry into Poi, and repeat the
 smoke check. Never use credentials exposed in chat.
-
