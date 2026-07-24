@@ -1,0 +1,20 @@
+{
+  "baseCount": 2,
+  "mapSelection": {
+    "area": 622,
+    "node": "V",
+    "difficulty": 4,
+    "formationIndex": 0
+  },
+  "targetStates": ["denial", "denial", "denial", "denial"],
+  "candidateMode": "owned",
+  "excludeCarrierAircraft": true,
+  "optimizationObjective": "combat",
+  "simulationOptions": {
+    "sampleCount": 4096,
+    "seed": "poi-event-622-v-high-air-v1"
+  },
+  "nodeBudget": null,
+  "simulationWorkBudget": null,
+  "maxResults": 1
+}

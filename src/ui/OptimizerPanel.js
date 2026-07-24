@@ -158,14 +158,51 @@ function OptimizerPanel(props) {
       styles,
     }),
     isSearching
-      ? renderLiveSearch(searchPhase, searchProgress, results, t, styles)
+      ? h(SearchActivityClock, { phase: searchPhase, progress: searchProgress, results, t, styles })
       : renderSearch(search, t, styles),
     renderMessages(messages, styles),
     renderResults({ results, combatContext, onImportPlan, t, styles }),
   );
 }
 
-function renderLiveSearch(phase, progress = {}, results, t, styles) {
+/** Owns the lightweight UI clock that keeps search activity visibly moving. */
+class SearchActivityClock extends React.PureComponent {
+  /** Creates a clock that starts from zero for each mounted search generation. */
+  constructor(props) {
+    super(props);
+    this.state = { activityElapsedMs: 0 };
+    this.activityTimer = null;
+  }
+
+  /** Starts a UI-only timer independent of solver progress snapshots. */
+  componentDidMount() {
+    this.activityTimer = setInterval(() => {
+      this.setState((state) => ({ activityElapsedMs: state.activityElapsedMs + 100 }));
+    }, 100);
+  }
+
+  /** Stops the activity timer when the search progress view is removed. */
+  componentWillUnmount() {
+    if (this.activityTimer != null) clearInterval(this.activityTimer);
+    this.activityTimer = null;
+  }
+
+  /** Renders solver counters with the independent activity offset. */
+  render() {
+    const { phase, progress, results, t, styles } = this.props;
+    return renderLiveSearch(
+      phase,
+      progress,
+      results,
+      t,
+      styles,
+      this.state.activityElapsedMs,
+    );
+  }
+}
+
+/** Renders live solver state while using a UI clock only for activity position. */
+function renderLiveSearch(phase, progress = {}, results, t, styles, activityElapsedMs = 0) {
   const elapsedSeconds = Math.round((progress?.elapsedMs || 0) / 100) / 10;
   const displayedNodes = progress?.totalNodesExplored ?? progress?.nodesExplored ?? 0;
   const hasCountableWork = Number.isFinite(progress?.completedWork) &&
@@ -174,8 +211,13 @@ function renderLiveSearch(phase, progress = {}, results, t, styles) {
     ? Math.max(0, Math.min(progress.completedWork, progress.totalWork))
     : 0;
   const percentage = hasCountableWork
-    ? Math.round(completedWork / progress.totalWork * 100)
+    ? completedWork === progress.totalWork
+      ? 100
+      : Math.floor(completedWork / progress.totalWork * 100)
     : null;
+  const animationElapsedMs = (progress?.elapsedMs || 0) + activityElapsedMs;
+  const indeterminatePosition = (animationElapsedMs / 50 % 560) - 100;
+  const activityPosition = animationElapsedMs / 50 % 100;
   return h(
     'div',
     { style: styles.searchProgress || styles.searchMeta },
@@ -184,22 +226,49 @@ function renderLiveSearch(phase, progress = {}, results, t, styles) {
     hasCountableWork
       ? h('span', null, `${completedWork} / ${progress.totalWork} (${percentage}%)`)
       : null,
-    h(
-      'div',
-      {
-        style: styles.progressTrack,
-        role: 'progressbar',
-        'aria-valuemin': 0,
-        'aria-valuemax': hasCountableWork ? progress.totalWork : undefined,
-        'aria-valuenow': hasCountableWork ? completedWork : undefined,
-      },
-      h('div', {
-        style: {
-          ...styles.progressBar,
-          width: hasCountableWork ? `${percentage}%` : styles.progressBar?.width,
-        },
-      }),
-    ),
+    hasCountableWork
+      ? h(
+          'div',
+          {
+            role: 'progressbar',
+            'aria-label': t(`phase_${phase || 'finding_feasible'}`),
+            'aria-valuemin': 0,
+            'aria-valuenow': completedWork,
+            'aria-valuemax': progress.totalWork,
+            'data-progress-mode': 'determinate',
+            style: styles.progressTrack,
+          },
+          h('span', {
+            'data-progress-role': 'fill',
+            style: {
+              ...styles.progressFill,
+              width: `${completedWork / progress.totalWork * 100}%`,
+            },
+          }),
+          h('span', {
+            'data-progress-role': 'activity',
+            style: {
+              ...styles.progressActivity,
+              left: `${activityPosition}%`,
+            },
+          }),
+        )
+      : h(
+          'div',
+          {
+            role: 'progressbar',
+            'aria-label': t(`phase_${phase || 'finding_feasible'}`),
+            'aria-valuetext': t(`phase_${phase || 'finding_feasible'}`),
+            'data-progress-mode': 'indeterminate',
+            style: styles.progressTrack,
+          },
+          h('span', {
+            style: {
+              ...styles.progressPulse,
+              transform: `translateX(${indeterminatePosition}%)`,
+            },
+          }),
+        ),
     h(
       'span',
       null,
@@ -365,3 +434,4 @@ function format(template, values) {
 }
 
 module.exports = OptimizerPanel;
+module.exports.SearchActivityClock = SearchActivityClock;

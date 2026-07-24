@@ -55,6 +55,27 @@ describe('enemy ship catalog', () => {
     ]));
   });
 
+  test('decorates known PT enemies with versioned airstrike metadata', () => {
+    const poiState = samplePoiState();
+    poiState.const.$ships[1637] = {
+      api_id: 1637,
+      api_name: 'PT小鬼群',
+      api_yomi: 'pt',
+      api_stype: 2,
+      api_taik: 18,
+      api_souk: 22,
+      api_soku: 10,
+    };
+
+    expect(buildEnemyCatalog(poiState, { abyssalData: {} }).byId.get(1637)).toMatchObject({
+      isPT: true,
+      specialAirstrikeRuleId: 'pt',
+      airstrikeRuleSource: expect.objectContaining({
+        revision: 'ec3094c5ba57e289d2716a75ab5f4dee31f1b07f',
+      }),
+    });
+  });
+
   test('prefers official slot data, then noro6, before Navy Album fallback', () => {
     const poiState = samplePoiState();
     poiState.const.$ships[1764] = {
@@ -123,6 +144,8 @@ describe('enemy ship catalog', () => {
       api_taik: [500, 500],
       api_souk: [180, 180],
       api_soku: 0,
+      api_houk: [53, 53],
+      api_luck: [70, 70],
     };
     const catalog = buildEnemyCatalog(poiState, {
       noro6Master: {
@@ -132,7 +155,10 @@ describe('enemy ship catalog', () => {
         ],
         items: [],
       },
-      abyssalData: {},
+      abyssalData: {
+        1764: { HP: 501, AR: 181, SPD: 5, EV: 99, LUK: 99 },
+        1776: { HP: 221, AR: 111, SPD: 5, EV: 66, LUK: 44 },
+      },
     });
 
     expect(catalog.byId.get(1764)).toMatchObject({
@@ -140,12 +166,16 @@ describe('enemy ship catalog', () => {
       hp: 500,
       armor: 180,
       speed: 0,
+      evasion: 53,
+      luck: 70,
     });
     expect(catalog.byId.get(1776)).toMatchObject({
       type: 3,
       hp: 220,
       armor: 110,
       speed: 1,
+      evasion: 66,
+      luck: 44,
     });
   });
 });

@@ -8,6 +8,7 @@ const {
   enemyStageOneLoss,
   createDetailedDamageBoundContext,
   createDetailedScoreContext,
+  evaluateDetailedCombatContinuationBatch,
   evaluateDetailedPlanScore,
   maximumDetailedExpectedDamage,
   monteCarloWaveSequence,
@@ -71,6 +72,387 @@ describe('wave simulator', () => {
     expect(result.waves[1].ownSlotsBefore).toEqual(result.waves[0].ownSlotsBefore);
     expect(result.waves[1].ownSlotsAfter[0]).toBeLessThan(result.waves[1].ownSlotsBefore[0]);
     expect(calls.filter(([, side]) => side === 'player')).toHaveLength(2);
+  });
+
+  test('carries enemy HP across waves and removes sunk ships from later targeting', () => {
+    const result = simulateWaveSequence({
+      bases: [[fighter('hp-attacker', {
+        equipType: 47,
+        isFighter: false,
+        isAttacker: true,
+        isLandAttacker: true,
+        torpedo: 20,
+      })]],
+      enemy: combatEnemyFleet('hp-sequence'),
+      targetStates: ['supremacy', 'supremacy'],
+      random: () => 0.5,
+    });
+
+    expect(result.waves.map((wave) => wave.hpDamage)).toEqual([1, 1]);
+    expect(result.waves.map((wave) => wave.sunkCount)).toEqual([1, 1]);
+    expect(result.waves[0].combat.events).toHaveLength(1);
+    expect(result.waves[1].combat.events).toHaveLength(1);
+    expect(result.waves[1].combat.events[0].targetSourceShipIndex)
+      .not.toBe(result.waves[0].combat.events[0].targetSourceShipIndex);
+    expect(result.totalHpDamage).toBe(2);
+    expect(result.totalSunkCount).toBe(2);
+    expect(result.enemyFleets[0].ships.map((ship) => ship.currentHp)).toEqual([0, 0]);
+  });
+
+  test('increases real HP damage when a base carries skilled land recon', () => {
+    const attacker = fighter('recon-hp-attacker', {
+      masterId: 1,
+      equipType: 47,
+      antiAir: 0,
+      isFighter: false,
+      isAttacker: true,
+      isLandAttacker: true,
+      torpedo: 14,
+      bombing: 14,
+    });
+    const skilledRecon = fighter('skilled-land-recon', {
+      masterId: 312,
+      equipType: 49,
+      antiAir: 0,
+      isFighter: false,
+      isRecon: true,
+      isLandRecon: true,
+      scout: 9,
+      slotSize: 4,
+      currentSlot: 4,
+    });
+    const enemy = {
+      mode: 'detailed',
+      slots: [],
+      ships: [{
+        id: 'recon-hp-target',
+        name: 'Durable DD',
+        hp: 1000,
+        armor: 0,
+        evasion: 0,
+        luck: 0,
+        type: 2,
+        speed: 10,
+        sourceShipIndex: 0,
+        fleet: 'main',
+        fleetShipIndex: 0,
+        isFlagship: true,
+      }],
+    };
+    const simulate = (base) => simulateWaveSequence({
+      bases: [base],
+      enemy,
+      targetStates: ['supremacy', 'supremacy'],
+      random: () => 0.5,
+    });
+
+    expect(simulate([attacker]).totalHpDamage).toBe(298);
+    expect(simulate([attacker, skilledRecon]).totalHpDamage).toBe(344);
+  });
+
+  test('aggregates real HP damage, sinks, and final enemy HP across fixed samples', () => {
+    const result = monteCarloWaveSequence({
+      bases: [[fighter('mc-hp-attacker', {
+        equipType: 47,
+        isFighter: false,
+        isAttacker: true,
+        isLandAttacker: true,
+        torpedo: 20,
+      })]],
+      enemy: combatEnemyFleet('mc-hp'),
+      targetStates: ['supremacy', 'supremacy'],
+      sampleCount: 4,
+      fixedRandom: () => 0.5,
+    });
+
+    expect(result.expectedHpDamage).toBe(2);
+    expect(result.expectedSunkCount).toBe(2);
+    expect(result.waves.map((wave) => wave.expectedHpDamage)).toEqual([1, 1]);
+    expect(result.waves.map((wave) => wave.expectedSunkCount)).toEqual([1, 1]);
+    expect(result.expectedFinalEnemyHp).toEqual([[0, 0]]);
+  });
+
+  test('matches the eventful Monte Carlo score through the prepared numeric combat path', () => {
+    const options = {
+      bases: [[fighter('numeric-combat-attacker', {
+        equipType: 47,
+        isFighter: false,
+        isAttacker: true,
+        isLandAttacker: true,
+        torpedo: 20,
+      })]],
+      enemy: combatEnemyFleet('numeric-combat'),
+      targetStates: ['supremacy', 'supremacy'],
+      sampleCount: 16,
+      fixedRandom: createFixedSampleRandom('numeric-combat-score', 16),
+    };
+    const expected = monteCarloWaveSequence(options);
+    const actual = evaluateDetailedPlanScore({ ...options, includeCombat: true });
+
+    expect(actual).toMatchObject({
+      allWaveTargetFulfillmentProbability: expected.allWaveTargetFulfillmentProbability,
+      expectedDamage: expected.expectedDamage,
+      expectedHpDamage: expected.expectedHpDamage,
+      expectedSunkCount: expected.expectedSunkCount,
+      expectedOwnSlotLoss: expected.expectedOwnSlotLoss,
+      expectedResourceCost: expected.expectedResourceCost,
+    });
+  });
+
+  test('shares the special-enemy post-cap coordinate across eventful and numeric combat', () => {
+    const enemy = combatEnemyFleet('numeric-special');
+    enemy.ships = [
+      {
+        ...enemy.ships[0],
+        id: '1653',
+        hp: 1000,
+      },
+    ];
+    const options = {
+      bases: [[fighter('numeric-special-attacker', {
+        equipType: 47,
+        isFighter: false,
+        isAttacker: true,
+        isLandAttacker: true,
+        torpedo: 20,
+      })]],
+      enemy,
+      targetStates: ['loss', 'loss'],
+      sampleCount: 8,
+      fixedRandom: createFixedSampleRandom('numeric-special-postcap', 8),
+    };
+
+    const expected = monteCarloWaveSequence(options);
+    const actual = evaluateDetailedPlanScore({ ...options, includeCombat: true });
+    expect(actual).toMatchObject({
+      expectedHpDamage: expected.expectedHpDamage,
+      expectedSunkCount: expected.expectedSunkCount,
+    });
+  });
+
+  test('shares one contact coordinate per wave across eventful and numeric combat', () => {
+    const calls = [];
+    const options = {
+      bases: [[
+        fighter('contact-attacker', {
+          antiAir: 0,
+          equipType: 47,
+          isFighter: false,
+          isAttacker: true,
+          isLandAttacker: true,
+          torpedo: 14,
+        }),
+        fighter('contact-scout', {
+          antiAir: 0,
+          equipType: 9,
+          isFighter: false,
+          isRecon: true,
+          scout: 14,
+          accuracy: 3,
+          currentSlot: 4,
+          slotSize: 4,
+        }),
+      ]],
+      enemy: durableCombatEnemy('contact-parity'),
+      targetStates: ['supremacy', 'supremacy'],
+      sampleCount: 4,
+      fixedRandom: (...coordinates) => {
+        calls.push(coordinates);
+        return coordinates[2] === 'combat-hit' ? 0.5 : 0;
+      },
+    };
+
+    const expected = simulateWaveSequence({
+      ...options,
+      random: (_wave, side) => side === 'combat-hit' ? 0.5 : 0,
+    });
+    const actual = evaluateDetailedPlanScore({ ...options, includeCombat: true });
+
+    expect(expected.waves.map((wave) => wave.contactMultiplier)).toEqual([1.2, 1.2]);
+    expect(expected.waves[0].combat.events[0].attackPower).toBe(179);
+    expect(actual.expectedHpDamage).toBe(expected.totalHpDamage);
+    expect(calls.filter(([, , side]) => side === 'combat-contact')).toHaveLength(8);
+  });
+
+  test('carries concentrated contact across bases but isolates separate targets', () => {
+    const bases = contactScenarioBases();
+    const concentrated = simulateWaveSequence({
+      bases,
+      enemy: durableCombatEnemy('contact-concentrated', 18),
+      targetStates: ['supremacy', 'supremacy', 'loss', 'loss'],
+      random: (...coordinates) => coordinates[1] === 'combat-hit' ? 0.5 : 0,
+    });
+    const separate = simulateWaveSequence({
+      bases: [bases[0]],
+      dispatchMode: 'separate',
+      enemyFleets: [
+        durableCombatEnemy('contact-separate-easy'),
+        durableCombatEnemy('contact-separate-hard', 10000),
+      ],
+      targetStates: ['supremacy', 'loss'],
+      random: (...coordinates) => coordinates[1] === 'combat-hit' ? 0.5 : 0,
+    });
+
+    expect(concentrated.waves.map((wave) => wave.contactMultiplier))
+      .toEqual([1.2, 1.2, 1.2, 1.2]);
+    expect(separate.waves.map((wave) => wave.contactMultiplier)).toEqual([1.2, 1]);
+  });
+
+  test('continues contact state without changing a split two-base combat score', () => {
+    const bases = contactScenarioBases();
+    const options = {
+      enemy: durableCombatEnemy('contact-continuation', 18),
+      targetStates: ['supremacy', 'supremacy', 'loss', 'loss'],
+      sampleCount: 8,
+      fixedRandom: createFixedSampleRandom('contact-continuation', 8),
+      includeCombat: true,
+    };
+    const full = evaluateDetailedPlanScore({ ...options, bases });
+    const prefix = evaluateDetailedPlanScore({
+      ...options,
+      bases: [bases[0]],
+      captureFinalEnemySlots: true,
+      captureFinalEnemyHitPoints: true,
+      captureFinalContactStates: true,
+    });
+    const suffix = evaluateDetailedPlanScore({
+      ...options,
+      bases: [bases[1]],
+      baseIndexOffset: 1,
+      initialEnemySlotsBySample: prefix.finalEnemySlotsBySample,
+      initialEnemyHitPointsBySample: prefix.finalEnemyHitPointsBySample,
+      initialContactStatesBySample: prefix.finalContactStatesBySample,
+    });
+
+    expect(prefix.finalContactStatesBySample).toHaveLength(8);
+    expect(prefix.expectedHpDamage + suffix.expectedHpDamage).toBe(full.expectedHpDamage);
+    expect(prefix.expectedSunkCount + suffix.expectedSunkCount).toBe(full.expectedSunkCount);
+  });
+
+  test('matches Toukai ASW damage through eventful and prepared numeric combat', () => {
+    const options = {
+      bases: [[fighter('numeric-toukai', {
+        masterId: 269,
+        equipType: 47,
+        isFighter: false,
+        isAttacker: true,
+        isLandAttacker: true,
+        torpedo: 0,
+        bombing: 2,
+        asw: 10,
+      })]],
+      enemy: {
+        mode: 'detailed',
+        slots: [],
+        ships: [{
+          id: 'numeric-submarine',
+          type: 13,
+          isSubmarine: true,
+          hp: 200,
+          armor: 0,
+          evasion: 0,
+          luck: 0,
+          fleet: 'main',
+          fleetShipIndex: 0,
+          isFlagship: true,
+        }],
+      },
+      targetStates: ['loss', 'loss'],
+      sampleCount: 4,
+      fixedRandom: (_sample, _wave, phase) => phase === 'combat-hit' ? 0.5 : 0,
+    };
+    const expected = monteCarloWaveSequence(options);
+    const actual = evaluateDetailedPlanScore({ ...options, includeCombat: true });
+
+    expect(actual).toMatchObject({
+      expectedHpDamage: expected.expectedHpDamage,
+      expectedSunkCount: expected.expectedSunkCount,
+    });
+    expect(actual.expectedHpDamage).toBe(200);
+    expect(actual.expectedSunkCount).toBe(1);
+  });
+
+  test('applies modeled Stage 2 to a pure ASW attacker in both combat paths', () => {
+    const pureAsw = fighter('numeric-pure-asw-stage2', {
+      masterId: 603,
+      equipType: 25,
+      antiAir: 0,
+      bombing: 0,
+      asw: 20,
+      currentSlot: 1,
+      slotSize: 1,
+      isFighter: false,
+      isAttacker: false,
+      isLbasCombatAttacker: true,
+      canAttackSubmarine: true,
+    });
+    const enemy = combatEnemyFleet('numeric-pure-asw-stage2');
+    enemy.ships[0] = {
+      ...enemy.ships[0],
+      id: 'numeric-pure-asw-stage2-submarine',
+      hp: 200,
+      currentHp: 200,
+      type: 13,
+      isSubmarine: true,
+    };
+    enemy.stage2Defense = {
+      modeled: true,
+      byAvoidance: { 0: { fixedLosses: [1], rateFactors: [0] } },
+    };
+    const common = {
+      bases: [[pureAsw]],
+      enemy,
+      targetStates: ['loss', 'loss'],
+    };
+    const eventful = simulateWaveSequence({
+      ...common,
+      random: (_wave, side) => side === 'player-stage2-fixed' ? 1 : 0,
+    });
+    const numeric = evaluateDetailedPlanScore({
+      ...common,
+      sampleCount: 1,
+      fixedRandom: (_sample, _wave, side) =>
+        side === 'player-stage2-fixed' ? 1 : 0,
+      includeCombat: true,
+    });
+
+    expect(eventful.waves.map((wave) => wave.ownSlotDetails[0].stageTwoLoss))
+      .toEqual([1, 1]);
+    expect(eventful.totalOwnSlotLoss).toBe(1);
+    expect(eventful.totalHpDamage).toBe(0);
+    expect(numeric).toMatchObject({
+      expectedOwnSlotLoss: eventful.totalOwnSlotLoss,
+      expectedHpDamage: eventful.totalHpDamage,
+    });
+  });
+
+  test('marks HP damage unavailable when enemy combat data is incomplete', () => {
+    const exact = simulateWaveSequence({
+      bases: [[fighter('missing-hp-attacker', {
+        equipType: 47,
+        isFighter: false,
+        isAttacker: true,
+        isLandAttacker: true,
+        torpedo: 20,
+      })]],
+      enemy: enemyFleet('missing-hp', 18),
+      targetStates: ['supremacy', 'supremacy'],
+      random: () => 0.5,
+    });
+    const sampled = monteCarloWaveSequence({
+      bases: exact.finalBases,
+      enemy: enemyFleet('missing-hp-mc', 18),
+      targetStates: ['supremacy', 'supremacy'],
+      sampleCount: 2,
+      fixedRandom: () => 0.5,
+    });
+
+    expect(exact.totalHpDamage).toBeNull();
+    expect(exact.totalSunkCount).toBeNull();
+    expect(exact.waves.every((wave) => wave.hpDamage === null)).toBe(true);
+    expect(exact.limitations).toContain('HP_DAMAGE_OMITTED_MISSING_ENEMY_COMBAT_DATA');
+    expect(sampled.expectedHpDamage).toBeNull();
+    expect(sampled.expectedSunkCount).toBeNull();
   });
 
   test('requires independent fleets for separate dispatch and carries only own losses', () => {
@@ -322,8 +704,8 @@ describe('wave simulator', () => {
       random: () => 0,
     });
 
-    expect(result.waves.map((wave) => wave.damage)).toEqual([223, 223]);
-    expect(result.totalDamage).toBe(446);
+    expect(result.waves.map((wave) => wave.damage)).toEqual([224, 224]);
+    expect(result.totalDamage).toBe(448);
   });
 
   test('applies enemy Stage 2 and lets weak shootdown avoidance preserve more attackers', () => {
@@ -404,6 +786,67 @@ describe('wave simulator', () => {
       prunedBySimulationBound: true,
       samplesEvaluated: 1,
     }));
+  });
+
+  test('stops combat samples only after the sink and HP upper bounds lose', () => {
+    const result = monteCarloWaveSequence({
+      bases: [[fighter('combat-bound-fighter')]],
+      enemy: combatEnemyFleet('combat-bound'),
+      targetStates: ['supremacy', 'supremacy'],
+      sampleCount: 32,
+      fixedRandom: () => 0.5,
+      incumbentScore: {
+        fulfillment: 1,
+        sunk: 2,
+        hpDamage: 2,
+        damage: 0,
+        loss: 0,
+        resource: 0,
+      },
+    });
+
+    expect(result).toMatchObject({
+      prunedBySimulationBound: true,
+      samplesEvaluated: 1,
+      optimisticScore: {
+        fulfillment: 1,
+        sunk: 62 / 32,
+        hpDamage: 62 / 32,
+      },
+    });
+  });
+
+  test('uses candidate-specific remaining combat ceilings for earlier safe stopping', () => {
+    const result = evaluateDetailedPlanScore({
+      bases: [[fighter('candidate-combat-bound-fighter')]],
+      enemy: combatEnemyFleet('candidate-combat-bound'),
+      targetStates: ['supremacy', 'supremacy'],
+      sampleCount: 32,
+      fixedRandom: () => 0.5,
+      includeCombat: true,
+      combatSampleUpperBounds: {
+        remainingSunk: new Float64Array(33),
+        remainingHpDamage: new Float64Array(33),
+      },
+      incumbentScore: {
+        fulfillment: 1,
+        sunk: 1,
+        hpDamage: 1,
+        damage: 0,
+        loss: 0,
+        resource: 0,
+      },
+    });
+
+    expect(result).toMatchObject({
+      prunedBySimulationBound: true,
+      samplesEvaluated: 1,
+      optimisticScore: {
+        fulfillment: 1,
+        sunk: 0,
+        hpDamage: 0,
+      },
+    });
   });
 
   test.each(['concentrated', 'separate'])(
@@ -708,6 +1151,297 @@ describe('wave simulator', () => {
       .toBe(full.totalDamageAcrossSamples);
   });
 
+  test('continues combat from captured enemy HP without resurrecting sunk targets', () => {
+    const attacker = (instanceId) => fighter(instanceId, {
+      antiAir: 0,
+      equipType: 47,
+      isFighter: false,
+      isAttacker: true,
+      isLandAttacker: true,
+      torpedo: 20,
+      accuracy: 20,
+    });
+    const firstBase = [attacker('combat-prefix-attacker')];
+    const secondBase = [attacker('combat-suffix-attacker')];
+    const common = {
+      enemy: combatEnemyFleet('combat-continuation-enemy'),
+      targetStates: ['denial', 'denial', 'denial', 'denial'],
+      sampleCount: 8,
+      fixedRandom: () => 0,
+      includeCombat: true,
+    };
+
+    const full = evaluateDetailedPlanScore({ ...common, bases: [firstBase, secondBase] });
+    const prefix = evaluateDetailedPlanScore({
+      ...common,
+      bases: [firstBase],
+      captureFinalEnemySlots: true,
+      captureFinalEnemyHitPoints: true,
+    });
+    const suffix = evaluateDetailedPlanScore({
+      ...common,
+      bases: [secondBase],
+      baseIndexOffset: 1,
+      initialEnemySlotsBySample: prefix.finalEnemySlotsBySample,
+      initialEnemyHitPointsBySample: prefix.finalEnemyHitPointsBySample,
+    });
+
+    expect(prefix.finalEnemyHitPointsBySample).toHaveLength(common.sampleCount);
+    expect(prefix.expectedSunkCount + suffix.expectedSunkCount)
+      .toBe(full.expectedSunkCount);
+    expect(prefix.expectedHpDamage + suffix.expectedHpDamage)
+      .toBe(full.expectedHpDamage);
+  });
+
+  test('matches nested continuation scoring from flat typed enemy state', () => {
+    const attacker = (instanceId) => fighter(instanceId, {
+      antiAir: 0,
+      equipType: 47,
+      isFighter: false,
+      isAttacker: true,
+      isLandAttacker: true,
+      torpedo: 20,
+      accuracy: 20,
+    });
+    const common = {
+      enemy: combatEnemyFleet('flat-continuation-enemy'),
+      targetStates: ['denial', 'denial', 'denial', 'denial'],
+      sampleCount: 8,
+      fixedRandom: () => 0,
+      includeCombat: true,
+    };
+    const prefix = evaluateDetailedPlanScore({
+      ...common,
+      bases: [[attacker('flat-prefix-attacker')]],
+      captureFinalEnemySlots: true,
+      captureFinalEnemyHitPoints: true,
+    });
+    const nested = evaluateDetailedPlanScore({
+      ...common,
+      bases: [[attacker('flat-suffix-attacker')]],
+      baseIndexOffset: 1,
+      initialEnemySlotsBySample: prefix.finalEnemySlotsBySample,
+      initialEnemyHitPointsBySample: prefix.finalEnemyHitPointsBySample,
+    });
+    const flat = evaluateDetailedPlanScore({
+      ...common,
+      bases: [[attacker('flat-suffix-attacker')]],
+      baseIndexOffset: 1,
+      initialEnemySlotsFlatByFleet: flattenContinuationState(
+        prefix.finalEnemySlotsBySample,
+        Float64Array,
+      ),
+      initialEnemyHitPointsFlatByFleet: flattenContinuationState(
+        prefix.finalEnemyHitPointsBySample,
+        Int32Array,
+      ),
+    });
+
+    expect(flat).toMatchObject({
+      allWaveTargetFulfillmentProbability: nested.allWaveTargetFulfillmentProbability,
+      totalDamageAcrossSamples: nested.totalDamageAcrossSamples,
+      expectedHpDamage: nested.expectedHpDamage,
+      expectedSunkCount: nested.expectedSunkCount,
+    });
+  });
+
+  test('captures flat typed continuations without changing nested enemy state', () => {
+    const attacker = fighter('flat-capture-attacker', {
+      antiAir: 0,
+      equipType: 47,
+      isFighter: false,
+      isAttacker: true,
+      isLandAttacker: true,
+      torpedo: 20,
+      accuracy: 20,
+    });
+    const common = {
+      bases: [[attacker, fighter('air-only-prefix-fighter', { antiAir: 12 })]],
+      enemy: combatEnemyFleet('flat-capture-enemy'),
+      targetStates: ['denial', 'denial'],
+      sampleCount: 8,
+      fixedRandom: createFixedSampleRandom('flat-capture', 8),
+      includeCombat: true,
+    };
+    const nested = evaluateDetailedPlanScore({
+      ...common,
+      captureFinalEnemySlots: true,
+      captureFinalEnemyHitPoints: true,
+      captureFinalContactStates: true,
+    });
+    const flat = evaluateDetailedPlanScore({
+      ...common,
+      captureFinalContinuationsFlat: true,
+    });
+
+    expect(flat.finalEnemySlotsFlatByFleet).toEqual(flattenContinuationState(
+      nested.finalEnemySlotsBySample,
+      Float64Array,
+    ));
+    expect(flat.finalEnemyHitPointsFlatByFleet).toEqual(flattenContinuationState(
+      nested.finalEnemyHitPointsBySample,
+      Int32Array,
+    ));
+    expect(flat.finalContactStatesFlatByFleet).toEqual([
+      expect.objectContaining({
+        width: 2,
+        values: expect.any(Uint8Array),
+      }),
+    ]);
+    expect(flat.finalContactStatesFlatByFleet[0].values)
+      .toHaveLength(common.sampleCount * 2);
+  });
+
+  test('replays HP combat from an air-only captured prefix trajectory', () => {
+    const attacker = fighter('air-only-prefix-attacker', {
+      antiAir: 0,
+      equipType: 47,
+      isFighter: false,
+      isAttacker: true,
+      isLandAttacker: true,
+      torpedo: 20,
+      accuracy: 20,
+    });
+    const common = {
+      bases: [[attacker]],
+      enemy: combatEnemyFleet('air-only-prefix-enemy'),
+      targetStates: ['denial', 'denial'],
+      sampleCount: 8,
+      fixedRandom: createFixedSampleRandom('air-only-prefix', 8),
+      captureFinalContinuationsFlat: true,
+    };
+    const direct = evaluateDetailedPlanScore({ ...common, includeCombat: true });
+    const airOnly = evaluateDetailedPlanScore({
+      ...common,
+      includeCombat: false,
+      captureCombatTrajectory: true,
+    });
+    const replayed = evaluateDetailedPlanScore({
+      ...common,
+      includeCombat: true,
+      combatTrajectory: airOnly.combatTrajectory,
+    });
+
+    expect(airOnly.combatTrajectory).toBeDefined();
+    expect(airOnly.combatTrajectory.attackerIndices[0]).toEqual([0]);
+    expect(airOnly.combatTrajectory.attackSlots[0][0].width).toBe(1);
+    expect(replayed).toMatchObject({
+      allWaveTargetFulfillmentProbability: direct.allWaveTargetFulfillmentProbability,
+      expectedDamage: direct.expectedDamage,
+      expectedHpDamage: direct.expectedHpDamage,
+      expectedSunkCount: direct.expectedSunkCount,
+      expectedOwnSlotLoss: direct.expectedOwnSlotLoss,
+      expectedResourceCost: direct.expectedResourceCost,
+      finalEnemyHitPointsFlatByFleet: direct.finalEnemyHitPointsFlatByFleet,
+    });
+  });
+
+  test('reuses one air and player-loss trajectory across different enemy HP continuations', () => {
+    const attacker = fighter('shared-air-trajectory-attacker', {
+      antiAir: 0,
+      equipType: 47,
+      isFighter: false,
+      isAttacker: true,
+      isLandAttacker: true,
+      torpedo: 20,
+      accuracy: 20,
+    });
+    const common = {
+      bases: [[attacker]],
+      enemy: combatEnemyFleet('shared-air-trajectory-enemy'),
+      targetStates: ['denial', 'denial'],
+      sampleCount: 8,
+      fixedRandom: () => 0,
+      includeCombat: true,
+      initialEnemySlotsFlatByFleet: [{
+        values: new Float64Array(0),
+        width: 0,
+      }],
+    };
+    const healthyHp = [{ values: Int32Array.from(
+      Array.from({ length: 8 }, () => [1, 1]).flat(),
+    ), width: 2 }];
+    const damagedHp = [{ values: Int32Array.from(
+      Array.from({ length: 8 }, () => [0, 1]).flat(),
+    ), width: 2 }];
+    const captured = evaluateDetailedPlanScore({
+      ...common,
+      initialEnemyHitPointsFlatByFleet: healthyHp,
+      captureCombatTrajectory: true,
+    });
+    const reused = evaluateDetailedPlanScore({
+      ...common,
+      initialEnemyHitPointsFlatByFleet: damagedHp,
+      combatTrajectory: captured.combatTrajectory,
+    });
+    const direct = evaluateDetailedPlanScore({
+      ...common,
+      initialEnemyHitPointsFlatByFleet: damagedHp,
+    });
+
+    expect(captured.combatTrajectory).toBeDefined();
+    expect(reused).toMatchObject({
+      allWaveTargetFulfillmentProbability: direct.allWaveTargetFulfillmentProbability,
+      totalDamageAcrossSamples: direct.totalDamageAcrossSamples,
+      expectedHpDamage: direct.expectedHpDamage,
+      expectedSunkCount: direct.expectedSunkCount,
+      expectedOwnSlotLoss: direct.expectedOwnSlotLoss,
+      expectedResourceCost: direct.expectedResourceCost,
+    });
+  });
+
+  test('batch-scores HP continuations exactly like separate trajectory evaluations', () => {
+    const attacker = fighter('batched-continuation-attacker', {
+      antiAir: 0,
+      equipType: 47,
+      isFighter: false,
+      isAttacker: true,
+      isLandAttacker: true,
+      torpedo: 20,
+      accuracy: 20,
+    });
+    const common = {
+      bases: [[attacker]],
+      enemy: combatEnemyFleet('batched-continuation-enemy'),
+      targetStates: ['denial', 'denial'],
+      sampleCount: 8,
+      fixedRandom: createFixedSampleRandom('batched-continuation', 8),
+      includeCombat: true,
+      initialEnemySlotsFlatByFleet: [{ values: new Float64Array(0), width: 0 }],
+    };
+    const hpStates = [
+      [{ values: Int32Array.from(Array.from({ length: 8 }, () => [1, 1]).flat()), width: 2 }],
+      [{ values: Int32Array.from(Array.from({ length: 8 }, () => [0, 1]).flat()), width: 2 }],
+      [{ values: Int32Array.from([
+        ...Array.from({ length: 4 }, () => [1, 1]).flat(),
+        ...Array.from({ length: 4 }, () => [0, 1]).flat(),
+      ]), width: 2 }],
+    ];
+    const captured = evaluateDetailedPlanScore({
+      ...common,
+      initialEnemyHitPointsFlatByFleet: hpStates[0],
+      captureCombatTrajectory: true,
+    });
+    const separate = hpStates.map((initialEnemyHitPointsFlatByFleet) =>
+      evaluateDetailedPlanScore({
+        ...common,
+        initialEnemyHitPointsFlatByFleet,
+        combatTrajectory: captured.combatTrajectory,
+      }));
+
+    const diagnostics = {};
+    const batched = evaluateDetailedCombatContinuationBatch({
+      ...common,
+      initialEnemyHitPointStatesFlatByFleet: hpStates,
+      combatTrajectory: captured.combatTrajectory,
+      diagnostics,
+    });
+
+    expect(batched).toHaveLength(separate.length);
+    expect(batched).toEqual(separate);
+    expect(diagnostics.hpVectorCacheHits).toBeGreaterThan(0);
+  });
+
   test('matches uncached scoring after concentrated trajectory and contribution cache hits', () => {
     const common = {
       enemy: enemyFleet('cache-enemy', 24),
@@ -752,6 +1486,52 @@ describe('wave simulator', () => {
     });
     expect(initial.enemyTrajectoryId).toEqual(expect.any(Number));
     expect(cached.enemyTrajectoryId).toBe(initial.enemyTrajectoryId);
+  });
+
+  test('materializes custom fixed-random coordinates once per score context', () => {
+    let randomCalls = 0;
+    const fixedRandom = () => {
+      randomCalls += 1;
+      return 0.5;
+    };
+    const common = {
+      enemy: {
+        mode: 'detailed',
+        slots: [{ instanceId: 'vector-cache-enemy', sortieAntiAir: 8, currentSlot: 18 }],
+        stage2Defense: {
+          modeled: true,
+          byAvoidance: { 0: { fixedLosses: [2], rateFactors: [0.1] } },
+        },
+      },
+      targetStates: ['denial', 'denial'],
+      sampleCount: 8,
+      fixedRandom,
+    };
+    const loadout = [fighter('vector-cache-plane', {
+      antiAir: 8,
+      equipType: 47,
+      isFighter: false,
+      isAttacker: true,
+      isLandAttacker: true,
+      torpedo: 12,
+    })];
+    const scoreContext = createDetailedScoreContext({ ...common, baseCount: 1 });
+    const first = evaluateDetailedPlanScore({
+      ...common,
+      bases: [loadout],
+      scoreContext,
+      disableConcentratedSegmentReuse: true,
+    });
+    const callsAfterFirst = randomCalls;
+    const second = evaluateDetailedPlanScore({
+      ...common,
+      bases: [loadout],
+      scoreContext,
+      disableConcentratedSegmentReuse: true,
+    });
+
+    expect(second).toEqual(first);
+    expect(randomCalls).toBe(callsAfterFirst);
   });
 
   test('can score one-shot detailed candidates without retaining base records', () => {
@@ -937,6 +1717,19 @@ describe('wave simulator', () => {
   });
 });
 
+/** Flattens captured sample/fleet vectors into one typed buffer per enemy fleet. */
+function flattenContinuationState(samples, TypedArray) {
+  const fleetCount = samples[0]?.length || 0;
+  return Array.from({ length: fleetCount }, (_unused, fleetIndex) => {
+    const width = samples[0][fleetIndex].length;
+    const values = new TypedArray(samples.length * width);
+    samples.forEach((sample, sampleIndex) => {
+      values.set(sample[fleetIndex], sampleIndex * width);
+    });
+    return { values, width };
+  });
+}
+
 function explicitMaximumDetailedDamage(loadout, options) {
   const coordinates = Array(loadout.length).fill(null);
   loadout
@@ -964,7 +1757,7 @@ function explicitMaximumDetailedDamage(loadout, options) {
         );
       });
       if (options.dispatchMode === 'separate') current = sortie;
-      total += calculateBaseDamagePower(sortie);
+      total += calculateBaseDamagePower(sortie, { contactMultiplier: 1.2 });
     }
   }
   return total / options.sampleCount;
@@ -988,6 +1781,88 @@ function enemyFleet(instanceId, currentSlot) {
       maxSlot: currentSlot,
     }],
   };
+}
+
+/** Creates two fragile enemy ships with complete combat metadata. */
+function combatEnemyFleet(instanceId) {
+  return {
+    mode: 'detailed',
+    slots: [],
+    ships: [0, 1].map((sourceShipIndex) => ({
+      id: `${instanceId}-${sourceShipIndex}`,
+      name: `${instanceId}-${sourceShipIndex}`,
+      hp: 1,
+      currentHp: 1,
+      armor: 0,
+      evasion: 0,
+      luck: 0,
+      type: 2,
+      isSubmarine: false,
+      speed: 10,
+      sourceShipIndex,
+      fleet: 'main',
+      fleetShipIndex: sourceShipIndex,
+      isFlagship: sourceShipIndex === 0,
+    })),
+  };
+}
+
+/** Creates one durable combat fleet with optional enemy aircraft. */
+function durableCombatEnemy(instanceId, currentSlot = 0) {
+  const enemy = {
+    mode: 'detailed',
+    slots: currentSlot > 0 ? enemyFleet(`${instanceId}-slot`, currentSlot).slots : [],
+    ships: [{
+      id: `${instanceId}-ship`,
+      name: `${instanceId}-ship`,
+      hp: 10000,
+      armor: 0,
+      evasion: 0,
+      luck: 0,
+      type: 2,
+      speed: 10,
+      sourceShipIndex: 0,
+      fleet: 'main',
+      fleetShipIndex: 0,
+      isFlagship: true,
+    }],
+  };
+  return enemy;
+}
+
+/** Creates strong-contact and weak-followup bases for cross-base state tests. */
+function contactScenarioBases() {
+  return [[
+    fighter('contact-strong-a', { antiAir: 30 }),
+    fighter('contact-strong-b', { antiAir: 30 }),
+    fighter('contact-recon', {
+      antiAir: 0,
+      equipType: 9,
+      isFighter: false,
+      isRecon: true,
+      scout: 14,
+      accuracy: 3,
+      currentSlot: 4,
+      slotSize: 4,
+    }),
+    fighter('contact-prefix-attacker', {
+      antiAir: 0,
+      equipType: 47,
+      isFighter: false,
+      isAttacker: true,
+      isLandAttacker: true,
+      torpedo: 14,
+    }),
+  ], [
+    fighter('contact-suffix-attacker', {
+      antiAir: 0,
+      equipType: 47,
+      isFighter: false,
+      isAttacker: true,
+      isLandAttacker: true,
+      torpedo: 14,
+    }),
+  ]];
 }
 
 /** Creates a simple LBAS fighter fixture. */

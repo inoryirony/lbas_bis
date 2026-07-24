@@ -112,6 +112,28 @@ describe('simulator state', () => {
         currentSlot: 24,
         overridden: true,
       })]);
+    expect(simulatorToOptimizerInput(state).optimizationObjective).toBeUndefined();
+  });
+
+  test('uses real combat optimization when detailed enemy HP and armor are complete', () => {
+    const state = stateModule.normalizeSimulatorState({
+      ...createEmptySimulatorState(),
+      enemy: {
+        dataSource: 'automatic',
+        mode: 'detailed',
+        ships: [{
+          id: 1001,
+          name: 'Complete enemy',
+          hp: 180,
+          armor: 96,
+          type: 9,
+          speed: 10,
+        }],
+        slots: [],
+      },
+    });
+
+    expect(simulatorToOptimizerInput(state).optimizationObjective).toBe('combat');
   });
 
   test('exports a selected proficiency for a locked plane', () => {

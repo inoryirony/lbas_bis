@@ -104,6 +104,7 @@ function SimulatorPanel(props) {
           t,
           styles,
         }),
+        renderCombatSummary(summary.simulation, t, styles),
         h(WaveStatusTable, {
           waves: summary.waves,
           onWaveTargetChange,
@@ -139,6 +140,27 @@ function SimulatorPanel(props) {
       }),
     ),
   );
+}
+
+/** Renders compact real-damage totals without conflating them with the proxy. */
+function renderCombatSummary(simulation, t, styles) {
+  if (!simulation) return null;
+  if (!Number.isFinite(simulation.expectedHpDamage) ||
+      !Number.isFinite(simulation.expectedSunkCount)) {
+    return h('div', { style: styles.meta }, t('hpDamageUnavailable'));
+  }
+  return h(
+    'div',
+    { style: styles.planSummary },
+    h('span', null, `${t('expectedHpDamage')} ${formatCombatValue(simulation.expectedHpDamage)}`),
+    ' / ',
+    h('span', null, `${t('expectedSunkCount')} ${formatCombatValue(simulation.expectedSunkCount)}`),
+  );
+}
+
+/** Keeps compact combat values readable without false precision. */
+function formatCombatValue(value) {
+  return Math.round(Number(value) * 100) / 100;
 }
 
 module.exports = SimulatorPanel;

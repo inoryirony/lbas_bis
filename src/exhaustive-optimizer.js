@@ -4,6 +4,11 @@ const { AIR_STATES, calculateEffectiveRadius } = require('./air-power');
 const { aircraftEquivalenceKey } = require('./aircraft');
 const { validateCombatContext } = require('./combat-context');
 const {
+  equipmentMatchesTagConstraints,
+  validateEquipmentTagConstraints,
+} = require('./equipment-tag-constraints');
+const {
+  compareCombatPlanScores,
   comparePlanScores,
   comparePlansForSort,
   inventoryCountsFor,
@@ -32,6 +37,9 @@ function exhaustiveOptimize(options = {}) {
   const retained = [];
   const retainedByKey = new Map();
   const selectedLoadouts = [];
+  const comparePlans = prepared.objective === 'combat'
+    ? compareCombatPlanScores
+    : comparePlanScores;
   let nodesExplored = 0;
   let budgetExhausted = false;
 
@@ -45,7 +53,9 @@ function exhaustiveOptimize(options = {}) {
 
     if (baseIndex === prepared.baseCount) {
       const plan = summarizePlan(selectedLoadouts, prepared);
-      retainPlan(plan, retained, retainedByKey, prepared.maxResults);
+      if (prepared.objective === 'combat' &&
+          plan.allWaveTargetFulfillmentProbability !== 1) return;
+      retainPlan(plan, retained, retainedByKey, prepared.maxResults, comparePlans);
       return;
     }
 
@@ -60,7 +70,7 @@ function exhaustiveOptimize(options = {}) {
         prepared.inventoryCounts,
         { details: false, combatContext: prepared.combatContext },
       );
-      if (!isBaseFeasible(base, prepared.targetRadius)) {
+      if (!isExhaustiveBaseFeasible(base, prepared)) {
         continue;
       }
       selectedLoadouts.push(loadout);
@@ -73,7 +83,7 @@ function exhaustiveOptimize(options = {}) {
   }
 
   visit(0, prepared.available);
-  retained.sort(comparePlansForSort);
+  retained.sort((left, right) => -comparePlans(left, right));
   const status = budgetExhausted
     ? 'budget_exhausted'
     : retained.length
@@ -92,6 +102,7 @@ function exhaustiveOptimize(options = {}) {
       nodesExplored,
       budget: prepared.budget,
       provenOptimal: !budgetExhausted,
+      objective: prepared.objective,
     },
   };
 }
@@ -135,6 +146,10 @@ function prepareExhaustive(options) {
   if (!combatValidation.valid) {
     return { valid: false, budget, message: combatValidation.errors[0].message };
   }
+  const tagValidation = validateEquipmentTagConstraints(options.equipmentTagConstraints);
+  if (!tagValidation.valid) {
+    return { valid: false, budget, message: tagValidation.errors[0].message };
+  }
   const reservedIds = new Set();
   for (const base of locks.bases) {
     for (const slot of base.slots) {
@@ -147,19 +162,35 @@ function prepareExhaustive(options) {
         };
       }
       reservedIds.add(slot.plane.instanceId);
+      if (!equipmentMatchesTagConstraints(slot.plane, tagValidation.constraints)) {
+        return {
+          valid: false,
+          budget,
+          message: `Locked instance ID ${slot.plane.instanceId} violates the equipment tag selectors.`,
+        };
+      }
     }
   }
 
   return {
     valid: true,
     equipment,
-    available: equipment.filter((plane) => !reservedIds.has(plane.instanceId)).sort(compareConcretePlanes),
+    available: equipment.filter((plane) =>
+      !reservedIds.has(plane.instanceId) &&
+      equipmentMatchesTagConstraints(plane, tagValidation.constraints))
+      .sort(compareConcretePlanes),
     inventoryCounts: inventoryCountsFor(equipment),
     baseCount,
     baseLocks: locks.bases,
     targetRadius: Math.max(0, Number(options.targetRadius) || 0),
     enemyAir: Math.max(0, Number(options.enemyAir) || 0),
     combatContext: combatValidation.context,
+    equipmentTagConstraints: tagValidation.constraints,
+    detailed: options.enemy?.mode === 'detailed',
+    enemy: options.enemy,
+    enemyFleets: options.enemyFleets,
+    simulationOptions: options.simulationOptions,
+    objective: options.optimizationObjective === 'combat' ? 'combat' : 'attack_power_proxy',
     waveTargets: normalizeWaveTargets(options.targetStates, baseCount),
     maxResults: Math.max(1, Math.floor(Number(options.maxResults) || DEFAULT_MAX_RESULTS)),
     budget,
@@ -237,17 +268,23 @@ function materializeConcreteLoadout(lock, selected) {
 }
 
 /** Retains one representative of each canonical count plan. */
-function retainPlan(plan, retained, retainedByKey, maxResults) {
+function retainPlan(plan, retained, retainedByKey, maxResults, comparePlans) {
   const existing = retainedByKey.get(plan.canonicalKey);
-  if (existing && comparePlanScores(plan, existing) <= 0) return;
+  if (existing && comparePlans(plan, existing) <= 0) return;
   if (existing) retained.splice(retained.indexOf(existing), 1);
   retainedByKey.set(plan.canonicalKey, plan);
   retained.push(plan);
-  retained.sort(comparePlansForSort);
+  retained.sort((left, right) => -comparePlans(left, right));
   if (retained.length > maxResults) {
     const removed = retained.pop();
     retainedByKey.delete(removed.canonicalKey);
   }
+}
+
+/** Keeps detailed combat enumeration free of static later-wave air pruning. */
+function isExhaustiveBaseFeasible(base, prepared) {
+  if (base.radius < prepared.targetRadius) return false;
+  return prepared.objective === 'combat' ? true : isBaseFeasible(base, prepared.targetRadius);
 }
 
 /** Orders instances by equivalence key, then stable instance ID. */

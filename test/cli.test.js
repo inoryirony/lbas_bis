@@ -12,6 +12,12 @@ const cliPath = path.join(root, 'bin', 'lbas-bis.js');
 const scenarioPath = path.join(root, 'examples', 'cli-static.json');
 const customScenarioPath = path.join(root, 'examples', 'cli-custom-enemy.json');
 const multiplierScenarioPath = path.join(root, 'examples', 'cli-custom-multipliers.json');
+const proofFixtureNames = [
+  'poi-6-4-combat.json',
+  'poi-6-5-combat.json',
+  'poi-event-high-air-1-combat.json',
+  'poi-event-high-air-2-combat.json',
+];
 
 describe('headless LBAS CLI', () => {
   test('validates a scenario and streams optimize events as JSON Lines', async () => {
@@ -61,6 +67,113 @@ describe('headless LBAS CLI', () => {
     });
     expect(completed.result.results[0].bases[0].loadout[0].instanceId)
       .toBe('cli-bonused-attacker');
+  });
+
+  test('simulates a locked scenario and returns machine-readable real combat results', async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'lbas-cli-simulate-'));
+    const filename = path.join(directory, 'scenario.json');
+    const attacker = {
+      instanceId: 'cli-sim-attacker',
+      masterId: 187,
+      name: 'CLI simulation attacker',
+      equipType: 47,
+      antiAir: 3,
+      radius: 9,
+      torpedo: 20,
+      bombing: 14,
+      accuracy: 10,
+      proficiency: 0,
+      isPlane: true,
+      isAttacker: true,
+      isLandAttacker: true,
+      isLandBased: true,
+      role: 'attacker',
+    };
+    await fs.writeFile(filename, JSON.stringify({
+      equipment: [attacker],
+      baseCount: 1,
+      targetRadius: 7,
+      targetStates: ['supremacy', 'supremacy'],
+      simulationOptions: { sampleCount: 32, seed: 'cli-simulate' },
+      enemy: {
+        mode: 'detailed',
+        dataSource: 'custom',
+        slots: [],
+        ships: [{
+          id: 'cli-fragile-dd',
+          name: 'CLI fragile DD',
+          hp: 1,
+          armor: 0,
+          evasion: 0,
+          luck: 0,
+          type: 2,
+          speed: 10,
+          sourceShipIndex: 0,
+          fleet: 'main',
+          fleetShipIndex: 0,
+          isFlagship: true,
+        }],
+      },
+      lockedBases: [{ slots: [
+        { instanceId: attacker.instanceId, kind: 'LOCKED_ITEM' },
+        { kind: 'LOCKED_EMPTY' },
+        { kind: 'LOCKED_EMPTY' },
+        { kind: 'LOCKED_EMPTY' },
+      ] }],
+    }), 'utf8');
+
+    try {
+      const output = await runCli(['simulate', '--scenario', filename]);
+      const result = JSON.parse(output.stdout);
+
+      expect(output.code).toBe(0);
+      expect(result).toMatchObject({
+        calculationMode: 'detailed',
+        simulation: {
+          expectedHpDamage: expect.any(Number),
+          expectedSunkCount: expect.any(Number),
+        },
+      });
+      expect(result.simulation.expectedHpDamage).toBeGreaterThan(0);
+      expect(result.simulation.expectedSunkCount).toBeGreaterThan(0);
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('ships four deterministic unlimited 4096-sample combat fixture schemas', async () => {
+    for (const fixtureName of proofFixtureNames) {
+      const scenario = JSON.parse(await fs.readFile(
+        path.join(root, 'examples', fixtureName),
+        'utf8',
+      ));
+      expect(scenario).toMatchObject({
+        mapSelection: {
+          area: expect.any(Number),
+          node: expect.any(String),
+          difficulty: expect.any(Number),
+          formationIndex: expect.any(Number),
+        },
+        excludeCarrierAircraft: true,
+        optimizationObjective: 'combat',
+        simulationOptions: {
+          sampleCount: 4096,
+          seed: expect.any(String),
+        },
+        nodeBudget: null,
+        simulationWorkBudget: null,
+      });
+    }
+  });
+
+  test('models 6-4 with its single sortie base and two waves', async () => {
+    const scenario = JSON.parse(await fs.readFile(
+      path.join(root, 'examples', 'poi-6-4-combat.json'),
+      'utf8',
+    ));
+
+    expect(scenario.baseCount).toBe(1);
+    expect(scenario.targetStates).toEqual(['superiority', 'superiority']);
   });
 });
 
@@ -192,6 +305,25 @@ describe('CLI map scenario hydration', () => {
     ]);
   });
 
+  test('preserves standard LOCKED_ITEM equipment through candidate filters', async () => {
+    const hydrated = await hydrateScenario({
+      equipment: [
+        { instanceId: 'standard-locked-carrier', masterId: 11, equipType: 6 },
+        { instanceId: 'standard-ordinary-land', masterId: 12, equipType: 47 },
+      ],
+      excludeCarrierAircraft: true,
+      lockedBases: [{ slots: [{
+        kind: 'LOCKED_ITEM',
+        instanceId: 'standard-locked-carrier',
+      }] }],
+    }, null);
+
+    expect(hydrated.equipment.map((plane) => plane.instanceId)).toEqual([
+      'standard-locked-carrier',
+      'standard-ordinary-land',
+    ]);
+  });
+
   test('prefers cached noro6 equipment metadata for Poi-backed scenarios', async () => {
     const mapLoadOptions = [];
 
@@ -246,6 +378,88 @@ describe('CLI map scenario hydration', () => {
         })],
         slots: [expect.objectContaining({ equipmentMasterId: 1601 })],
       },
+    });
+  });
+
+  test('hydrates automatic event multipliers from the exact map selection', async () => {
+    const hydrated = await hydrateScenario({
+      equipment: [],
+      baseCount: 1,
+      mapSelection: { area: 65, node: 'M', difficulty: 0, formationIndex: 0 },
+      eventMultiplierCatalog: {
+        version: 1,
+        entries: [{
+          id: 'fixture-6-5',
+          selectors: [{ area: 65, node: 'M', difficulty: 0, formationIndex: 0 }],
+          targetTags: ['fixture-6-5', 'boss'],
+          source: {
+            name: 'CLI fixture',
+            url: 'https://example.invalid/cli-fixture',
+            revision: 'r1',
+            checkedAt: '2026-07-23',
+          },
+          multiplierRules: [{
+            id: 'fixture-6-5-attacker',
+            label: 'Fixture attacker',
+            enabled: true,
+            targetTags: ['fixture-6-5'],
+            equipmentMasterIds: [301],
+            equipmentTypes: [],
+            group: 'fixture-6-5-attacker',
+            multiplier: 1.18,
+            source: 'automatic',
+            overridden: false,
+          }],
+        }],
+      },
+    }, null, {
+      loadMapData: async () => mapDataFixture(),
+    });
+
+    expect(hydrated.combatContext).toMatchObject({
+      targetTags: ['fixture-6-5', 'boss'],
+      automaticTargetTags: ['fixture-6-5', 'boss'],
+      multiplierRules: [expect.objectContaining({
+        id: 'fixture-6-5-attacker',
+        source: 'automatic',
+        overridden: false,
+        catalogEntryId: 'fixture-6-5',
+      })],
+    });
+  });
+
+  test('enriches Poi-backed map enemies with official evasion and luck', async () => {
+    const state = {
+      const: {
+        $ships: {
+          1501: {
+            api_id: 1501,
+            api_name: 'Test carrier',
+            api_stype: 11,
+            api_soku: 10,
+            api_houk: [55, 55],
+            api_luck: [40, 40],
+          },
+        },
+        $shipTypes: { 11: { api_name: 'Carrier' } },
+        $equips: {},
+      },
+    };
+    const hydrated = await hydrateScenario({
+      baseCount: 1,
+      mapSelection: { area: 65, node: 'M', difficulty: 0, formationIndex: 0 },
+    }, 'http://poi.test', {
+      createPoiClient: () => ({ loadState: async () => state }),
+      extractOptimizationPlanes: () => [],
+      loadMapData: async () => mapDataFixture(),
+    });
+
+    expect(hydrated.enemy.ships[0]).toMatchObject({
+      id: 1501,
+      hp: 350,
+      armor: 180,
+      evasion: 55,
+      luck: 40,
     });
   });
 
@@ -341,6 +555,7 @@ describe('CLI map scenario hydration', () => {
     const dependencies = { loadMapData: async () => mapDataFixture() };
     const validationIo = memoryIo();
     const optimizationIo = memoryIo();
+    const repeatedOptimizationIo = memoryIo();
 
     try {
       const validationCode = await runCliInProcess(
@@ -353,18 +568,28 @@ describe('CLI map scenario hydration', () => {
         optimizationIo,
         dependencies,
       );
+      const repeatedOptimizationCode = await runCliInProcess(
+        ['optimize', '--scenario', filename, '--jsonl'],
+        repeatedOptimizationIo,
+        dependencies,
+      );
       const events = optimizationIo.stdout.text.trim().split(/\r?\n/).map((line) => JSON.parse(line));
+      const repeatedEvents = repeatedOptimizationIo.stdout.text.trim()
+        .split(/\r?\n/).map((line) => JSON.parse(line));
 
       expect(validationCode).toBe(0);
       expect(JSON.parse(validationIo.stdout.text)).toMatchObject({ valid: true });
       expect(optimizationCode).toBe(0);
+      expect(repeatedOptimizationCode).toBe(0);
       expect(events.at(-1)).toMatchObject({
         type: 'completed',
         result: {
           results: [expect.objectContaining({ calculationMode: 'detailed' })],
-          search: { provenOptimal: true },
+          search: { objective: 'combat', provenOptimal: true },
         },
       });
+      expect(withoutElapsedMs(repeatedEvents.at(-1).result))
+        .toEqual(withoutElapsedMs(events.at(-1).result));
     } finally {
       await fs.rm(directory, { recursive: true, force: true });
     }
@@ -377,6 +602,13 @@ function runCli(args) {
       resolve({ code: error?.code || 0, stdout, stderr });
     });
   });
+}
+
+/** Removes wall-clock measurements before comparing deterministic CLI results. */
+function withoutElapsedMs(value) {
+  return JSON.parse(JSON.stringify(value, (key, nestedValue) => (
+    key === 'elapsedMs' ? undefined : nestedValue
+  )));
 }
 
 function mapDataFixture() {
@@ -422,6 +654,7 @@ function mapScenarioFixture() {
     baseCount: 1,
     mapSelection: { area: 65, node: 'M', difficulty: 0, formationIndex: 0 },
     simulationOptions: { sampleCount: 16, seed: 7 },
+    optimizationObjective: 'combat',
     targetStates: ['parity', 'parity'],
     lockedBases: [{ slots: [
       { instanceId: 'map-cli-fighter', kind: 'LOCKED_ITEM' },

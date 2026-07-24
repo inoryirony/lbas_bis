@@ -2,12 +2,16 @@
 
 /** Normalizes target tags and equipment multiplier rules without mutating input. */
 function normalizeCombatContext(context = {}) {
-  return {
+  const normalized = {
     targetTags: normalizeTags(context.targetTags),
     multiplierRules: Array.isArray(context.multiplierRules)
       ? context.multiplierRules.map(normalizeMultiplierRule)
       : [],
   };
+  if (Array.isArray(context.automaticTargetTags)) {
+    normalized.automaticTargetTags = normalizeTags(context.automaticTargetTags);
+  }
+  return normalized;
 }
 
 /** Returns a canonical combat context together with explicit validation errors. */
@@ -73,7 +77,7 @@ function equipmentDamageMultiplier(plane, context = {}) {
 function normalizeMultiplierRule(rule = {}) {
   const source = rule.source === 'automatic' ? 'automatic' : 'custom';
   const id = normalizeString(rule.id);
-  return {
+  const normalized = {
     id,
     label: normalizeString(rule.label),
     enabled: rule.enabled !== false,
@@ -85,6 +89,17 @@ function normalizeMultiplierRule(rule = {}) {
     source,
     overridden: rule.overridden === true || source === 'custom',
   };
+  const catalogEntryId = normalizeString(rule.catalogEntryId);
+  if (catalogEntryId) normalized.catalogEntryId = catalogEntryId;
+  if (isPlainObject(rule.catalogSource)) {
+    normalized.catalogSource = {
+      name: normalizeString(rule.catalogSource.name),
+      url: normalizeString(rule.catalogSource.url),
+      revision: normalizeString(rule.catalogSource.revision),
+      checkedAt: normalizeString(rule.catalogSource.checkedAt),
+    };
+  }
+  return normalized;
 }
 
 /** Checks tag and equipment selectors for one already-normalized rule. */
@@ -121,6 +136,11 @@ function normalizeString(value) {
 
 function unique(values) {
   return [...new Set(values)];
+}
+
+/** Distinguishes plain metadata records from arrays and primitive values. */
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 module.exports = {

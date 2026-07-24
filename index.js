@@ -61,6 +61,9 @@ const FALLBACK_ZH_CN = {
   plan: '方案',
   attack: '攻击',
   damagePower: '攻击力代理',
+  expectedHpDamage: '期望HP伤害',
+  expectedSunkCount: '期望击沉',
+  hpDamageUnavailable: '实际伤害不可用：敌舰HP或装甲数据不完整',
   worstMargin: '最小余量',
   base: '第 {{index}} 队',
   airPower: '制空',
@@ -126,6 +129,7 @@ const FALLBACK_ZH_CN = {
   expectedAir: '期望制空',
   noTargetAirSolution: '没有配装能满足目标制空状态。',
   noCombinedConstraintSolution: '没有配装能同时满足航程、制空、库存和锁定约束。',
+  allFightersFiltered: '当前筛选已排除所有战斗机；请检查“不使用舰载机”和装备黑名单（尤其是“局地战斗机”）。',
   budgetExhaustedMessage: '搜索或模拟预算已耗尽，尚未证明最优。',
   searchCancelledMessage: '搜索已停止；已保留当前最佳方案，但尚未证明全局最优。',
   cancel: '停止计算',
@@ -236,6 +240,7 @@ class LbasOptimizerPanel extends React.Component {
     this.customEnemyDraft = cloneEnemy(this.state.simulator.enemy);
     this.searchRunner = props.searchRunner || null;
     this.searchGeneration = 0;
+    this.searchFilterMessages = [];
     this.readPoiState = props.readPoiState || readPoiState;
     this.calculateSimulatorSummary = props.calculateSimulatorSummary || calculateSimulatorSummary;
     this.simulatorRenderCache = null;
@@ -296,6 +301,9 @@ class LbasOptimizerPanel extends React.Component {
         lockedInstanceIds: lockedInstanceIds(simulator),
       }),
     }, this.state.optimizerProficiencyMode).equipment;
+    this.searchFilterMessages = removedEveryFighter(unfilteredEquipment, equipment)
+      ? ['All fighter candidates were excluded by equipment filters.']
+      : [];
     const searchOptions = {
       ...optimizerInput,
       equipment,
@@ -350,8 +358,15 @@ class LbasOptimizerPanel extends React.Component {
       return;
     }
     if (event.type === 'completed' || event.type === 'cancelled') {
+      const filterMessages = event.result.search?.status === 'infeasible' &&
+        Number(event.result.search?.solverStats?.firstWaveAirBoundsPruned) > 0
+        ? this.searchFilterMessages
+        : [];
       this.setState({
-        messages: localizeMessages(event.result.messages || [], t),
+        messages: localizeMessages([
+          ...(event.result.messages || []),
+          ...filterMessages,
+        ], t),
         results: event.result.results || [],
         search: event.result.search,
         isSearching: false,
@@ -540,6 +555,7 @@ class LbasOptimizerPanel extends React.Component {
   };
 
   applyMapPreset = (formation) => {
+    const enemyCatalog = this.state.enemyCatalog || this.currentEnemyCatalog();
     this.updateSimulator((simulator) => {
       if (simulator.enemy.dataSource === 'custom') {
         this.customEnemyDraft = cloneEnemy(simulator.enemy);
@@ -562,7 +578,10 @@ class LbasOptimizerPanel extends React.Component {
             ? Math.max(0, Number(formation.enemyAir))
             : formation.ships.reduce((total, ship) => total + (Number(ship.airPower) || 0), 0),
           ships: Array.from({ length: Math.max(6, formation.ships.length) }, (_, index) => formation.ships[index]
-            ? { ...formation.ships[index] }
+            ? {
+              ...(enemyCatalog?.byId?.get(Number(formation.ships[index].id)) || {}),
+              ...formation.ships[index],
+            }
             : { id: null, name: '', airPower: 0 }),
           slots: formation.enemySlots.map((slot) => ({ ...slot, overridden: false })),
           stage2Defense: formation.stage2Defense || null,
@@ -1185,6 +1204,9 @@ function localizeMessages(messages, t) {
     if (message === 'No loadout can satisfy all range, air, inventory, and lock constraints.') {
       return t('noCombinedConstraintSolution');
     }
+    if (message === 'All fighter candidates were excluded by equipment filters.') {
+      return t('allFightersFiltered');
+    }
     if (message === 'Search or simulation work budget exhausted before optimality was proven.') {
       return t('budgetExhaustedMessage');
     }
@@ -1193,6 +1215,17 @@ function localizeMessages(messages, t) {
     }
     return message;
   });
+}
+
+/** Detects when filtering removed every aircraft capable of the fighter role. */
+function removedEveryFighter(unfilteredEquipment, filteredEquipment) {
+  return unfilteredEquipment.some(isFighterCandidate) &&
+    !filteredEquipment.some(isFighterCandidate);
+}
+
+/** Recognizes normalized fighter candidates without relying on one metadata field. */
+function isFighterCandidate(plane) {
+  return plane?.isFighter === true || plane?.role === 'fighter';
 }
 
 function getT() {
@@ -1481,15 +1514,35 @@ const styles = {
     margin: '8px 0',
   },
   progressTrack: {
-    background: 'rgba(128, 128, 128, 0.2)',
+    background: 'rgba(255, 255, 255, 0.12)',
     height: 4,
     overflow: 'hidden',
+    position: 'relative',
     width: '100%',
   },
-  progressBar: {
+  progressFill: {
     background: '#2f7d64',
-    height: 4,
-    width: '38%',
+    display: 'block',
+    height: '100%',
+    left: 0,
+    position: 'absolute',
+    top: 0,
+  },
+  progressActivity: {
+    background: 'rgba(255, 255, 255, 0.85)',
+    display: 'block',
+    height: '100%',
+    position: 'absolute',
+    top: 0,
+    transition: 'left 160ms linear',
+    width: 3,
+  },
+  progressPulse: {
+    background: '#2f7d64',
+    display: 'block',
+    height: '100%',
+    transition: 'transform 160ms linear',
+    width: '22%',
   },
   iconButton: {
     minWidth: 28,

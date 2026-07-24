@@ -16,12 +16,17 @@ const {
   landBasedReconDamageModifier,
 } = require('./damage');
 const { validateAndNormalizeDetailedEnemySlots } = require('./enemy-slots');
+const {
+  equipmentMatchesTagConstraints,
+  validateEquipmentTagConstraints,
+} = require('./equipment-tag-constraints');
 const { createFixedSampleRandom } = require('./random');
 const { validateSampleCount } = require('./simulation-options');
 const {
   createDetailedScoreContext,
   evaluateDetailedPlanScore,
   maximumDetailedExpectedDamage,
+  normalizeEnemyShipHitPoints,
 } = require('./wave-simulator');
 const {
   comparePlanScores,
@@ -40,9 +45,9 @@ const WAVES_PER_BASE = 2;
 const DEFAULT_MAX_RESULTS = 10;
 const DEFAULT_NODE_BUDGET = 100000;
 const DEFAULT_SIMULATION_WORK_BUDGET = Number.POSITIVE_INFINITY;
+const MAX_COMBAT_HIT_POINTS = 0x7fffffff;
 const STATIC_AIR_BOUND_WEIGHTS = Object.freeze([0, 0.125, 0.25, 0.5, 1, 2, 4, 8, 16, 32]);
 const STATIC_RECON_DAMAGE_MODIFIERS = Object.freeze([1, 1.125, 1.15]);
-const DETAILED_DAMAGE_COEFFICIENTS = Object.freeze([1, 1.125, 1.15]);
 const SLOT_KINDS = Object.freeze({
   LOCKED_ITEM: 'LOCKED_ITEM',
   LOCKED_EMPTY: 'LOCKED_EMPTY',
@@ -65,6 +70,10 @@ function optimizeLoadouts(options = {}) {
       prepared.errors,
       prepared.simulationBudget,
     ));
+  }
+
+  if (prepared.effectiveObjective === 'combat') {
+    return finalize(optimizeCombat(prepared, options));
   }
 
   if (!prepared.detailed && prepared.maxResults === 1 && !Number.isFinite(prepared.budget)) {
@@ -456,6 +465,7 @@ function optimizeLoadouts(options = {}) {
     seedIncumbent();
   }
   visit(0);
+  prepared.isCancelled();
   if (detailed && !hasFeasibleIncumbent) {
     removeZeroFulfillmentPlans(retained, retainedByKey);
   }
@@ -626,6 +636,9 @@ function generateBaseCandidates(equipment, targetRadius, enemyAir, slotConstrain
 
 /** Validates inventory and globally reserves every locked instance. */
 function prepareSearch(options) {
+  const requestedObjective = options.optimizationObjective === 'combat'
+    ? 'combat'
+    : 'attack_power_proxy';
   const equipment = Array.isArray(options.equipment) ? options.equipment.filter(Boolean) : [];
   const inventoryById = new Map();
   for (const plane of equipment) {
@@ -649,6 +662,15 @@ function prepareSearch(options) {
     );
   }
   const combatContext = combatValidation.context;
+  const tagValidation = validateEquipmentTagConstraints(options.equipmentTagConstraints);
+  if (!tagValidation.valid) {
+    return invalidPreparation(
+      options,
+      tagValidation.errors[0].message,
+      tagValidation.errors,
+    );
+  }
+  const equipmentTagConstraints = tagValidation.constraints;
   const inventoryCounts = inventoryCountsFor(equipment);
 
   const reservedIds = new Set();
@@ -659,16 +681,29 @@ function prepareSearch(options) {
         return invalidPreparation(options, `Locked instance ID ${slot.plane.instanceId} is duplicated.`);
       }
       reservedIds.add(slot.plane.instanceId);
+      if (!equipmentMatchesTagConstraints(slot.plane, equipmentTagConstraints)) {
+        return invalidPreparation(
+          options,
+          `Locked instance ID ${slot.plane.instanceId} violates the equipment tag selectors.`,
+          [{
+            field: 'equipmentTagConstraints',
+            instanceId: slot.plane.instanceId,
+            message: `Locked instance ID ${slot.plane.instanceId} violates the equipment tag selectors.`,
+          }],
+        );
+      }
     }
   }
 
-  const unlockedEquipment = equipment.filter((plane) => !reservedIds.has(plane.instanceId));
+  const unlockedEquipment = equipment.filter((plane) =>
+    !reservedIds.has(plane.instanceId) &&
+    equipmentMatchesTagConstraints(plane, equipmentTagConstraints));
   const relevantEquipment = filterRadiusRelevantEquipment(
     unlockedEquipment,
     equipment,
     Math.max(0, Number(options.targetRadius) || 0),
   );
-  let groups = groupEquipment(relevantEquipment, combatContext);
+  const groups = groupEquipment(relevantEquipment, combatContext);
   const enemyFleetInputs = Array.isArray(options.enemyFleets)
     ? options.enemyFleets
     : Array.isArray(options.targets) ? options.targets : null;
@@ -676,19 +711,7 @@ function prepareSearch(options) {
     Array.isArray(options.enemySlots) ||
     Boolean(enemyFleetInputs?.length);
   const detailedGroupsBefore = groups.length;
-  if (detailed) {
-    const openCapacity = normalizedLocks.bases.reduce(
-      (total, base) => total + base.slots.filter((slot) => slot.kind === SLOT_KINDS.OPEN).length,
-      0,
-    );
-    groups = removeDetailedCapacityDominatedGroups(
-      groups,
-      openCapacity,
-      combatContext,
-      inventoryCounts,
-    );
-  }
-  const detailedGroupsRemoved = detailedGroupsBefore - groups.length;
+  const detailedGroupsRemoved = 0;
   const rawSimulationOptions = {
     ...(options.simulation || {}),
     ...(options.simulationOptions || {}),
@@ -740,6 +763,22 @@ function prepareSearch(options) {
       enemy = normalizedEnemies[0].enemy;
     }
   }
+  const combatEnemies = enemyFleets || (enemy ? [enemy] : []);
+  if (requestedObjective === 'combat' && (
+    !detailed || !combatEnemies.length || combatEnemies.some((fleet) =>
+      !hasCompleteEnemyCombatData(fleet))
+  )) {
+    return invalidPreparation(
+      options,
+      'Combat optimization requires complete enemy HP and armor data.',
+      [{
+        code: 'MISSING_ENEMY_COMBAT_DATA',
+        path: 'enemy.ships',
+        field: 'ships',
+      }],
+      simulationBudget,
+    );
+  }
   const detailedEnemyAir = detailed
     ? initialDetailedEnemyAir(enemyFleets?.[0] || enemy)
     : Math.max(0, Number(options.enemyAir) || 0);
@@ -777,7 +816,10 @@ function prepareSearch(options) {
     enemy,
     enemyFleets,
     combatContext,
+    equipmentTagConstraints,
     detailed,
+    requestedObjective,
+    effectiveObjective: requestedObjective,
     detailedGroupsBefore,
     detailedGroupsRemoved,
     simulationOptions: {
@@ -890,102 +932,101 @@ function groupEquipment(equipment, combatContext) {
     .sort((left, right) => left.key.localeCompare(right.key));
 }
 
-/** Removes a detailed group only when strictly stronger copies cover every open slot. */
-function removeDetailedCapacityDominatedGroups(
-  groups,
-  openCapacity,
-  combatContext,
-  inventoryCounts,
-) {
-  if (openCapacity <= 0) return groups;
-  const features = groups.map((group) =>
-    detailedDominanceFeature(group, combatContext, inventoryCounts));
-  return groups.filter((_group, candidateIndex) => {
-    let dominatingCapacity = 0;
-    for (let replacementIndex = 0; replacementIndex < groups.length; replacementIndex += 1) {
-      if (replacementIndex === candidateIndex ||
-          !strictlyDominatesDetailed(
-            features[replacementIndex],
-            features[candidateIndex],
-          )) continue;
-      dominatingCapacity += groups[replacementIndex].instances.length;
-      if (dominatingCapacity >= openCapacity) return false;
-    }
-    return true;
+/** Requires every meaningful enemy ship to provide positive HP and nonnegative armor. */
+function hasCompleteEnemyCombatData(enemy) {
+  const ships = (Array.isArray(enemy?.ships) ? enemy.ships : []).filter((ship) =>
+    ship && (ship.id != null || ship.name || ship.hp != null || ship.maxHp != null));
+  return ships.length > 0 && ships.every((ship) => {
+    const hp = Number(ship.maxHp ?? ship.hp);
+    const armor = Number(ship.armor);
+    return Number.isFinite(hp) && hp > 0 && Number.isFinite(armor) && armor >= 0;
   });
 }
 
-/** Precomputes every slot-dependent value needed by conservative detailed dominance. */
-function detailedDominanceFeature(group, combatContext, inventoryCounts) {
-  const plane = group.representative;
-  const capabilities = capabilitiesFor(plane);
-  const hasCapability = (name) => plane[name] === true || capabilities[name] === true;
-  const slotSize = Math.max(
-    0,
-    Math.ceil(Number(
-      plane.currentSlot ?? plane.slotSize ?? defaultSlotSizeForPlane(plane),
-    ) || 0),
-  );
-  const isJet = hasCapability('isJet');
-  const lossModifier = isJet
-    ? 0.6
-    : hasCapability('isAswPatrol') && !hasCapability('isAttacker') ? 0.91 : 1;
-  const behaviorKey = JSON.stringify([
-    slotSize,
-    hasCapability('isRecon'),
-    hasCapability('isLandRecon'),
-    hasCapability('blocksRangeExtension'),
-    isJet,
-    plane.isEscortItem === true,
-    lossModifier,
-    landReconCoefficient([plane]),
-    landBasedReconDamageModifier([plane]),
-  ]);
+/** Routes combat objectives through a proof-correct grouped exhaustive solver. */
+function optimizeCombat(prepared, options) {
+  const { solveCombatExact } = require('./combat-exact-solver');
+  const seedLoadouts = buildCombatSeedLoadouts(prepared, options);
+  const exact = solveCombatExact(prepared, {
+    isCancelled: options.isCancelled,
+    onIncumbent: options.onIncumbent,
+    onPhaseChange: options.onPhaseChange,
+    onProgress: options.onProgress,
+    seedLoadouts,
+    sharedCombatScoreBuffer: options.sharedCombatScoreBuffer,
+    suffixShardCount: options.suffixShardCount,
+    suffixShardIndex: options.suffixShardIndex,
+  });
+  const status = exact.solverStats.status;
+  const messages = status === 'cancelled'
+    ? ['Search cancelled; the current best plan is preserved but is not proven optimal.']
+    : status === 'budget_exhausted'
+      ? ['Search or simulation work budget exhausted before optimality was proven.']
+      : status === 'infeasible'
+        ? [infeasibleMessage(prepared, prepared.groups.map((group) => group.instances.length))]
+        : [];
   return {
-    behaviorKey,
-    key: group.key,
-    radius: Math.max(0, Number(plane.radius) || 0),
-    scarcity: (plane.missing || plane.available === false ? 1000 : 0) +
-      1 / Math.max(1, inventoryCounts.get(group.key) || 1),
-    jetSteelCost: isJet
-      ? Math.max(0, Number(plane.cost) || 0) * (hasCapability('isHeavyJet') ? 1.2 : 1)
-      : 0,
-    airBySlot: Array.from({ length: slotSize + 1 }, (_unused, slot) =>
-      calculateSlotAirPower({ ...plane, currentSlot: slot })),
-    damageByCoefficient: DETAILED_DAMAGE_COEFFICIENTS.map((reconModifier) =>
-      Array.from({ length: slotSize + 1 }, (_unused, slot) =>
-        calculatePlaneSurfaceTargetPowerProxy(plane, {
-          currentSlot: slot,
-          reconModifier,
-          combatContext,
-        }))),
+    messages,
+    results: exact.plans,
+    search: {
+      mode: 'branch-and-bound',
+      backend: exact.solverStats.backend,
+      objective: 'combat',
+      formulaVersion: exact.formulaVersion,
+      status,
+      nodesExplored: exact.solverStats.nodesExplored,
+      totalNodesExplored: exact.solverStats.nodesExplored,
+      nodesPruned: exact.solverStats.nodesPruned,
+      budget: prepared.budget,
+      candidatesEvaluated: exact.solverStats.candidatesEvaluated,
+      simulationSamplesEvaluated: exact.solverStats.simulationSamplesEvaluated,
+      simulationBudget: prepared.simulationBudget,
+      provenOptimal: exact.provenOptimal,
+      solverStats: exact.solverStats,
+    },
   };
 }
 
-/** Requires a one-for-one replacement that cannot lose in any simulated score field. */
-function strictlyDominatesDetailed(replacement, candidate) {
-  if (replacement.behaviorKey !== candidate.behaviorKey ||
-      replacement.radius < candidate.radius ||
-      replacement.airBySlot.some((value, index) => value < candidate.airBySlot[index])) {
-    return false;
+/** Finds one conflict-free, target-fulfilled concrete plan without affecting proof scope. */
+function buildCombatSeedLoadouts(prepared, options) {
+  const candidatesByBase = prepared.baseLocks.map((baseLock, baseIndex) =>
+    buildStaticSeedCandidates(baseLock, prepared, baseIndex, {
+      ...options,
+      seedPreferFulfillment: true,
+      seedCandidateLimit: Number(options.combatSeedCandidateLimit) || 1024,
+    }));
+  if (candidatesByBase.some((candidates) => !candidates.length)) return [];
+  const maximumVisits = Math.max(1, Number(options.combatSeedCombinationBudget) || 10000);
+  const selected = [];
+  const usedIds = new Set();
+  let visits = 0;
+  let result = null;
+
+  /** Combines per-base seed candidates until one inventory-compatible plan is found. */
+  function combine(baseIndex) {
+    if (result || visits >= maximumVisits || options.isCancelled?.()) return;
+    if (baseIndex === prepared.baseCount) {
+      result = selected.map((candidate) => candidate.loadout);
+      return;
+    }
+    for (const candidate of candidatesByBase[baseIndex]) {
+      visits += 1;
+      if (!candidate.summary.fulfilled ||
+          candidate.instanceIds.some((instanceId) => usedIds.has(instanceId))) {
+        if (visits >= maximumVisits) return;
+        continue;
+      }
+      candidate.instanceIds.forEach((instanceId) => usedIds.add(instanceId));
+      selected.push(candidate);
+      combine(baseIndex + 1);
+      selected.pop();
+      candidate.instanceIds.forEach((instanceId) => usedIds.delete(instanceId));
+      if (result || visits >= maximumVisits) return;
+    }
   }
-  const damageNonWorse = replacement.damageByCoefficient.every((damageBySlot, coefficientIndex) =>
-    damageBySlot.every((value, slot) =>
-      value >= candidate.damageByCoefficient[coefficientIndex][slot]));
-  if (!damageNonWorse) return false;
-  const damageStrict = replacement.damageByCoefficient.every((damageBySlot, coefficientIndex) =>
-    damageBySlot.slice(1).every((value, slotOffset) =>
-      value > candidate.damageByCoefficient[coefficientIndex][slotOffset + 1]));
-  if (damageStrict) return true;
-  const damageEqual = replacement.damageByCoefficient.every((damageBySlot, coefficientIndex) =>
-    damageBySlot.every((value, slot) =>
-      value === candidate.damageByCoefficient[coefficientIndex][slot]));
-  const airStrict = replacement.airBySlot.slice(1).every((value, slotOffset) =>
-    value > candidate.airBySlot[slotOffset + 1]);
-  return damageEqual && airStrict &&
-    replacement.jetSteelCost <= candidate.jetSteelCost &&
-    replacement.scarcity <= candidate.scarcity &&
-    replacement.key < candidate.key;
+
+  combine(0);
+  return result ? [result] : [];
 }
 
 /** Routes static rank-1 searches through the exact capacity-frontier solver. */
@@ -1151,7 +1192,11 @@ function buildStaticSeedCandidates(baseLock, prepared, baseIndex, options) {
 
   enumerate(0, 0);
   if (cancelled) return [];
-  candidates.sort((left, right) => -comparePlanScores(left.score, right.score));
+  candidates.sort((left, right) =>
+    (options.seedPreferFulfillment
+      ? Number(right.summary.fulfilled) - Number(left.summary.fulfilled)
+      : 0) ||
+    -comparePlanScores(left.score, right.score));
   return candidates.slice(0, maximumCandidates);
 }
 
@@ -2186,16 +2231,51 @@ function isDetailedEnemy(enemy) {
 function validateOptimizerEnemy(enemy = {}, enemySlots, pathPrefix) {
   const slots = enemySlots || enemy.slots || enemy.enemySlots || [];
   const validation = validateAndNormalizeDetailedEnemySlots(slots, { pathPrefix });
+  const shipsPath = typeof pathPrefix === 'string' && pathPrefix.endsWith('.slots')
+    ? `${pathPrefix.slice(0, -6)}.ships`
+    : 'enemy.ships';
+  const shipErrors = validateEnemyShipHitPoints(enemy.ships, shipsPath);
   return {
-    valid: validation.valid,
-    errors: validation.errors,
+    valid: validation.valid && shipErrors.length === 0,
+    errors: [...validation.errors, ...shipErrors],
     enemy: {
       ...enemy,
       mode: 'detailed',
       isAirRaidCell: enemy.isAirRaidCell === true,
       slots: validation.slots,
+      ships: Array.isArray(enemy.ships)
+        ? enemy.ships.map(normalizeEnemyShipHitPoints)
+        : [],
     },
   };
+}
+
+/** Rejects durability inputs that cannot be represented by the exact combat state. */
+function validateEnemyShipHitPoints(ships, pathPrefix) {
+  return (Array.isArray(ships) ? ships : []).flatMap((ship, index) => {
+    if (!ship || (ship.hp == null && ship.maxHp == null && ship.currentHp == null)) return [];
+    const maxHp = Number(ship.maxHp ?? ship.hp);
+    const currentHp = Number(ship.currentHp ?? ship.hp ?? ship.maxHp);
+    if (!Number.isInteger(maxHp) || maxHp <= 0 || maxHp > MAX_COMBAT_HIT_POINTS) {
+      return [{
+        code: 'INVALID_ENEMY_HIT_POINTS',
+        path: `${pathPrefix}[${index}].maxHp`,
+        field: 'maxHp',
+        value: ship.maxHp ?? ship.hp,
+        message: `Enemy ship ${index + 1} maximum HP must be an integer from 1 to ${MAX_COMBAT_HIT_POINTS}.`,
+      }];
+    }
+    if (!Number.isInteger(currentHp) || currentHp < 0 || currentHp > maxHp) {
+      return [{
+        code: 'INVALID_ENEMY_HIT_POINTS',
+        path: `${pathPrefix}[${index}].currentHp`,
+        field: 'currentHp',
+        value: ship.currentHp ?? ship.hp,
+        message: `Enemy ship ${index + 1} current HP must be an integer from 0 to ${maxHp}.`,
+      }];
+    }
+    return [];
+  });
 }
 
 /** Calculates the initial detailed enemy air power for traversal ordering only. */

@@ -142,11 +142,21 @@ function enumerateBase(context, work, options = {}) {
   const candidates = [];
   const onCandidate = typeof options.onCandidate === 'function' ? options.onCandidate : null;
   const collectLimit = options.collectLimit ?? Number.POSITIVE_INFINITY;
+  const candidateShardCount = Math.max(
+    1,
+    Math.floor(Number(options.candidateShardCount) || 1),
+  );
+  const candidateShardIndex = Math.floor(Number(options.candidateShardIndex) || 0);
+  if (candidateShardIndex < 0 || candidateShardIndex >= candidateShardCount) {
+    throw new RangeError('candidateShardIndex must select an existing candidate shard.');
+  }
   let maximumDamage = Number.NEGATIVE_INFINITY;
   let feasible = false;
   let candidateCount = 0;
+  let airBoundPrunes = 0;
 
-  function visit(startIndex, slotsLeft, state) {
+  /** Enumerates grouped base assignments while applying damage and air upper bounds. */
+  function visit(startIndex, slotsLeft, state, firstSelectedIndex = -1) {
     if (!work.consume()) return;
     const cutoff = options.findMaximum ? maximumDamage : options.minimumDamage;
     const optimisticDamage = state.damage[2] + suffixDamage[startIndex][slotsLeft];
@@ -154,13 +164,16 @@ function enumerateBase(context, work, options = {}) {
     const optimisticAir = Math.floor(
       (state.rawAir + suffixAir[startIndex][slotsLeft]) * AIR_COEFFICIENTS[2],
     );
-    if (optimisticAir < requiredAir) return;
-
+    if (optimisticAir < requiredAir) {
+      airBoundPrunes += 1;
+      return;
+    }
     const summary = summarizeState(state, requiredAir);
     if (isFeasibleSummary(summary, targetState, targetRadius)) {
       feasible = true;
       if (summary.damage > maximumDamage) maximumDamage = summary.damage;
-      if (!options.findMaximum && summary.damage >= options.minimumDamage) {
+      if (!options.findMaximum && summary.damage >= options.minimumDamage &&
+          (firstSelectedIndex >= 0 || candidateShardIndex === 0)) {
         const candidate = candidateFromState(pairs, summary);
         candidateCount += 1;
         if (onCandidate) {
@@ -175,6 +188,11 @@ function enumerateBase(context, work, options = {}) {
 
     for (let featureIndex = startIndex; featureIndex < features.length; featureIndex += 1) {
       const feature = features[featureIndex];
+      const featureShardIndex = typeof options.candidateShardForFeature === 'function'
+        ? options.candidateShardForFeature(feature, featureIndex)
+        : featureIndex;
+      if (firstSelectedIndex < 0 &&
+          featureShardIndex % candidateShardCount !== candidateShardIndex) continue;
       const maximum = Math.min(slotsLeft, feature.count);
       for (let count = 1; count <= maximum; count += 1) {
         pairs.push([feature.groupIndex, count]);
@@ -182,6 +200,7 @@ function enumerateBase(context, work, options = {}) {
           featureIndex + 1,
           slotsLeft - count,
           addFeature(state, feature, count),
+          firstSelectedIndex < 0 ? featureIndex : firstSelectedIndex,
         );
         pairs.pop();
         if (work.stopped) return;
@@ -196,7 +215,7 @@ function enumerateBase(context, work, options = {}) {
       candidates.length = collectLimit;
     }
   }
-  return { candidateCount, candidates, feasible, maximumDamage };
+  return { airBoundPrunes, candidateCount, candidates, feasible, maximumDamage };
 }
 
 /** Finds a lower bound only; all proof work is repeated without this truncation. */

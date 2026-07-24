@@ -2,6 +2,7 @@
 
 const fs = require('fs/promises');
 const { buildEnemyCatalog } = require('./enemy-catalog');
+const { resolveEventCombatContext } = require('./event-multiplier-catalog');
 const { loadMapData } = require('./map-cache');
 const { buildMapCatalog } = require('./map-catalog');
 const { prepareSearch } = require('./optimizer');
@@ -13,7 +14,8 @@ const {
   rankEquipmentMatches,
 } = require('./equipment-filter');
 const { createPoiClient } = require('./poi-client');
-const { runSearchSession } = require('./search-session');
+const { calculateSimulatorSummary } = require('./simulator-calc');
+const { normalizeSimulatorState } = require('./simulator-state');
 
 /**
  * @param {string[]} argv
@@ -25,6 +27,7 @@ async function runCli(argv, io = process, dependencies = {}) {
     const parsed = parseArgs(argv);
     if (parsed.command === 'validate') return validateCommand(parsed, io, dependencies);
     if (parsed.command === 'optimize') return optimizeCommand(parsed, io, dependencies);
+    if (parsed.command === 'simulate') return simulateCommand(parsed, io, dependencies);
     if (parsed.command === 'enemy' && parsed.positionals[0] === 'search') {
       return enemySearchCommand(parsed, io);
     }
@@ -35,7 +38,7 @@ async function runCli(argv, io = process, dependencies = {}) {
       return equipmentSearchCommand(parsed, io, dependencies);
     }
     throw new Error(
-      'Usage: lbas-bis <validate|optimize|enemy search|map search|equipment search> [options]',
+      'Usage: lbas-bis <validate|optimize|simulate|enemy search|map search|equipment search> [options]',
     );
   } catch (error) {
     io.stderr.write(`${error.message}\n`);
@@ -58,14 +61,32 @@ async function validateCommand(parsed, io, dependencies) {
 async function optimizeCommand(parsed, io, dependencies) {
   const scenario = await loadScenario(parsed.flags.scenario);
   const options = await hydrateScenario(scenario, parsed.flags.poi, dependencies);
-  const { result } = runSearchSession({
+  const searchOptions = {
     ...options,
     nodeBudget: normalizeExactBudget(options.nodeBudget),
     simulationWorkBudget: normalizeExactBudget(options.simulationWorkBudget),
-    onEvent(event) {
+  };
+  if (dependencies.runSearchSession) {
+    const { result } = dependencies.runSearchSession({
+      ...searchOptions,
+      onEvent(event) {
+        io.stdout.write(`${JSON.stringify(event)}\n`);
+      },
+    });
+    return result.search.provenOptimal ? 0 : result.search.status === 'invalid_input' ? 1 : 2;
+  }
+  const { createSearchRunner } = dependencies.searchRunnerModule || require('./search-runner');
+  const runner = createSearchRunner(dependencies.searchRunnerOptions);
+  const result = await new Promise((resolve, reject) => {
+    runner.start(searchOptions, (event) => {
       io.stdout.write(`${JSON.stringify(event)}\n`);
-    },
-  });
+      if (event.type === 'completed' || event.type === 'cancelled') resolve(event.result);
+      if (event.type === 'failed') reject(Object.assign(
+        new Error(event.error?.message || 'Search worker failed.'),
+        event.error,
+      ));
+    });
+  }).finally(() => runner.dispose());
   return result.search.provenOptimal ? 0 : result.search.status === 'invalid_input' ? 1 : 2;
 }
 
@@ -82,6 +103,76 @@ async function enemySearchCommand(parsed, io) {
   const matches = catalog.search(parsed.flags.name || '').slice(0, 100);
   io.stdout.write(`${JSON.stringify({ total: matches.length, ships: matches })}\n`);
   return 0;
+}
+
+/** Simulates the selected or locked composition from the shared scenario format. */
+async function simulateCommand(parsed, io, dependencies) {
+  const scenario = await loadScenario(parsed.flags.scenario);
+  const hydrated = await hydrateScenario(scenario, parsed.flags.poi, dependencies);
+  const simulator = scenarioToSimulatorState(hydrated);
+  const calculate = dependencies.calculateSimulatorSummary || calculateSimulatorSummary;
+  io.stdout.write(`${JSON.stringify(calculate(simulator))}\n`);
+  return 0;
+}
+
+/** Converts CLI bases or locked slots into the simulator's explicit slot shape. */
+function scenarioToSimulatorState(scenario = {}) {
+  const baseCount = Math.max(1, Math.min(3, Math.floor(Number(scenario.baseCount) || 1)));
+  const equipmentById = new Map((scenario.equipment || []).map((plane) => [
+    String(plane.instanceId),
+    plane,
+  ]));
+  const sourceBases = Array.isArray(scenario.bases) && scenario.bases.length
+    ? scenario.bases
+    : scenario.lockedBases || [];
+  const bases = Array.from({ length: baseCount }, (_, baseIndex) => {
+    const source = sourceBases[baseIndex] || {};
+    const sourceSlots = Array.isArray(source) ? source : source.slots || [];
+    return {
+      name: source.name,
+      slots: Array.from({ length: 4 }, (_, slotIndex) => {
+        const slot = sourceSlots[slotIndex] || {};
+        const plane = resolveScenarioSlotPlane(slot, equipmentById, baseIndex, slotIndex);
+        return {
+          plane,
+          locked: slot.locked !== false && (slot.kind !== 'OPEN'),
+          proficiency: slot.proficiency ?? null,
+        };
+      }),
+    };
+  });
+  const targets = Array.isArray(scenario.targetStates) ? scenario.targetStates : [];
+  return normalizeSimulatorState({
+    baseCount,
+    targetRadius: scenario.targetRadius,
+    combatContext: scenario.combatContext,
+    enemy: scenario.enemy || {
+      mode: 'manual',
+      enemyAir: scenario.enemyAir,
+      manualEnemyAir: scenario.enemyAir,
+    },
+    simulationOptions: scenario.simulationOptions,
+    bases,
+    waves: Array.from({ length: baseCount * 2 }, (_, waveIndex) => ({
+      targetState: targets[waveIndex] || targets[0] || 'parity',
+    })),
+  });
+}
+
+/** Resolves one CLI slot from an embedded plane or a concrete inventory ID. */
+function resolveScenarioSlotPlane(slot, equipmentById, baseIndex, slotIndex) {
+  if (!slot || slot.kind === 'LOCKED_EMPTY') return null;
+  if (slot.plane && typeof slot.plane === 'object') return slot.plane;
+  if (slot.equipType != null && slot.instanceId != null) return slot;
+  const instanceId = slot.instanceId ?? slot.planeInstanceId;
+  if (instanceId == null) return null;
+  const plane = equipmentById.get(String(instanceId));
+  if (!plane) {
+    throw new Error(
+      `Unable to resolve base ${baseIndex + 1} slot ${slotIndex + 1} instance ID ${instanceId}.`,
+    );
+  }
+  return plane;
 }
 
 /** Lists noro6 formations as selectors that can be copied into mapSelection. */
@@ -174,21 +265,40 @@ async function hydrateScenario(scenario, poiUrl, dependencies = {}) {
   const hydrated = await hydrateMapSelection(
     scenario,
     loadMapDataImpl,
+    scenario.eventMultiplierCatalog ?? dependencies.eventMultiplierCatalog,
   );
   if (!poiUrl) return applyEquipmentFilters(hydrated);
   const clientFactory = dependencies.createPoiClient || createPoiClient;
   const extractPlanes = dependencies.extractOptimizationPlanes || extractOptimizationPlanes;
   const state = await clientFactory(poiUrl).loadState();
   const noro6Master = await loadNoroMasterForEquipment(dependencies);
+  const enemyCatalog = buildEnemyCatalog(state, { noro6Master });
   const equipment = extractPlanes(state, {
     includeMissing: hydrated.candidateMode === 'theoretical' || hydrated.includeMissing === true,
     missingCopiesPerMaster: hydrated.missingCopiesPerMaster ?? 1,
     noro6Master,
   });
   return applyEquipmentFilters({
-    ...hydrated,
+    ...enrichAutomaticEnemy(hydrated, enemyCatalog),
     equipment,
   });
+}
+
+/** Fills automatic map enemies from Poi/Navy Album without overwriting map fields. */
+function enrichAutomaticEnemy(scenario, catalog) {
+  if (scenario?.enemy?.dataSource !== 'automatic' || !Array.isArray(scenario.enemy.ships)) {
+    return scenario;
+  }
+  return {
+    ...scenario,
+    enemy: {
+      ...scenario.enemy,
+      ships: scenario.enemy.ships.map((ship) => ({
+        ...(catalog?.byId?.get(Number(ship.id)) || {}),
+        ...ship,
+      })),
+    },
+  };
 }
 
 async function loadNoroMasterForEquipment(dependencies = {}) {
@@ -203,15 +313,24 @@ async function loadNoroMasterForEquipment(dependencies = {}) {
   }
 }
 
+/** Collects locked equipment IDs from both normalized and legacy slot shapes. */
+function lockedEquipmentInstanceIds(lockedBases) {
+  return (lockedBases || []).flatMap((base) =>
+    (base?.slots || []).map((slot) => {
+      if (slot?.locked && slot.plane) return slot.plane.instanceId;
+      const kind = slot?.kind || slot?.state || slot?.type;
+      if (kind !== 'LOCKED_ITEM') return null;
+      return slot.plane?.instanceId ?? slot.instanceId ?? null;
+    }).filter((instanceId) => instanceId != null));
+}
+
 function applyEquipmentFilters(scenario) {
   const filtered = Array.isArray(scenario.equipment)
     ? filterOptimizationEquipment(scenario.equipment, {
         excludeCarrierAircraft: scenario.excludeCarrierAircraft === true,
         blacklistedMasterIds: scenario.blacklistedMasterIds,
         blacklistedEquipTypes: scenario.blacklistedEquipTypes,
-        lockedInstanceIds: (scenario.lockedBases || []).flatMap((base) =>
-          (base?.slots || []).filter((slot) => slot?.locked && slot.plane)
-            .map((slot) => slot.plane.instanceId)),
+        lockedInstanceIds: lockedEquipmentInstanceIds(scenario.lockedBases),
       })
     : scenario.equipment;
   return applyOptimizerProficiencyPolicy({
@@ -221,16 +340,25 @@ function applyEquipmentFilters(scenario) {
 }
 
 /** Fills missing CLI enemy inputs from one noro6 map formation. */
-async function hydrateMapSelection(scenario, loadMapDataImpl) {
+async function hydrateMapSelection(scenario, loadMapDataImpl, eventMultiplierCatalog) {
   const selection = scenario?.mapSelection;
   if (!selection) return scenario;
 
   const needsRadius = !hasOwn(scenario, 'targetRadius');
   const hasExplicitEnemy = ['enemy', 'enemySlots', 'enemyAir'].some((key) => hasOwn(scenario, key));
   const needsEnemy = !hasExplicitEnemy;
-  if (!needsRadius && !needsEnemy) return scenario;
-
   const normalized = normalizeMapSelection(selection);
+  const multiplierResolution = resolveEventCombatContext(
+    normalized,
+    scenario.combatContext,
+    eventMultiplierCatalog,
+  );
+  if (!multiplierResolution.valid) {
+    throw new Error(multiplierResolution.errors[0].message);
+  }
+  if (!needsRadius && !needsEnemy) {
+    return { ...scenario, combatContext: multiplierResolution.context };
+  }
   let mapData;
   try {
     mapData = await loadMapDataImpl();
@@ -260,7 +388,7 @@ async function hydrateMapSelection(scenario, loadMapDataImpl) {
     );
   }
 
-  const resolved = { ...scenario };
+  const resolved = { ...scenario, combatContext: multiplierResolution.context };
   if (needsRadius) {
     if (!formation.radius.length || formation.radius.some((value) => !Number.isFinite(value))) {
       throw new Error(`Map formation ${formation.id} does not provide a valid target radius.`);

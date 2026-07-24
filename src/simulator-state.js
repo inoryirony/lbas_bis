@@ -140,7 +140,22 @@ function simulatorToOptimizerInput(state) {
     enemy: normalized.enemy,
     enemySlots: normalized.enemy.slots,
     simulationOptions: normalized.simulationOptions,
+    ...(hasCompleteCombatData(normalized.enemy.ships)
+      ? { optimizationObjective: 'combat' }
+      : {}),
   };
+}
+
+/** Enables combat ranking only when every meaningful target has usable durability data. */
+function hasCompleteCombatData(ships) {
+  const meaningful = (Array.isArray(ships) ? ships : []).filter((ship) => ship && (
+    ship.id != null || ship.name || ship.hp != null || ship.maxHp != null
+  ));
+  return meaningful.length > 0 && meaningful.every((ship) => {
+    const hp = Number(ship.maxHp ?? ship.hp);
+    const armor = Number(ship.armor);
+    return Number.isFinite(hp) && hp > 0 && Number.isFinite(armor) && armor >= 0;
+  });
 }
 
 /** Creates the backward-compatible manual total-air enemy shape. */

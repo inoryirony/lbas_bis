@@ -65,4 +65,34 @@ describe('counter-based random helpers', () => {
     expect(secondPass).toEqual(firstPass);
     expect(generated).toBe(sampleCount);
   });
+
+  test('keeps the default fixed table bit-identical to coordinate random draws', () => {
+    const sampleCount = 64;
+    const seed = '固定样本-seed';
+    const fixedRandom = createFixedSampleRandom(seed, sampleCount);
+    const coordinates = [
+      [0, 'enemy', 'slot-15', 1],
+      [3, 'combat-hit', 2, 0],
+      [5, 'player', 129763, 0],
+    ];
+
+    for (const [wave, side, slot, draw] of coordinates) {
+      expect(Array.from({ length: sampleCount }, (_, sample) =>
+        fixedRandom(sample, wave, side, slot, draw)))
+        .toEqual(Array.from({ length: sampleCount }, (_, sample) =>
+          commonRandomNumber(seed, sample, wave, side, slot, draw)));
+    }
+  });
+
+  test('exposes one stable vector per non-sample coordinate', () => {
+    const sampleCount = 32;
+    const fixedRandom = createFixedSampleRandom('fixed-vector', sampleCount);
+    const first = fixedRandom.valuesFor(1, 'player', 2, 0);
+    const second = fixedRandom.valuesFor(1, 'player', 2, 0);
+
+    expect(second).toBe(first);
+    expect(first).toBeInstanceOf(Float64Array);
+    expect(Array.from(first)).toEqual(Array.from({ length: sampleCount }, (_, sample) =>
+      fixedRandom(sample, 1, 'player', 2, 0)));
+  });
 });

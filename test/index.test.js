@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 import plugin from '../index.js';
+import OptimizerPanel from '../src/ui/OptimizerPanel.js';
 import simulatorState from '../src/simulator-state.js';
 
 const { normalizeTargetStates, parseTargetStates } = plugin;
@@ -69,6 +70,46 @@ describe('plugin entry', () => {
 
     expect(start).toHaveBeenCalledOnce();
     expect(start.mock.calls[0][0].equipment.map((plane) => plane.instanceId)).toEqual(['land-1']);
+  });
+
+  test('explains an infeasible search when equipment filters removed every fighter', () => {
+    const start = vi.fn();
+    const panel = new plugin.reactClass({
+      searchRunner: {
+        start,
+        cancel: vi.fn(() => true),
+      },
+      readPoiState: () => fighterFilterPoiState(),
+    });
+    panel.setState = (updater) => {
+      const patch = typeof updater === 'function' ? updater(panel.state) : updater;
+      Object.assign(panel.state, patch);
+    };
+    panel.state.equipmentFilters = {
+      excludeCarrierAircraft: true,
+      blacklistedMasterIds: [],
+      blacklistedEquipTypes: [48],
+    };
+
+    panel.runOptimizer();
+    const emitSearchEvent = start.mock.calls[0][1];
+    emitSearchEvent({
+      type: 'completed',
+      result: {
+        messages: ['No loadout can satisfy all range, air, inventory, and lock constraints.'],
+        results: [],
+        search: {
+          status: 'infeasible',
+          provenOptimal: true,
+          nodesExplored: 2,
+          solverStats: { firstWaveAirBoundsPruned: 1 },
+        },
+      },
+    });
+
+    expect(collectText(panel.render())).toContain(
+      '当前筛选已排除所有战斗机；请检查“不使用舰载机”和装备黑名单（尤其是“局地战斗机”）。',
+    );
   });
 
   test('defaults optimizer candidates and locked planes to lost proficiency', () => {
@@ -367,12 +408,44 @@ describe('plugin entry', () => {
       elapsedMs: 3200,
     };
 
-    const renderedText = collectText(panel.render());
+    const rendered = panel.render();
+    const renderedText = collectText(rendered);
+    const progress = findNodes(
+      rendered,
+      (node) => node.props?.['data-progress-mode'] === 'indeterminate',
+    )[0];
+    panel.state.searchProgress = { ...panel.state.searchProgress, elapsedMs: 4200 };
+    const moved = findNodes(
+      panel.render(),
+      (node) => node.props?.['data-progress-mode'] === 'indeterminate',
+    )[0];
     expect(renderedText).toContain('停止计算');
     expect(renderedText).toContain('正在寻找可行方案');
     expect(renderedText).toContain('搜索节点 3072');
     expect(renderedText).toContain('已剪枝 512');
     expect(renderedText).toContain('当前最佳');
+    expect(progress.props.children.props.style.transform)
+      .not.toBe(moved.props.children.props.style.transform);
+  });
+
+  test('advances live-search activity without receiving solver progress', () => {
+    vi.useFakeTimers();
+    try {
+      const clock = new OptimizerPanel.SearchActivityClock({});
+      clock.setState = (updater) => {
+        const patch = typeof updater === 'function' ? updater(clock.state) : updater;
+        clock.state = { ...clock.state, ...patch };
+      };
+      const initial = clock.state.activityElapsedMs;
+
+      clock.componentDidMount();
+      vi.advanceTimersByTime(300);
+
+      expect(clock.state.activityElapsedMs).toBeGreaterThan(initial);
+      clock.componentWillUnmount();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test('renders translated countable detailed-search progress as a percentage', () => {
@@ -387,9 +460,44 @@ describe('plugin entry', () => {
       elapsedMs: 5000,
     };
 
-    const renderedText = collectText(panel.render());
+    const rendered = panel.render();
+    const renderedText = collectText(rendered);
+    const progress = findNodes(
+      rendered,
+      (node) => node.props?.['data-progress-mode'] === 'determinate',
+    )[0];
+    panel.state.searchProgress = { ...panel.state.searchProgress, elapsedMs: 6000 };
+    const moved = findNodes(
+      panel.render(),
+      (node) => node.props?.['data-progress-mode'] === 'determinate',
+    )[0];
+    const activity = findNodes(
+      progress,
+      (node) => node.props?.['data-progress-role'] === 'activity',
+    )[0];
+    const movedActivity = findNodes(
+      moved,
+      (node) => node.props?.['data-progress-role'] === 'activity',
+    )[0];
     expect(renderedText).toContain('正在构建前序敌机轨迹');
     expect(renderedText).toContain('25 / 100 (25%)');
+    expect(progress.props['aria-valuenow']).toBe(25);
+    expect(progress.props['aria-valuemax']).toBe(100);
+    expect(activity.props.style.left).not.toBe(movedActivity.props.style.left);
+  });
+
+  test('does not display 100 percent before countable proof work completes', () => {
+    const panel = new plugin.reactClass({});
+    panel.state.isSearching = true;
+    panel.state.searchProgress = {
+      completedWork: 21096,
+      totalWork: 21202,
+      elapsedMs: 5000,
+    };
+
+    expect(collectText(panel.render())).toContain('21096 / 21202 (99%)');
+    panel.state.searchProgress.completedWork = 21202;
+    expect(collectText(panel.render())).toContain('21202 / 21202 (100%)');
   });
 
   test('renders editable detailed enemy slot controls', () => {
@@ -546,23 +654,59 @@ describe('plugin entry', () => {
   });
 
   test('keeps an active proof running when importing its incumbent plan', () => {
-    const panel = createSynchronousPanel();
+    /** @type {((event: any) => void) | undefined} */
+    let workerCallback;
     const cancel = vi.fn(() => true);
-    panel.searchRunner = { cancel };
-    panel.state.results = [{ totalDamagePower: 123 }];
-    panel.state.search = { status: 'searching', provenOptimal: false, nodesExplored: 99 };
-    panel.state.isSearching = true;
+    const panel = new plugin.reactClass({
+      searchRunner: {
+        start: vi.fn((_options, callback) => { workerCallback = callback; }),
+        cancel,
+      },
+      readPoiState: () => equipmentPoiState(),
+    });
+    panel.setState = (updater) => {
+      const patch = typeof updater === 'function' ? updater(panel.state) : updater;
+      Object.assign(panel.state, patch);
+    };
+    const incumbent = {
+      totalDamagePower: 123,
+      worstMargin: 0,
+      calculationMode: 'static',
+      missingEquipment: [],
+      waves: [],
+      bases: [],
+    };
+    const finalPlan = { ...incumbent, totalDamagePower: 456 };
 
-    panel.importPlan({ bases: [] });
+    panel.runOptimizer();
+    expect(workerCallback).toBeTypeOf('function');
+    workerCallback?.({ type: 'incumbent', plan: incumbent, phase: 'proving_optimal' });
+    const generation = panel.searchGeneration;
+    const importButton = findNodes(panel.render(), (node) =>
+      node.type === 'button' && collectText(node) === '导入到模拟器')[0];
+    importButton.props.onClick();
 
     expect(cancel).not.toHaveBeenCalled();
-    expect(panel.state.results).toEqual([{ totalDamagePower: 123 }]);
-    expect(panel.state.search).toEqual({
-      status: 'searching',
-      provenOptimal: false,
-      nodesExplored: 99,
-    });
+    expect(panel.searchGeneration).toBe(generation);
+    expect(panel.state.results).toEqual([incumbent]);
     expect(panel.state.isSearching).toBe(true);
+
+    workerCallback?.({
+      type: 'completed',
+      result: {
+        messages: [],
+        results: [finalPlan],
+        search: { status: 'optimal', provenOptimal: true, nodesExplored: 100 },
+      },
+    });
+
+    expect(panel.state.results).toEqual([finalPlan]);
+    expect(panel.state.search).toEqual({
+      status: 'optimal',
+      provenOptimal: true,
+      nodesExplored: 100,
+    });
+    expect(panel.state.isSearching).toBe(false);
   });
 
   test('rejects malformed multiplier selectors without changing the committed rule', () => {
@@ -759,6 +903,14 @@ describe('plugin entry', () => {
       name: `Enemy ${index + 1}`,
       airPower: index,
     }));
+    panel.state.enemyCatalog = {
+      byId: new Map([[1500, {
+        id: 1500,
+        name: 'Enemy 1',
+        evasion: 53,
+        luck: 70,
+      }]]),
+    };
 
     panel.applyMapPreset({
       area: 65,
@@ -772,6 +924,7 @@ describe('plugin entry', () => {
     });
 
     expect(panel.state.simulator.enemy.ships).toHaveLength(12);
+    expect(panel.state.simulator.enemy.ships[0]).toMatchObject({ evasion: 53, luck: 70 });
     expect(panel.state.simulator.enemy.ships.at(-1)).toMatchObject({ id: 1511 });
     expect(simulatorToOptimizerInput(panel.state.simulator).enemy).toMatchObject({
       battleType: 2,
@@ -999,6 +1152,24 @@ describe('plugin entry', () => {
 
     expect(calculateSummary).toHaveBeenCalledTimes(1);
   });
+
+  test('renders real expected HP damage and sinks separately from the attack proxy', () => {
+    const panel = new plugin.reactClass({
+      calculateSimulatorSummary: () => ({
+        bases: [],
+        waves: [],
+        enemyAirLines: [],
+        simulation: {
+          expectedHpDamage: 12.5,
+          expectedSunkCount: 1.25,
+        },
+      }),
+    });
+
+    const renderedText = collectText(panel.render());
+    expect(renderedText).toContain('期望HP伤害 12.5');
+    expect(renderedText).toContain('期望击沉 1.25');
+  });
 });
 
 function collectText(node) {
@@ -1073,6 +1244,60 @@ function equipmentPoiState() {
         },
         2: {
           api_id: 2,
+          api_name: '测试陆攻',
+          api_type: [17, 0, 47, 37],
+          api_distance: 7,
+          api_tyku: 4,
+          api_raig: 12,
+        },
+      },
+    },
+  };
+}
+
+/** Creates carrier, land-fighter, and attacker candidates for filter-conflict tests. */
+function fighterFilterPoiState() {
+  return {
+    info: {
+      equips: {
+        carrier: {
+          api_id: 'carrier-fighter',
+          api_slotitem_id: 1,
+          api_level: 0,
+          api_alv: 0,
+        },
+        landFighter: {
+          api_id: 'land-fighter',
+          api_slotitem_id: 2,
+          api_level: 0,
+          api_alv: 0,
+        },
+        landAttacker: {
+          api_id: 'land-attacker',
+          api_slotitem_id: 3,
+          api_level: 0,
+          api_alv: 0,
+        },
+      },
+    },
+    const: {
+      $equips: {
+        1: {
+          api_id: 1,
+          api_name: '测试舰战',
+          api_type: [3, 0, 6, 6],
+          api_distance: 7,
+          api_tyku: 10,
+        },
+        2: {
+          api_id: 2,
+          api_name: '测试陆战',
+          api_type: [17, 0, 48, 44],
+          api_distance: 7,
+          api_tyku: 12,
+        },
+        3: {
+          api_id: 3,
           api_name: '测试陆攻',
           api_type: [17, 0, 47, 37],
           api_distance: 7,

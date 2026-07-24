@@ -148,6 +148,24 @@ describe('noro6-compatible map catalog', () => {
       speed: 0,
     });
   });
+
+  test('decorates known PT and special enemies even when enemy master data is missing', () => {
+    const catalog = buildMapCatalog({
+      cells: { patterns: [{ a: 65, n: 'M', l: 0, e: [137, 153] }] },
+      master: {
+        enemies: [enemy(1653, [], [])],
+        items: [],
+      },
+    });
+
+    const formation = catalog.formations(65, 'M', 0)[0];
+    expect(formation.ships[0]).toMatchObject({ id: 1637, isPT: true });
+    expect(formation.ships[1]).toMatchObject({
+      id: 1653,
+      isPT: false,
+      specialAirstrikeRuleId: 'supply-depot-princess',
+    });
+  });
 });
 
 function realSubset() {

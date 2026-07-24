@@ -1,0 +1,20 @@
+{
+  "baseCount": 2,
+  "mapSelection": {
+    "area": 623,
+    "node": "Z",
+    "difficulty": 4,
+    "formationIndex": 0
+  },
+  "targetStates": ["denial", "denial", "denial", "denial"],
+  "candidateMode": "owned",
+  "excludeCarrierAircraft": true,
+  "optimizationObjective": "combat",
+  "simulationOptions": {
+    "sampleCount": 4096,
+    "seed": "poi-event-623-z-high-air-v1"
+  },
+  "nodeBudget": null,
+  "simulationWorkBudget": null,
+  "maxResults": 1
+}

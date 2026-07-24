@@ -6,7 +6,9 @@ const {
   calculateBaseSurfaceTargetPowerProxy,
   calculatePlaneDamagePower,
   calculatePlaneSurfaceTargetPowerProxy,
+  calculatePlaneTargetAttackPower,
   landBasedReconDamageModifier,
+  TARGET_POWER_FORMULA,
 } = damage;
 
 describe('LBAS damage estimates', () => {
@@ -45,7 +47,7 @@ describe('LBAS damage estimates', () => {
     expect(power).toBe(169);
   });
 
-  test('applies matching equipment damage multipliers after the existing post-cap result', () => {
+  test('combines matching equipment damage multipliers before the final post-cap floor', () => {
     const attacker = plane('bonus-ginga', {
       masterId: 301,
       role: 'attacker',
@@ -71,7 +73,7 @@ describe('LBAS damage estimates', () => {
       },
     });
 
-    expect(power).toBe(223);
+    expect(power).toBe(224);
   });
 
   test('uses the stronger anti-ship stat when torpedo and bombing differ', () => {
@@ -162,6 +164,18 @@ describe('LBAS damage estimates', () => {
     expect(calculateBaseDamagePower).toBe(calculateBaseSurfaceTargetPowerProxy);
   });
 
+  test('uses the normal surface formula for an explicit surface-only capability', () => {
+    const custom = plane('explicit-surface-capability', {
+      equipType: 0,
+      isAttacker: false,
+      canAttackSurface: true,
+      torpedo: 30,
+      bombing: 30,
+    });
+
+    expect(calculatePlaneSurfaceTargetPowerProxy(custom)).toBeGreaterThan(100);
+  });
+
   test('uses 1.125 for ordinary land recon and 1.15 for skilled land recon', () => {
     expect(landBasedReconDamageModifier([{ masterId: 311 }])).toBe(1.125);
     expect(landBasedReconDamageModifier([{ masterId: 480 }])).toBe(1.125);
@@ -180,6 +194,205 @@ describe('LBAS damage estimates', () => {
       [attacker, plane('ordinary-recon', { masterId: 311, isAttacker: false })],
       { slotSize: 1 },
     )).toBe(396);
+  });
+
+  test('uses bombing against land targets and 65th Sentai torpedo 25 against destroyers', () => {
+    const ordinary = plane('ordinary-land-attacker', {
+      masterId: 999,
+      equipType: 47,
+      isAttacker: true,
+      isLandAttacker: true,
+      torpedo: 20,
+      bombing: 5,
+    });
+    const sentai65 = plane('65th-sentai', {
+      masterId: 224,
+      equipType: 47,
+      isAttacker: true,
+      isLandAttacker: true,
+      torpedo: 9,
+      bombing: 6,
+    });
+
+    expect(calculatePlaneTargetAttackPower(ordinary, { type: 2 }, { slotSize: 1 })).toBe(73);
+    expect(calculatePlaneTargetAttackPower(
+      ordinary,
+      { type: 17, speed: 0, isLand: true },
+      { slotSize: 1 },
+    )).toBe(45);
+    expect(calculatePlaneTargetAttackPower(sentai65, { type: 2 }, { slotSize: 1 })).toBe(82);
+    expect(calculatePlaneTargetAttackPower(sentai65, { type: 3 }, { slotSize: 1 })).toBe(52);
+  });
+
+  test('matches established B-25 and guided-weapon target matrices before armor', () => {
+    const b25 = plane('b25', {
+      masterId: 459,
+      equipType: 47,
+      isAttacker: true,
+      isLandAttacker: true,
+      torpedo: 10,
+      bombing: 10,
+    });
+    const hs293 = { ...b25, masterId: 405 };
+    const fritzX = { ...b25, masterId: 406 };
+    const guidedTypeA = { ...b25, masterId: 444 };
+
+    expect(calculatePlaneTargetAttackPower(b25, { type: 2 }, { slotSize: 1 })).toBe(104);
+    expect(calculatePlaneTargetAttackPower(b25, { type: 3 }, { slotSize: 1 })).toBe(95);
+    expect(calculatePlaneTargetAttackPower(b25, { type: 5 }, { slotSize: 1 })).toBe(88);
+    expect(calculatePlaneTargetAttackPower(b25, { type: 9 }, { slotSize: 1 })).toBe(70);
+    expect(calculatePlaneTargetAttackPower(
+      b25,
+      { type: 17, speed: 0, isLand: true },
+      { slotSize: 1 },
+    )).toBe(48);
+    expect(calculatePlaneTargetAttackPower(hs293, { type: 2 }, { slotSize: 1 })).toBe(55);
+    expect(calculatePlaneTargetAttackPower(fritzX, { type: 9 }, { slotSize: 1 })).toBe(64);
+    expect(calculatePlaneTargetAttackPower(guidedTypeA, { type: 2 }, { slotSize: 18 })).toBe(129);
+    expect(calculatePlaneTargetAttackPower(guidedTypeA, { type: 11 }, { slotSize: 18 })).toBe(127);
+  });
+
+  test('uses the randomized LBAS ASW formula for submarine targets', () => {
+    const toukai = plane('prototype-toukai', {
+      masterId: 269,
+      equipType: 47,
+      bombing: 2,
+      torpedo: 0,
+      asw: 10,
+    });
+    const patrol = plane('asw-nine', {
+      masterId: 900,
+      equipType: 26,
+      bombing: 0,
+      torpedo: 0,
+      asw: 9,
+    });
+    const submarine = { type: 13, isSubmarine: true };
+
+    expect(calculatePlaneTargetAttackPower(
+      toukai,
+      submarine,
+      { slotSize: 18, aswPowerRoll: 0 },
+    )).toBe(102);
+    expect(calculatePlaneTargetAttackPower(
+      toukai,
+      submarine,
+      { slotSize: 18, aswPowerRoll: 1 },
+    )).toBe(145);
+    expect(calculatePlaneTargetAttackPower(
+      patrol,
+      submarine,
+      { slotSize: 18, aswPowerRoll: 0 },
+    )).toBe(26);
+    expect(calculatePlaneTargetAttackPower(
+      patrol,
+      submarine,
+      { slotSize: 18, aswPowerRoll: 1 },
+    )).toBe(60);
+  });
+
+  test('retains the type-47 base strike when its surface torpedo stat is zero', () => {
+    expect(calculatePlaneTargetAttackPower(plane('zero-torpedo-toukai', {
+      masterId: 269,
+      equipType: 47,
+      bombing: 2,
+      torpedo: 0,
+      asw: 10,
+    }), { type: 2 }, { slotSize: 18 })).toBe(36);
+  });
+
+  test('applies the enemy combined-fleet post-cap modifier to LBAS attacks', () => {
+    const ginga = plane('combined-ginga', {
+      masterId: 187,
+      equipType: 47,
+      torpedo: 14,
+      bombing: 14,
+      asw: 3,
+    });
+
+    expect(calculatePlaneTargetAttackPower(
+      ginga,
+      { type: 2 },
+      { slotSize: 18, isCombined: true },
+    )).toBe(164);
+  });
+
+  test('combines contact with every post-cap multiplier before one final floor', () => {
+    const ginga = plane('contact-ginga', {
+      masterId: 187,
+      equipType: 47,
+      torpedo: 14,
+      bombing: 14,
+      asw: 10,
+    });
+
+    expect(calculatePlaneTargetAttackPower(
+      ginga,
+      { type: 2 },
+      { slotSize: 18, contactMultiplier: 1.2 },
+    )).toBe(179);
+    expect(calculatePlaneTargetAttackPower(
+      ginga,
+      { id: 1637, type: 2, isPT: true },
+      { slotSize: 18, contactMultiplier: 1.2, specialPostCapRoll: 0 },
+    )).toBe(125);
+    expect(calculatePlaneTargetAttackPower(
+      ginga,
+      { type: 2 },
+      { slotSize: 18, contactMultiplier: 1.2, isCombined: true },
+    )).toBe(197);
+    expect(calculatePlaneTargetAttackPower(
+      ginga,
+      { type: 13, isSubmarine: true },
+      { slotSize: 18, contactMultiplier: 1.2, aswPowerRoll: 1 },
+    )).toBe(174);
+  });
+
+  test('applies deterministic PT and special-enemy post-cap branches', () => {
+    const ginga = plane('special-target-ginga', {
+      masterId: 187,
+      equipType: 47,
+      torpedo: 14,
+      bombing: 14,
+    });
+
+    expect(calculatePlaneTargetAttackPower(
+      ginga,
+      { id: 1637, type: 2, isPT: true },
+      { slotSize: 18, specialPostCapRoll: 0 },
+    )).toBe(104);
+    expect(calculatePlaneTargetAttackPower(
+      ginga,
+      { id: 1637, type: 2, isPT: true },
+      { slotSize: 18, specialPostCapRoll: 0.4 },
+    )).toBe(59);
+    expect(calculatePlaneTargetAttackPower(
+      ginga,
+      { id: 1653, type: 17 },
+      { slotSize: 18, specialPostCapRoll: 0 },
+    )).toBe(522);
+    expect(calculatePlaneTargetAttackPower(
+      ginga,
+      { id: 1653, type: 17 },
+      { slotSize: 18, specialPostCapRoll: 0, isCombined: true },
+    )).toBe(575);
+  });
+
+  test('publishes source revisions and keeps disputed target formulas unresolved', () => {
+    expect(TARGET_POWER_FORMULA).toMatchObject({
+      formulaVersion: 'lbas-target-power-v1',
+      confidence: 'established_simulator_assumption',
+      sources: [
+        expect.objectContaining({ repository: 'noro6/kc-web', revision: 'd490a8411c92669ecbd258bb7c47af392402ea99' }),
+        expect.objectContaining({ repository: 'KC3Kai/kancolle-replay', revision: 'ec3094c5ba57e289d2716a75ab5f4dee31f1b07f' }),
+      ],
+    });
+    expect(TARGET_POWER_FORMULA.unresolved).toEqual(expect.arrayContaining([
+      'type53AirstrikeModifier',
+      'master484TargetAdjustment',
+      'master454CvlBranch',
+      'master562BattleshipAdjustment',
+    ]));
   });
 });
 

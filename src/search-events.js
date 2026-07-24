@@ -34,6 +34,7 @@ function phaseChangedEvent(phase) {
 
 function progressEvent(state = {}) {
   return Object.freeze({
+    ...state,
     type: 'progress',
     phase: state.phase,
     nodesExplored: state.nodesExplored || 0,

@@ -2,6 +2,7 @@
 
 const path = require('path');
 const { PLANE_TYPES } = require('./aircraft');
+const { decorateEnemyAirstrikeRules } = require('./enemy-airstrike-rules');
 
 function buildEnemyCatalog(poiState = {}, options = {}) {
   const shipsByMasterId = poiState?.const?.$ships || {};
@@ -52,17 +53,19 @@ function buildCatalogShip(master, shipTypes, equips, sources, warnings) {
   const typeMaster = shipTypes?.[master.api_stype] || shipTypes?.[String(master.api_stype)] || {};
   const noroEnemy = sources.noroEnemies.get(id);
   const album = sources.abyssalData?.[id] || sources.abyssalData?.[String(id)];
-  const base = {
+  const base = decorateEnemyAirstrikeRules({
     id,
     name: master.api_name || `Enemy ${id}`,
     reading: master.api_yomi || '',
     typeId: Number(master.api_stype) || 0,
     typeName: typeMaster.api_name || typeMaster.name || '',
     type: combatStat(master.api_stype, noroEnemy?.type),
-    hp: combatStat(master.api_taik, noroEnemy?.hp),
-    armor: combatStat(master.api_souk, noroEnemy?.armor),
-    speed: combatStat(master.api_soku, noroEnemy?.speed),
-  };
+    hp: combatStat(master.api_taik, noroEnemy?.hp, album?.HP),
+    armor: combatStat(master.api_souk, noroEnemy?.armor, album?.AR),
+    speed: combatStat(master.api_soku, noroEnemy?.speed, album?.SPD),
+    evasion: combatStat(master.api_houk, album?.EV),
+    luck: combatStat(master.api_luck, album?.LUK),
+  });
   const officialSlots = Array.isArray(master.api_maxeq) ? master.api_maxeq : null;
   const officialEquips = firstArray(
     master.api_default_slot,
@@ -146,8 +149,12 @@ function buildCatalogShip(master, shipTypes, equips, sources, warnings) {
 }
 
 /** Uses an official scalar/range first and a normalized noro6 value as fallback. */
-function combatStat(officialValue, fallbackValue) {
-  return finiteStat(officialValue) ?? finiteStat(fallbackValue);
+function combatStat(...values) {
+  for (const value of values) {
+    const stat = finiteStat(value);
+    if (stat != null) return stat;
+  }
+  return null;
 }
 
 function finiteStat(value) {

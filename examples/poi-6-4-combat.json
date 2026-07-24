@@ -1,0 +1,20 @@
+{
+  "baseCount": 1,
+  "mapSelection": {
+    "area": 64,
+    "node": "N",
+    "difficulty": 0,
+    "formationIndex": 0
+  },
+  "targetStates": ["superiority", "superiority"],
+  "candidateMode": "owned",
+  "excludeCarrierAircraft": true,
+  "optimizationObjective": "combat",
+  "simulationOptions": {
+    "sampleCount": 4096,
+    "seed": "poi-6-4-n-combat-v1"
+  },
+  "nodeBudget": null,
+  "simulationWorkBudget": null,
+  "maxResults": 1
+}

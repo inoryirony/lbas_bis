@@ -2,10 +2,10 @@
 
 ## Status and Scope
 
-The current detailed optimizer simulates air-state changes and aircraft losses,
-but its `expectedDamage` field is an additive attack-power proxy. It is not
-expected HP damage because it does not yet resolve targets, hits, criticals,
-armor, scratch damage, HP, or sinking.
+Implementation completed on 2026-07-24. The detailed optimizer now reports
+`expectedHpDamage` and `expectedSunkCount` from stateful target selection, hit,
+critical, armor, scratch, HP continuation, and sinking. `attackPowerProxy`
+remains a separate lower-priority explanation and tie-break field.
 
 This document freezes the evidence boundary and implementation order for the
 stateful combat model. Accuracy is more important than speed. A heuristic may
@@ -32,6 +32,33 @@ The type 53 attack constant is unresolved: current noro6 uses the aerial-combat
 `+25` path while KC3/kancolle-replay retains a `+20` land-attacker path in some
 code. Add cross-source fixtures before choosing a default.
 
+## Implemented Target-Power Slice
+
+`lbas-target-power-v1` is implemented in `src/damage.js` from the locked noro6
+and KC3 revisions listed below. `calculatePlaneTargetAttackPower` is used by
+real combat scoring and by the certified optimistic bound. Land-recon, contact,
+event, PT, and special-target modifiers are applied in both paths with an
+optimistic maximum in the bound.
+
+The cross-source-agreed rules currently cover:
+
+- land targets using bombing instead of torpedo for type 47/53 aircraft;
+- 65th Sentai and skilled 20th Sentai destroyer attack stats;
+- B-25 pre-cap multipliers for destroyer, light cruiser, heavy cruiser,
+  battleship/carrier, supply, seaplane-tender, and land targets;
+- Hs293 against destroyers, Fritz-X against battleships, guided type-A weapon
+  target groups, and Hs293D against destroyers.
+
+The formula metadata deliberately keeps these conflicts unresolved and disabled:
+
+- type 53 `+20` versus `+25` airstrike modifier;
+- master 484 multiplicative versus additive target adjustment;
+- master 454 light-carrier branch ordering;
+- master 562 battleship adjustment present only in the KC3 reference path.
+
+Stateful target selection, hit, armor, HP, and valid proof bounds are connected;
+the primitive is part of the optimizer objective and exhaustive-oracle fixtures.
+
 ## Required Enemy Model
 
 Map adaptation must retain, per ship:
@@ -41,9 +68,8 @@ Map adaptation must retain, per ship:
 - aircraft slots and Stage 2 defense inputs;
 - source URL, source revision/date, map, node, difficulty, and formation index.
 
-Manual enemies may override every field. Missing combat fields must produce a
-visible limitation and fall back to the legacy attack-power proxy, not invented
-HP or armor values.
+Manual enemies may override every field. Missing combat fields produce a visible
+limitation and `null` real-damage fields rather than invented HP or armor values.
 
 ## Attack Resolution
 
@@ -52,7 +78,7 @@ Each attack-capable aircraft slot resolves independently in game order:
 1. Build eligible living targets from surface/submarine/land attack rules.
 2. Select main or escort fleet, then one eligible ship. The established
    combined-fleet assumption is main `45%`, escort `55%`; flagship protection
-   and empty-fleet fallbacks need explicit fixtures.
+   and empty-fleet fallbacks have deterministic fixtures.
 3. Compute target-specific pre-cap and post-cap power. Land targets use bombing
    where required. Apply B-25, 65th Sentai, Hs293/Fritz-X/guided-bomb and other
    DD/CL/CA/BB/CV/supply/land/PT rules only after the target is known.
@@ -66,9 +92,9 @@ Each attack-capable aircraft slot resolves independently in game order:
 7. Subtract HP immediately. Remove sunk ships before the next aircraft chooses
    a target.
 
-Ordinary contact and jet-assault damage are later phases, but their random
-coordinates must be reserved now so adding them does not reorder existing CRN
-draws.
+Ordinary contact, its cross-wave carry-over, and flagship protection use reserved
+random coordinates so they do not reorder existing CRN draws. Jet-assault loss
+remains a separate air phase.
 
 ## Accuracy and Evasion Assumptions
 
@@ -112,34 +138,47 @@ that objective remains disabled rather than guessed.
 ## Search and Proof Consequences
 
 Target selection and HP transitions make damage non-additive across aircraft
-and waves. Existing per-plane additive damage bounds cannot certify this score.
-Before enabling the stateful objective in exact search:
+and waves. The production solver therefore uses cached fixed-sample trajectories,
+continuation state, and a conservative lexicographic combat ceiling:
 
-- build a conservative upper bound for kills, suppression, and HP damage;
-- compare reduced inventories against complete enumeration;
+- use optimistic perfect targeting, reachable damage multipliers, and HP/sink ceilings;
+- compare reduced and seeded random inventories against complete enumeration;
 - preserve strict inequality in pruning so equal primary scores survive for
   loss, resource, margin, scarcity, and canonical tie-breaks;
 - report `provenOptimal` only for the declared fixed sample stream, candidate
   universe, formula version, and objective;
-- keep progressive 256/1024/4096 SAA stages as warm starts and ordering only.
-  Earlier stages never remove later candidates, and population optimality is
-  never implied by fixed-sample proof.
+- use the declared 4096 samples for scoring and proof. Warm starts and ordering
+  never remove candidates, and population optimality is never implied by a
+  fixed-sample proof.
 
-## Incremental Implementation
+## Completed Implementation
 
-1. Rename current output to `attackPowerProxy` in UI/CLI/API while retaining a
+1. Renamed the legacy output to `attackPowerProxy` in UI/CLI/API while retaining a
    deprecated `expectedDamage` compatibility field.
-2. Preserve enemy HP, armor, type, target tags, fleet side, and provenance in
+2. Preserved enemy HP, armor, type, target tags, fleet side, and provenance in
    `map-catalog.js` and `enemy-slots.js`.
-3. Add a pure target-specific power module and cross-source fixtures for B-25,
+3. Added a pure target-specific power module and cross-source fixtures for B-25,
    65th Sentai, guided weapons, land targets, and the disputed type 53 path.
-4. Add deterministic target selection, eligibility, sinking, armor, scratch,
+4. Added deterministic target selection, eligibility, sinking, armor, scratch,
    and HP transitions with coordinate-addressed random draws.
-5. Add versioned empirical hit/evasion and proficiency critical models.
-6. Add ordinary contact, jet damage, and event-specific rules only with source
+5. Added versioned empirical hit/evasion and proficiency critical models.
+6. Added ordinary contact, flagship protection, submarine/Toukai eligibility,
+   PT/special-target transforms, and event-specific rules with source
    metadata and explicit applicability.
-7. Rebuild search score and certified upper bounds, then compare E3P1 and E2P3
-   guide loadouts against the optimizer under identical inputs.
+7. Rebuilt search score and certified upper bounds and pinned four real map/event
+   fixtures plus exhaustive-oracle comparisons.
+8. Disabled cross-group dominance for every fixed-sample detailed search because
+   replacing one aircraft can reorder the whole plan's CRN loss coordinates.
+
+## Proof Record
+
+The three eligible two-base fixtures completed four-worker proofs; the one-base 6-4
+fixture used the serial grouped-exhaustive backend. All 4096-sample, unlimited-budget
+proofs completed with `provenOptimal=true`: 6-5 in 240.415 seconds wall time, 6-4 in
+213.358 seconds, event high-air fixture 1 in 146.276 seconds, and event high-air
+fixture 2 in 13.696 seconds. Every process completed in strictly less than five
+minutes. These results prove only their frozen candidate
+universe, seed, fixed sample stream, and formula version.
 
 ## Required Regression Fixtures
 

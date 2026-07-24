@@ -1,5 +1,6 @@
 'use strict';
 
+const { decorateEnemyAirstrikeRules } = require('./enemy-airstrike-rules');
 const { requiredAirForState } = require('./air-power');
 const { PLANE_TYPES } = require('./aircraft');
 const { buildEnemyStage2Defense } = require('./enemy-stage2');
@@ -96,7 +97,7 @@ function normalizeFormation(pattern, sourceIndex, formationIndex, enemiesById, i
     const master = enemiesById.get(enemyId);
     if (!master) {
       warnings.push({ code: 'MISSING_NORO6_ENEMY_MASTER', enemyId, sourceShipIndex });
-      return {
+      return decorateEnemyAirstrikeRules({
         id: enemyId,
         name: `Enemy ${enemyId}`,
         airPower: 0,
@@ -104,7 +105,7 @@ function normalizeFormation(pattern, sourceIndex, formationIndex, enemiesById, i
         source: 'noro6',
         slots: [],
         ...position,
-      };
+      });
     }
     const count = Math.min(master.slots?.length || 0, master.items?.length || 0);
     const slots = [];
@@ -137,7 +138,7 @@ function normalizeFormation(pattern, sourceIndex, formationIndex, enemiesById, i
         overridden: false,
       });
     }
-    return {
+    return decorateEnemyAirstrikeRules({
       id: enemyId,
       name: master.name || `Enemy ${enemyId}`,
       airPower: airPowerForSlots(slots),
@@ -151,7 +152,7 @@ function normalizeFormation(pattern, sourceIndex, formationIndex, enemiesById, i
       armor: finiteNumberOrNull(master.armor),
       speed: finiteNumberOrNull(master.speed),
       ...position,
-    };
+    });
   });
   const enemySlots = ships.flatMap((ship) => ship.slots);
   const enemyAir = airPowerForSlots(enemySlots);

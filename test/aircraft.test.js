@@ -28,34 +28,57 @@ describe('Aircraft capabilities', () => {
     }));
   });
 
-  test('marks attack-capable ASW patrol planes without treating autogyros as attackers', () => {
-    expect(capabilitiesFor({ masterId: 600, equipType: 26, bombing: 0 })).toEqual(expect.objectContaining({
+  test('derives independent LBAS surface and submarine attack capabilities', () => {
+    expect(capabilitiesFor({ masterId: 600, equipType: 26, bombing: 0, asw: 10 }))
+      .toEqual(expect.objectContaining({
       isAswPatrol: true,
       isAswBomber1: false,
       isAswBomber2: false,
       isAttacker: false,
+      canAttackSurface: false,
+      canAttackSubmarine: true,
+      isLbasCombatAttacker: true,
       blocksRangeExtension: true,
     }));
-    expect(capabilitiesFor({ masterId: 601, equipType: 26, bombing: 3 })).toEqual(expect.objectContaining({
+    expect(capabilitiesFor({ masterId: 601, equipType: 26, bombing: 3, asw: 9 }))
+      .toEqual(expect.objectContaining({
       isAswPatrol: true,
       isAswBomber1: false,
       isAswBomber2: true,
-      isAttacker: false,
+      isAttacker: true,
+      canAttackSurface: true,
+      canAttackSubmarine: true,
+      isLbasCombatAttacker: true,
       blocksRangeExtension: false,
     }));
-    expect(capabilitiesFor({ masterId: 602, equipType: 26, bombing: 4 })).toEqual(expect.objectContaining({
+    expect(capabilitiesFor({ masterId: 602, equipType: 26, bombing: 4, asw: 6 }))
+      .toEqual(expect.objectContaining({
       isAswPatrol: true,
       isAswBomber1: true,
       isAswBomber2: false,
       isAttacker: true,
+      canAttackSurface: true,
+      canAttackSubmarine: false,
+      isLbasCombatAttacker: true,
       blocksRangeExtension: false,
     }));
-    expect(capabilitiesFor({ masterId: 603, equipType: 25, bombing: 4 })).toEqual(expect.objectContaining({
+    expect(capabilitiesFor({ masterId: 603, equipType: 25, bombing: 0, asw: 7 }))
+      .toEqual(expect.objectContaining({
       isAutoGyro: true,
       isAswPatrol: true,
       isAttacker: false,
+      canAttackSurface: false,
+      canAttackSubmarine: true,
+      isLbasCombatAttacker: true,
       blocksRangeExtension: true,
     }));
+    expect(capabilitiesFor({ masterId: 269, equipType: 47, bombing: 2, asw: 10 }))
+      .toEqual(expect.objectContaining({
+        isAttacker: true,
+        canAttackSurface: true,
+        canAttackSubmarine: true,
+        isLbasCombatAttacker: true,
+      }));
   });
 
   test('excludes unsupported API types while retaining type 56 fighters', () => {
@@ -144,6 +167,8 @@ describe('Aircraft capabilities', () => {
     expect(aircraftEquivalenceKey({ ...base, cost: 12 }))
       .not.toBe(aircraftEquivalenceKey(base));
     expect(aircraftEquivalenceKey({ ...base, shootDownAvoidance: 2 }))
+      .not.toBe(aircraftEquivalenceKey(base));
+    expect(aircraftEquivalenceKey({ ...base, accuracy: 3 }))
       .not.toBe(aircraftEquivalenceKey(base));
     expect(aircraftEquivalenceKey({ ...base, isEscortItem: true }))
       .not.toBe(aircraftEquivalenceKey(base));

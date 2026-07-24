@@ -89,6 +89,39 @@ function comparePlanScores(left, right) {
   return compareCanonicalKeys(leftScore.canonicalKey, rightScore.canonicalKey);
 }
 
+/** Builds the fixed-sample combat objective without changing legacy proxy bounds. */
+function combatScorePlan(plan) {
+  const simulation = plan?.simulation || {};
+  return {
+    fulfillment: finiteNumber(plan?.allWaveTargetFulfillmentProbability, 0),
+    sunk: finiteNumber(simulation.expectedSunkCount, MIN_SCORE),
+    hpDamage: finiteNumber(simulation.expectedHpDamage, MIN_SCORE),
+    damage: finiteNumber(plan?.totalDamagePower, 0),
+    loss: -finiteNumber(plan?.totalExpectedLoss, 0),
+    resource: -finiteNumber(plan?.totalResourceCost, 0),
+    margin: finiteNumber(plan?.worstMargin, MIN_SCORE),
+    scarcity: -finiteNumber(plan?.scarcityCost, 0),
+    canonicalKey: String(plan?.canonicalKey ?? canonicalPlanKey(plan)),
+  };
+}
+
+/** Compares fixed-sample combat plans by fulfillment, sinks, then real HP damage. */
+function compareCombatPlanScores(left, right) {
+  const leftScore = combatScorePlan(left);
+  const rightScore = combatScorePlan(right);
+  return (
+    compareNumber(leftScore.fulfillment, rightScore.fulfillment) ||
+    compareNumber(leftScore.sunk, rightScore.sunk) ||
+    compareNumber(leftScore.hpDamage, rightScore.hpDamage) ||
+    compareNumber(leftScore.damage, rightScore.damage) ||
+    compareNumber(leftScore.loss, rightScore.loss) ||
+    compareNumber(leftScore.resource, rightScore.resource) ||
+    compareNumber(leftScore.margin, rightScore.margin) ||
+    compareNumber(leftScore.scarcity, rightScore.scarcity) ||
+    compareCanonicalKeys(leftScore.canonicalKey, rightScore.canonicalKey)
+  );
+}
+
 /**
  * Combines exact partial totals with independently optimistic base envelopes.
  * @param {Record<string, any>} partial Exact totals for selected bases.
@@ -151,7 +184,7 @@ function canonicalPlanKey(plan) {
 }
 
 /** Summarizes a complete assignment with the formulas shared by both optimizers. */
-function summarizePlan(loadouts, context) {
+function summarizePlan(loadouts, context, options = {}) {
   const {
     enemyAir,
     waveTargets,
@@ -188,14 +221,14 @@ function summarizePlan(loadouts, context) {
     limitations: ['STATIC_ENEMY_AIR'],
   };
   if (context.detailed) {
-    const simulation = monteCarloWaveSequence({
-      bases: loadouts,
-      enemy: context.enemy,
-      enemyFleets: context.enemyFleets,
-      targetStates: waveTargets,
-      combatContext: context.combatContext,
-      ...context.simulationOptions,
-    });
+    const simulation = options.detailedSimulation || monteCarloWaveSequence({
+        bases: loadouts,
+        enemy: context.enemy,
+        enemyFleets: context.enemyFleets,
+        targetStates: waveTargets,
+        combatContext: context.combatContext,
+        ...context.simulationOptions,
+      });
     if (simulation.prunedBySimulationBound) {
       return {
         prunedBySimulationBound: true,
@@ -403,6 +436,8 @@ function equivalenceKeyForInventory(plane, inventoryCounts) {
 
 module.exports = {
   canonicalPlanKey,
+  combatScorePlan,
+  compareCombatPlanScores,
   comparePlanScores,
   comparePlansForSort,
   inventoryCountsFor,
